@@ -1,0 +1,224 @@
+#! /home/xiaoliang/.conda/envs/xiaoliang/bin/python -u
+
+import numpy as np 
+from LSS_python.tpcf import cal_tpCF_from_pairs, run_tpCF
+import joblib, os
+import argparse, sys
+
+def read_data(filename, data_type, pos_key=None, weight_key=None, weight_set_one=False, delimiter=None):
+    if weight_key is None:
+        if weight_set_one:
+            with_weight = True
+            result_cols = 4 
+        else:
+            with_weight = False
+            result_cols = 3 
+    else:
+        with_weight = True 
+        result_cols = 4
+    
+    if data_type == "ascii":
+        source = np.loadtxt(filename, delimiter=delimiter)
+        if source.shape[1] < result_cols:
+            raise ValueError(f"The cols of {filename} is not enough")
+        result_array = np.zeros(shape=(source.shape[0], result_cols), dtype=source.dtype) 
+        if weight_set_one:
+            result_array[:, :3] = source[:, :3]
+            result_array[:,3] = 1.0
+        else:
+            result_array[:,:result_cols] = source[:, :result_cols]
+    elif data_type == "binary":
+        source = np.load(filename)
+        if source.dtype.names is None:
+            result_array = np.zeros(shape=(source.shape[0], result_cols), dtype=source.dtype)
+            if weight_set_one:
+                result_array[:,:3] = source[:, :3]
+                result_array[:,3] = 1.0
+            else:
+                result_array[:,:result_cols] = source[:, :result_cols]
+        else:
+            result_array = np.zeros(shape=(source.shape[0], result_cols), dtype=source[pos_key].dtype)
+            result_array[:,:3] = source[pos_key]
+            if with_weight:
+                if weight_set_one:
+                    result_array[:,3] = 1.0
+                else:
+                    result_array[:,3] = source[weight_key]
+    else:
+        raise ValueError(f"{data_type} is not supported")
+    
+    return result_array
+        
+    
+parser = argparse.ArgumentParser(
+    prog="cal_tpCF_corr.py", usage="To cal tpCF with Corrfunc."
+)
+
+parser.add_argument("data_filename", help="Need suffix to support the automatic naming rules. Or use --output_filename and --rr_filename to specify the relevant files.", type=str)
+parser.add_argument("random_filename", help="Need suffix to ... (the same as data_filename)", type=str)
+parser.add_argument("boxsize", type=float)
+parser.add_argument("nthreads", type=int)
+
+parser.add_argument("--data_type", "-type", type=str, default="binary", help="Only support ascii and binary. Only support npy format in binary, whether is structed array or not.")
+parser.add_argument("--pos_key", "-pos", type=str, default="pos", help="Only support npy format in binary with structed array.")
+parser.add_argument("--weight_key", "-wei", type=str, default="weight", help="Only support npy format in binary with structed array.")
+
+parser.add_argument("-smin", type=float, default=0.0, help="Default 0.0")
+parser.add_argument("-smax", type=float, default=150.0, help="Default 150.0")
+parser.add_argument("-sbin", type=int, default=150, help="Default 150")
+parser.add_argument("-mubin", type=int, default=120, help="Default 120")
+
+parser.add_argument("--with_weight", "-ww", action="store_true", help="If set, will load the weight from file or set to one with -weightone")
+parser.add_argument("--weight_power", "-weipow", type=str, help="Only be valid when -ww set.", default="1")
+parser.add_argument("--set_weight_to_one", "-weightone", action="store_true", help="Only be valid when --with_weight set. The weight will be forced to be 1.")
+parser.add_argument("--xyz_refine_factors", "-refine", nargs=3, type=int, default=[2, 2, 1])
+
+parser.add_argument("--output_filename", "-o", help="Only support specifying the filename of tpCF or RR (when --only_run_rr set). The dir is needed.", default=None)
+parser.add_argument("--rr_filename", "-rr", help="Force to specify the rr file.", default=None)
+
+parser.add_argument("--only_run_rr", "-only_rr", action="store_true")
+parser.add_argument("--save_dd_dr", "-savetemp", help="If set save DD and DR to re-use.", action="store_true")
+parser.add_argument("-force", "-f", action="store_true", help="Force to run tpCF, DD and DR, even if the result exists.")
+parser.add_argument("--force_rr", "-forcerr", action="store_true", help="Force to run RR, even if the result exists.")
+
+parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output.")
+
+if len(sys.argv) == 1:
+    parser.print_help()
+    exit(0)
+
+argv = parser.parse_args()
+
+data_fileallname = argv.data_filename
+random_fileallname = argv.random_filename
+boxsize = argv.boxsize
+
+nthreads = argv.nthreads
+os.environ['NUMEXPR_MAX_THREADS'] = f"{nthreads:d}"
+
+data_type = argv.data_type
+pos_key = argv.pos_key
+weight_key = argv.weight_key
+
+smin = argv.smin
+smax = argv.smax
+sbin = argv.sbin
+mubin = argv.mubin
+sedges = np.linspace(smin, smax, sbin+1)
+
+with_weight = argv.with_weight
+weight_power = argv.weight_power
+weight_set_one = argv.set_weight_to_one
+xyz_refine_factors = argv.xyz_refine_factors
+
+output_filename = argv.output_filename
+force_rr_filename = argv.rr_filename
+
+only_run_rr = argv.only_run_rr
+save_dd_dr = argv.save_dd_dr 
+force = argv.force
+force_rr = argv.force_rr
+
+verbose = argv.verbose
+
+if not only_run_rr:
+    data_dir, data_filename = os.path.split(data_fileallname)
+    if data_dir == "":
+        pass
+    else:
+        data_dir += "/"
+    data_filename, data_fileext = os.path.splitext(data_filename)
+
+random_dir, random_filename = os.path.split(random_fileallname)
+if random_dir == "":
+    pass
+else:
+    random_dir += "/"
+random_filename, random_fileext = os.path.splitext(random_filename)
+
+if with_weight:
+    weight_str = f"-weight{weight_power}"
+else:
+    weight_str = ""
+
+RR_result_filename = random_dir + "RR-" + random_filename + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
+if only_run_rr and output_filename is not None:
+    RR_result_filename = output_filename
+if not only_run_rr and force_rr_filename is not None:
+    RR_result_filename = force_rr_filename
+if only_run_rr and not force_rr and os.path.exists(RR_result_filename):
+    print(f"RR file {RR_result_filename} exists, skipping")
+    exit(0)
+
+if not only_run_rr:
+    DD_result_filename = data_dir + "DD-" + data_filename + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
+    DR_result_filename = data_dir + "DR-" + data_filename + "-" + random_filename + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
+    tpCF_result_filename = data_dir + "tpCF-" + data_filename + "-" + random_filename + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
+    if output_filename is not None:
+        tpCF_result_filename = output_filename
+    if os.path.exists(tpCF_result_filename) and not force:
+        print("tpCF result exists, skip")
+        exit(0)
+
+if not with_weight:
+    weight_key = None 
+    weight_set_one = False
+
+if not only_run_rr:
+    data_catalog = read_data(data_dir + data_filename + data_fileext, data_type, pos_key, weight_key, weight_set_one=weight_set_one)
+
+random_catalog = read_data(random_dir + random_filename + random_fileext, data_type, pos_key, weight_key, weight_set_one=weight_set_one)
+
+if not only_run_rr:
+    if data_catalog.dtype != random_catalog.dtype:
+        if data_catalog.dtype == np.float32:
+            data_catalog = data_catalog.astype(np.float64)
+        else:
+            random_catalog = random_catalog.astype(np.float64)
+
+if with_weight:
+    if not only_run_rr:
+        data_catalog[:,3] = data_catalog[:,3] ** float(weight_power)
+    random_catalog[:,3] = random_catalog[:,3] ** float(weight_power)
+
+output_dict = {
+    "DD": None,
+    "DR": None, 
+    "RR": None
+}
+
+if only_run_rr:
+    run_parts = ["RR"]
+    output_dict["RR"] = RR_result_filename
+    _ = run_tpCF(None, random_catalog, sedges, mubin, with_weight, boxsize, run_parts, xyz_refine_factors, output_dict, nthreads, verbose=verbose)
+else:
+    run_parts = []
+    if not os.path.exists(RR_result_filename) or force_rr:
+        output_dict["RR"] = RR_result_filename
+        run_parts.append("RR")
+        RR_result = None
+    else:
+        RR_result = joblib.load(RR_result_filename)
+    if not os.path.exists(DD_result_filename) or force:
+        run_parts.append("DD")
+        if save_dd_dr:
+            output_dict["DD"] = DD_result_filename
+        DD_result = None
+    else:
+        DD_result = joblib.load(DD_result_filename)
+    if not os.path.exists(DR_result_filename) or force:
+        run_parts.append("DR")
+        if save_dd_dr:
+            output_dict["DR"] = DR_result_filename
+        DR_result = None 
+    else:
+        DR_result = joblib.load(DR_result_filename)
+        
+    result_dict = run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, run_parts, xyz_refine_factors, output_dict, nthreads, verbose=verbose)
+    
+    DD_result = result_dict["DD"] if DD_result is None else DD_result 
+    DR_result = result_dict["DR"] if DR_result is None else DR_result 
+    RR_result = result_dict["RR"] if RR_result is None else RR_result
+
+    tpCF_result = cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data_catalog, random_catalog, sbin, mubin, with_weight)
+    joblib.dump(tpCF_result, tpCF_result_filename)
