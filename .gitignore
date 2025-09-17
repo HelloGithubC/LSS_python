@@ -1,6 +1,7 @@
 # python tmp #
 ##########################
 __pycache__/
+cuda/__pycache__/
 
 # vscode settings #
 ############################

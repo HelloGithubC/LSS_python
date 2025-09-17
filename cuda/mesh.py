@@ -21,6 +21,11 @@ def get_run_cic_core_kernel():
 
         for (int i = 0; i < NDIM; i++)
         {
+            if (index*NDIM + i >= nparticle * NDIM)
+            {
+                printf("index = %llu, threadIdx.x = %d, blockIdx.x = %d\n", index, threadIdx.x, blockIdx.x);
+                return;    
+            }
             pos_temp[i] = pos[index * NDIM + i];
             if (pos_temp[i] < 0.0 || pos_temp[i] > boxsize_array[i])
             {
@@ -28,12 +33,12 @@ def get_run_cic_core_kernel():
             }
             sub_boxsize[i] = boxsize_array[i] / ngrids_array[i];
             pos_i[i] = static_cast<int>(pos_temp[i] / sub_boxsize[i]);
-            pos_i_next[i] = (pos_i[i] == ngrids_array[i] - 1)? 0 : pos_i[i] + 1;
             if (pos_i[i] == ngrids_array[i])
             {
-                pos_i[i]--;
+                pos_i[i] = 0;
                 pos_temp[i] = 0.0;
             }
+            pos_i_next[i] = (pos_i[i] == ngrids_array[i] - 1)? 0 : pos_i[i] + 1;
             diff_ratio_temp[i*2 + 0] = (pos_temp[i] - pos_i[i] * sub_boxsize[i]) / sub_boxsize[i];
             diff_ratio_temp[i*2 + 1] = 1.0 - diff_ratio_temp[i*2 + 0];
         }

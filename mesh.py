@@ -52,7 +52,7 @@ def run_cic_from_cuda(pos, boxsize, ngrids):
     nthreads = nparticle if nparticle < 1024 else 1024 
     ngridx = nparticle // nthreads + 1
 
-    field = cp.zeros(ngrids, dtype=cp.float32)
+    field = cp.zeros((ngrids[0].item(), ngrids[1].item(), ngrids[2].item()), dtype=cp.float32)
     run_cic_core_kernel((ngridx, ), (nthreads, ), (pos, nparticle, field, boxsize, ngrids))
 
     return cp.asnumpy(field)
