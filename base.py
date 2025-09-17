@@ -79,3 +79,84 @@ def traz(V_array, x_array, y_array=None):
         delta_Y_mesh = Y_mesh[1:, 1:] - Y_mesh[:-1, :-1]
         total_V = 0.25 * np.sum(delta_X_mesh * delta_Y_mesh * (V_array[1:,1:] + V_array[:-1,:-1] + V_array[1:,:-1] + V_array[:-1,1:]))
         return total_V
+    
+def get_level(chi2_array, smooth=False, smooth_sigma=0.5, return_number=False, return_chi2_smoothed=False):
+    threashold = 0.68
+    if smooth:
+        from scipy.ndimage import gaussian_filter
+        chi2_array_smoothed = gaussian_filter(chi2_array, sigma=smooth_sigma)
+    else:
+        chi2_array_smoothed = chi2_array
+
+    chi2_array_1d = chi2_array_smoothed.ravel()
+    chi2_array_distribution = np.sort(np.exp(-chi2_array_1d * 0.5))[::-1]
+    chi2_array_distr_sum = np.sum(chi2_array_distribution)
+    chi2_array_distr_ratio = chi2_array_distribution / chi2_array_distr_sum
+
+    chi2_distr_temp = 0.0
+    for chi2_distr_ratio in chi2_array_distr_ratio:
+        chi2_distr_temp += chi2_distr_ratio
+        if chi2_distr_temp >= threashold:
+            chi2_temp = np.log(chi2_distr_ratio * chi2_array_distr_sum) * -2.0
+            level = chi2_temp
+            if return_number:
+                number = np.sum(chi2_array_1d <= chi2_temp)
+            break
+    if return_number or return_chi2_smoothed:
+        result_list = [level,]
+        if return_number:
+            result_list.append(number)
+        if return_chi2_smoothed:
+            result_list.append(chi2_array_smoothed)
+        return result_list
+    else:
+        return level
+    
+def get_chain(
+    backend_filename, is_CPL=False, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True
+):
+    from emcee.backends import HDFBackend
+    dim = 3 if is_CPL else 2
+    exception_factor = 2
+    backend = HDFBackend(backend_filename, read_only=True)
+    autocorr_time = int(np.max(backend.get_autocorr_time(tol=0)))
+    if remove_exception:
+        chains = backend.get_chain(
+            thin=thin, discard=max(discard_min, autocorr_time), flat=False
+        )
+        except_index = []
+        for i in range(chains.shape[1]):
+            chain_temp = np.delete(chains, i, axis=1)
+            mean_values = np.mean(chain_temp.reshape(-1,2), axis=0)
+            std_values = np.std(chain_temp.reshape(-1,2), axis=0)
+            mean = np.mean(chains[:, i], axis=0)
+            if (mean > (mean_values + exception_factor * std_values)).any() or (
+                mean < (mean_values - exception_factor * std_values)
+            ).any():
+                except_index.append(i)
+        chain = np.delete(chains, except_index, axis=1)
+
+    else:
+        chain = backend.get_chain(
+            thin=thin, discard=max(discard_min, autocorr_time), flat=False
+        )
+    if flatten:
+        chain = chain.reshape(-1, dim)
+    if return_loglikes:
+        loglikes = backend.get_log_prob(thin=thin, discard=max(discard_min, autocorr_time), flat=False)
+        if remove_exception:
+            loglikes = np.delete(loglikes, except_index, axis=1)
+        if flatten:
+            loglikes = loglikes.ravel()
+        return chain, loglikes
+    else:
+        return chain
+    
+
+def get_need_index(x, y, X_mesh, Y_mesh):
+    """ Get the index of x and y in X_mesh and Y_mesh
+        x, y: element
+        X_mesh, Y_mesh: ndarray, with the same shape
+    """
+    index_source = np.argmin(np.abs(X_mesh - x) + np.abs(Y_mesh - y))
+    return np.unravel_index(index_source, X_mesh.shape)

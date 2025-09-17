@@ -57,14 +57,17 @@ class xismu(object):
             self.RR[self.RR == 0] = 1e-15
         
     @classmethod
-    def load(cls, filename, data_type="CUTE", smax=150, sbin=150, mubin=120):
+    def load(cls, filename, data_type="CUTE", smax=150, sbin=150, mubin=120, deal_with_0s0mu=True):
+        """
+            deal_with_0s0mu: deal with the case that s=0 and mu=0. Only be valid when using BINARY data.
+        """
         self = xismu(smax, sbin, mubin, set_data=False)
         self.filename = filename
         self.data_type = data_type
         if self.data_type == "CUTE":
             self._read_from_CUTE(filename, self.sbin, self.mubin)
         elif self.data_type == "BINARY":
-            self._read_from_BINARY(filename)
+            self._read_from_BINARY(filename, deal_with_0s0mu)
             if self.DD.shape[0] != self.sbin or self.DD.shape[1] != self.mubin:
                 raise ValueError("sbin or mubin is not equal to the data")
         else:
@@ -123,14 +126,14 @@ class xismu(object):
             raise ValueError("The length of data does not equal sbin*mubin")
         self.DD, self.DR, self.RR = [
             self.data[: sbin * mubin, row].reshape(sbin, mubin)
-            for row in [3, 4, 6]
+            for row in [3, 4, -1]
         ]
         self.Mu, self.S, self.xis = [
             self.data[: sbin * mubin, row].reshape(sbin, mubin)
             for row in [0, 1, 2]
         ]
 
-    def _read_from_BINARY(self, filename):
+    def _read_from_BINARY(self, filename, deal_with_0s0mu=True):
         source = joblib.load(filename)
         with_weight = source.get("with_weight", False)
         if with_weight:
@@ -147,6 +150,11 @@ class xismu(object):
         self.RRnorm = source["norm_r1r2"]
 
         self.xis = source.get("tpCF", None)
+        if deal_with_0s0mu:
+            self.DD[0,0] = 0.0 
+            self.DR[0,0] = 0.0
+            self.RR[0,0] = 1e-15
+            self.xis[0,0] = 0.0
         
         s_array = source.get("s_array", None)
         mu_array = source.get("mu_array", None)
@@ -159,7 +167,7 @@ class xismu(object):
             mu_array = (muedges[1:] + muedges[:-1]) / 2.0
         self.S, self.Mu = np.meshgrid(s_array, mu_array, indexing="ij")
     
-    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=True, mupack=1, is_norm=False):
+    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=True, mupack=1, is_norm=False, quick_return=False):
         """ A powerful function to integrate the tpcf
 
         Parameters
@@ -229,6 +237,8 @@ class xismu(object):
                 xis_s = meannorm(xis_s)
             result_dict["s"] = s
             result_dict["xis_s"] = xis_s * s**2
+            if not intximu and quick_return:
+                return s, xis_s * s**2
         
         if intximu:
             mu = mu_array[mumin_index: mumax_index]
@@ -242,6 +252,8 @@ class xismu(object):
                 xis_mu = meannorm(xis_mu)
             result_dict["mu"] = mu
             result_dict["xis_mu"] = xis_mu
+            if not s_xis and quick_return:
+                return mu, xis_mu
 
         return result_dict
     

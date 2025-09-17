@@ -44,6 +44,78 @@ def get_chain(
         return chain, loglikes
     else:
         return chain
+    
+def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, detail, progress_kwargs, output):
+    sampler = emcee.EnsembleSampler(
+            nwalkers,
+            ndim,
+            lnprob,
+            args=args,
+            moves=moves,
+            backend=backend,
+            pool=pool,
+        )
+    autocorr = np.empty((max_iterator))
+    indent = 0
+    i = 1
+    old_tau = np.inf
+    for sample in sampler.sample(
+        init_state,
+        iterations=max_iterator,
+        progress=True,
+        progress_kwargs=progress_kwargs,
+    ):
+        if use_converge_factor:
+            if sampler.iteration % 100:
+                continue
+            tau = sampler.get_autocorr_time(tol=0)
+            autocorr[indent] = np.mean(tau)
+            indent += 1
+
+            if detail and not sampler.iteration % 1000:
+                print(f"{i:d}: tau, {tau:.5f}", file=output)
+                i += 1
+            converged = np.all(tau * converge_factor < sampler.iteration)
+            converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
+            if converged:
+                print(f"Converged at {sampler.iteration:d}", file=output)
+                print(
+                    f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(sampler.iteration / tau):.1f}",
+                    file=output,
+                )
+                print(
+                    f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
+                    file=output,
+                )
+                break
+            else:
+                old_tau = tau
+        else:
+            if sampler.iteration >= max_iterator:
+                print(f"Finished at {max_iterator:d}", file=output)
+                print(
+                    f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
+                    file=output,
+                )
+                print(
+                    f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
+                    file=output,
+                )
+                autocorr = 0.0
+                converged = True
+                break 
+    
+    if not converged:
+        print(f"Not Converged at {max_iterator:d}", file=output)
+        print(
+            f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
+            file=output,
+        )
+        print(
+            f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
+            file=output,
+        )
+    return autocorr, converged
 
 def run_mcmc_main_emcee(
     init_state,
@@ -58,6 +130,7 @@ def run_mcmc_main_emcee(
     detail=False,
     desc_str=None,
     output=None,
+    force_no_pool=False
 ):
     """To run mcmc
     Args:
@@ -84,73 +157,39 @@ def run_mcmc_main_emcee(
     progress_kwargs = {"desc": desc_str} if desc_str else {"desc": "Running MCMC"}
 
     converged = True
-    with Pool(processes=int(nwalkers / 2)) as pool:
-        sampler = emcee.EnsembleSampler(
-            nwalkers,
-            ndim,
-            lnprob,
-            args=args,
-            moves=moves,
-            backend=backend,
-            pool=pool,
+    if force_no_pool:
+        autocorr, converged = run_mcmc_core_emcee(
+            nwalkers = nwalkers,
+            ndim = ndim,
+            init_state = init_state,
+            lnprob = lnprob,
+            args = args,
+            moves = moves,
+            backend = backend,
+            pool = None,
+            max_iterator = max_iterator,
+            use_converge_factor = use_converge_factor,
+            converge_factor = converge_factor,
+            detail = detail,
+            progress_kwargs = progress_kwargs,
+            output = output,
         )
-        autocorr = np.empty((max_iterator))
-        indent = 0
-        i = 1
-        old_tau = np.inf
-        for sample in sampler.sample(
-            init_state,
-            iterations=max_iterator,
-            progress=True,
-            progress_kwargs=progress_kwargs,
-        ):
-            if use_converge_factor:
-                if sampler.iteration % 100:
-                    continue
-                tau = sampler.get_autocorr_time(tol=0)
-                autocorr[indent] = np.mean(tau)
-                indent += 1
-
-                if detail and not sampler.iteration % 1000:
-                    print(f"{i:d}: tau, {tau:.5f}", file=output)
-                    i += 1
-                converged = np.all(tau * converge_factor < sampler.iteration)
-                converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
-                if converged:
-                    print(f"Converged at {sampler.iteration:d}", file=output)
-                    print(
-                        f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(sampler.iteration / tau):.1f}",
-                        file=output,
-                    )
-                    print(
-                        f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
-                        file=output,
-                    )
-                    break
-                else:
-                    old_tau = tau
-            else:
-                if sampler.iteration >= max_iterator:
-                    print(f"Finished at {max_iterator:d}", file=output)
-                    print(
-                        f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
-                        file=output,
-                    )
-                    print(
-                        f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
-                        file=output,
-                    )
-                    autocorr = 0.0
-                    converged = True
-                    break 
-    if not converged:
-        print(f"Not Converged at {max_iterator:d}", file=output)
-        print(
-            f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
-            file=output,
-        )
-        print(
-            f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
-            file=output,
-        )
+    else:
+        with Pool(processes=int(nwalkers / 2)) as pool:
+            autocorr, converged = run_mcmc_core_emcee(
+                nwalkers = nwalkers,
+                ndim = ndim,
+                init_state = init_state,
+                lnprob = lnprob,
+                args = args,
+                moves = moves,
+                backend = backend,
+                pool = pool,
+                max_iterator = max_iterator,
+                use_converge_factor = use_converge_factor,
+                converge_factor = converge_factor,
+                detail = detail,
+                progress_kwargs = progress_kwargs,
+                output = output,
+            )
     return autocorr, converged
