@@ -132,18 +132,7 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, **ka
 
     fftpower_new = FFTPower(Nmesh=Nmesh, BoxSize=boxsize_array, shotnoise=0.0)
     fftpower_new.is_run_ps_3d = True
-    if device_id >= 0:
-        with cp.cuda.Device(device_id):
-            _ = fftpower_new.run_from_cuda(
-                ps_3d,
-                k_min,
-                k_max,
-                dk,
-                Nmu=Nmu,
-                mode=mode,
-            )
-    else:
-        _ = fftpower_new.run(
+    _ = fftpower_new.run(
             ps_3d,
             k_min,
             k_max,
@@ -152,7 +141,8 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, **ka
             mode=mode,
             linear=True,
             nthreads=nthreads,
-        )
+            device_id=device_id
+    )
 
     HI_factor = cal_HI_factor(redshift, omega_mm, boxsize_array, Nmesh)
     if mode == "1d":

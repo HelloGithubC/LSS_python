@@ -5,7 +5,7 @@ def get_deal_ps_core_kernel():
     kernel_code = r'''
     #include <cupy/complex.cuh>
     extern "C" __global__
-    void deal_ps_core(complex<float>* ps_3d, complex<float>* ps_3d_kernel, const int nx, const int ny, const int nz, const double boxsize_prod, const double shotnoise, const bool use_kernel)
+    void deal_ps_core(complex<float>* ps_3d, complex<float>* ps_3d_kernel, const int nx, const int ny, const int nz, const double boxsize_prod, const double shotnoise)
     {
         int iz = threadIdx.x;
         int iy = blockIdx.y;
@@ -13,6 +13,16 @@ def get_deal_ps_core_kernel():
         if (iz >= nz || iy >= ny || ix >= nx)
         {
             return;
+        }
+
+        bool use_kernel;
+        if (ps_3d_kernel == nullptr)
+        {
+            use_kernel = false;
+        }
+        else 
+        {
+            use_kernel = true;
         }
 
         unsigned int index = iz + iy * nz + ix * nz * ny;
@@ -39,7 +49,7 @@ def get_deal_ps_core_kernel():
 def get_run_fftpower_core_kernel():
     kernel_code = r'''
     extern "C" __global__
-    void run_fftpower_core(const float2* ps_3d, const double* kx_array, const double* ky_array, const double* kz_array, const double* k_array, const double* mu_array, const int nx, const int ny, const int nz, const int nk, const int nmu, const double k_diff, const double mu_diff, double2* Pkmu, double* k_mesh, double* mu_mesh, unsigned int* count)
+    void run_fftpower_core(const float2* ps_3d, const double* kx_array, const double* ky_array, const double* kz_array, const double* k_array, const double* mu_array, const int nx, const int ny, const int nz, const int nk, const int nmu, const double k_diff, const double mu_diff, double2* Pkmu, double* k_mesh, double* mu_mesh, unsigned long long* count)
     {
         bool use_nmu = true;
         if (nmu == 1)
@@ -50,6 +60,7 @@ def get_run_fftpower_core_kernel():
         int iz = threadIdx.x;
         int iy = blockIdx.y;
         int ix = blockIdx.x;
+
 
         if (iz >= nz || iy >= ny || ix >= nx)
         {
@@ -88,10 +99,10 @@ def get_run_fftpower_core_kernel():
             mu_i = 0;
         }
 
-        unsigned int mode = 2u;
+        unsigned int mode = 2uL;
         if (abs(mu - mu_array[0]) < 1e-8)
         {
-            mode = 1u;
+            mode = 1uL;
         }
 
         float2 element = ps_3d[iz + iy * nz + ix * nz * ny];
@@ -106,3 +117,37 @@ def get_run_fftpower_core_kernel():
 
 deal_ps_core_kernel = get_deal_ps_core_kernel()
 run_fftpower_core_kernel = get_run_fftpower_core_kernel()
+
+def deal_ps_3d_from_cuda(ps_3d_gpu, ps_kernel_3d_gpu=None, ps_3d_factor=1.0, shotnoise=0.0):
+    if ps_kernel_3d_gpu is None:
+        ps_kernel_3d_gpu = 0
+    nx, ny, nz = ps_3d_gpu.shape
+    deal_ps_core_kernel((nx,ny), (nz,), (ps_3d_gpu, ps_kernel_3d_gpu, nx, ny, nz, ps_3d_factor, shotnoise))
+
+def run_fftpower_from_cuda(ps_3d_gpu, k_arrays, k_bin_array, mu_bin_array):
+    nx, ny, nz = ps_3d_gpu.shape
+    k_x_array, k_y_array, k_z_array = k_arrays
+    nk = k_bin_array.shape[0] - 1
+    nmu = mu_bin_array.shape[0] - 1
+
+    k_diff = (k_bin_array[1] - k_bin_array[0]).item()
+    mu_diff = (mu_bin_array[1] - mu_bin_array[0]).item()
+
+    Pkmu = cp.zeros((nk, nmu), dtype=cp.complex128)
+    power_k = cp.zeros((nk, nmu), dtype=cp.float64)
+    power_mu = cp.zeros((nk, nmu), dtype=cp.float64)
+    modes = cp.zeros((nk, nmu), dtype = cp.uint64)
+
+    run_fftpower_core_kernel(
+            (nx, ny), 
+            (nz,),
+            (ps_3d_gpu,
+            k_x_array, k_y_array, k_z_array,
+            k_bin_array, mu_bin_array,
+            nx, ny, nz,
+            nk, nmu, 
+            k_diff, mu_diff,
+            Pkmu, power_k, power_mu, modes)
+        )
+    
+    return power_k, power_mu, Pkmu, modes

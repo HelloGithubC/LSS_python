@@ -12,7 +12,7 @@ authors = [
 # 这里是基础依赖
 dependencies = [
     "numpy",
-    "numba",
+    "numba<=0.60.0",
     "joblib",
     "scipy",
     "emcee",

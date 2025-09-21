@@ -2,7 +2,7 @@ import numpy as np
 from numba import njit, set_num_threads, prange, get_thread_id
 
 @njit(parallel=True)
-def deal_ps_3d(ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
+def deal_ps_3d_multithreads(ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
     set_num_threads(nthreads)
     for ix in prange(ps_3d.shape[0]):
         for iy in prange(ps_3d.shape[1]):
@@ -22,16 +22,17 @@ def deal_ps_3d_single(ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0)
                 ps_3d[ix, iy, iz] = ps_3d[ix, iy, iz] * np.conj(ps_3d[ix, iy, iz]) * ps_3d_factor - shotnoise
     return
 
-def deal_ps_3d_from_cuda(ps_3d_gpu, ps_3d_gpu_kernel=None, ps_3d_factor=1.0, shotnoise=0.0):
-    import cupy as cp 
-    from .cuda.fftpower import deal_ps_core_kernel
-    if ps_3d_gpu_kernel is None:
-        use_kernel = False
-        ps_kernel_3d_gpu = cp.array([complex(1.0, 0.0)], dtype=cp.complex64)
+def deal_ps_3d(ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1, device_id=-1):
+    if device_id >= 0:
+        import cupy as cp
+        from .cuda.fftpower import deal_ps_3d_from_cuda
+        with cp.cuda.Device(device_id):
+            deal_ps_3d_from_cuda(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise)
     else:
-        use_kernel = True
-    nx, ny, nz = ps_3d_gpu.shape
-    deal_ps_core_kernel((nx,ny), (nz,), (ps_3d_gpu, ps_kernel_3d_gpu, nx, ny, nz, ps_3d_factor, shotnoise, use_kernel))
+        if nthreads > 1:
+            deal_ps_3d_multithreads(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+        else:
+            deal_ps_3d_single(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise)
 
 @njit(parallel=True)
 def run_core(ps_3d, k_arrays_list, k_array, mu_array, linear=True, nthreads=1):
@@ -119,8 +120,14 @@ class FFTPower:
     def run(
         self, ps_3d,
         kmin, kmax, dk, Nmu=None, k_arrays=None,
-        mode="1d", linear=True, nthreads=1,
+        mode="1d", linear=True, nthreads=1, device_id=-1
     ):
+        if device_id >= 0:
+            import cupy as cp
+            from .cuda.fftpower import run_fftpower_from_cuda
+            use_gpu = True 
+        else:
+            use_gpu = False 
         self.attrs["kmin"] = kmin
         self.attrs["kmax"] = kmax
         if dk < 0:
@@ -164,14 +171,32 @@ class FFTPower:
         else:
             k_x_array, k_y_array, k_z_array = k_arrays
 
-        power_k, power_mu, power, power_modes = run_core(
-            ps_3d,
-            [k_x_array, k_y_array, k_z_array],
-            k_array,
-            mu_array,
-            linear=linear,
-            nthreads=nthreads,
-        )
+        if use_gpu:
+            with cp.cuda.Device(device_id):
+                k_x_array_gpu = cp.asarray(k_x_array, dtype=cp.float64)
+                k_y_array_gpu = cp.asarray(k_y_array, dtype=cp.float64)
+                k_z_array_gpu = cp.asarray(k_z_array, dtype=cp.float64)
+                k_array_gpu = cp.asarray(k_array, dtype=cp.float64)
+                mu_array_gpu = cp.asarray(mu_array, dtype=cp.float64)
+                power_k, power_mu, power, power_modes = run_fftpower_from_cuda(
+                    ps_3d,
+                    [k_x_array_gpu, k_y_array_gpu, k_z_array_gpu],
+                    k_array_gpu,
+                    mu_array_gpu
+                )
+                power_k = cp.asnumpy(power_k)
+                power_mu = cp.asnumpy(power_mu)
+                power = cp.asnumpy(power)
+                power_modes = cp.asnumpy(power_modes)
+        else:
+            power_k, power_mu, power, power_modes = run_core(
+                ps_3d,
+                [k_x_array, k_y_array, k_z_array],
+                k_array,
+                mu_array,
+                linear=linear,
+                nthreads=nthreads,
+            )
         
         masked_index = power_modes == 0
         need_index = np.logical_not(masked_index)
@@ -192,107 +217,6 @@ class FFTPower:
         self.attrs["dk"] = dk
         return self.power
     
-    def run_from_cuda(
-        self, 
-        ps_3d,
-        kmin, kmax, dk, Nmu=None, k_arrays=None,
-        mode="1d"
-    ):
-        ''' run FFTPower from cuda
-        Note that only support linear now
-        '''
-        import cupy as cp
-        from .cuda.fftpower import run_fftpower_core_kernel
-        self.attrs["kmin"] = kmin
-        self.attrs["kmax"] = kmax
-        if dk < 0:
-            dk = 2 * np.pi / self.attrs["BoxSize"]
-        self.attrs["dk"] = dk
-        k_array = cp.arange(kmin, kmax, dk)
-        self.attrs["Nk"] = len(k_array) - 1
-        self.attrs["mode"] = mode
-        if mode == "2d":
-            if not isinstance(Nmu, int):
-                raise ValueError("Nmu must be an integer")
-            else:
-                self.attrs["Nmu"] = Nmu
-                mu_array = cp.linspace(0, 1, Nmu + 1, endpoint=True)
-        else:
-            self.attrs["Nmu"] = 1
-            mu_array = cp.array([0.0, 1.0])
-
-        if k_arrays is None:
-            k_x_array = (
-                cp.fft.fftfreq(self.Nmesh[0], d=1.0)
-                * 2.0
-                * np.pi
-                * self.Nmesh[0]
-                / self.BoxSize[0]
-            )
-            k_y_array = (
-                cp.fft.fftfreq(self.Nmesh[1], d=1.0)
-                * 2.0
-                * np.pi
-                * self.Nmesh[1]
-                / self.BoxSize[1]
-            )
-            k_z_array = (
-                cp.fft.fftfreq(self.Nmesh[2], d=1.0)
-                * 2.0
-                * np.pi
-                * self.Nmesh[2]
-                / self.BoxSize[2]
-            )[: ps_3d.shape[2]]
-        else:
-            k_x_array, k_y_array, k_z_array = k_arrays
-
-        nx = k_x_array.shape[0]
-        ny = k_y_array.shape[0]
-        nz = k_z_array.shape[0]
-        nk = k_array.shape[0] - 1
-        nmu = mu_array.shape[0] - 1
-        k_diff = (k_array[1] - k_array[0]).item()
-        mu_diff = (mu_array[1] - mu_array[0]).item()
-
-        Pkmu = cp.zeros((nk, nmu), dtype=cp.complex128)
-        modes = cp.zeros((nk, nmu), dtype=cp.uint32)
-        power_k = cp.zeros((nk, nmu), dtype=cp.float64)
-        power_mu = cp.zeros((nk, nmu), dtype=cp.float64)
-        run_fftpower_core_kernel(
-            (nx, ny), 
-            (nz,),
-            (ps_3d,
-            k_x_array, k_y_array, k_z_array,
-            k_array, mu_array,
-            nx, ny, nz,
-            nk, nmu, 
-            k_diff, mu_diff,
-            Pkmu, power_k, power_mu, modes)
-        )
-        
-        power_modes = cp.asnumpy(modes)
-        power_k = cp.asnumpy(power_k)
-        power_mu = cp.asnumpy(power_mu)
-        power = cp.asnumpy(Pkmu)
-
-        masked_index = power_modes == 0
-        need_index = np.logical_not(masked_index)
-        power_k[masked_index] = np.nan 
-        power_mu[masked_index] = np.nan
-        power[masked_index] = np.nan
-        power_k[need_index] = power_k[need_index] / power_modes[need_index]
-        if mode == "2d":
-            power_mu[need_index] = power_mu[need_index] / power_modes[need_index]
-        power[need_index] = power[need_index] / power_modes[need_index]
-        if mode == "2d":
-            self.power = {"k": power_k, "mu": power_mu, "Pkmu": power, "modes": power_modes}
-        else:
-            self.power = {"k": power_k.ravel(), "Pk": power.ravel(), "modes": power_modes.ravel()}
-        self.attrs["Nmu"] = Nmu
-        self.attrs["kmin"] = kmin
-        self.attrs["kmax"] = kmax
-        self.attrs["dk"] = dk
-        return self.power
     def save(self, filename):
         import joblib
 
