@@ -43,7 +43,7 @@ def run_core(ps_3d, k_arrays_list, k_array, mu_array, linear=True, nthreads=1):
     k_diff = k_array[1] - k_array[0]
     if mubin <= 1:
         use_mu = False
-        mu_diff = None
+        mu_diff = 1.0
     else:
         use_mu = True
         mu_diff = mu_array[1] - mu_array[0]

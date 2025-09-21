@@ -1,0 +1,11 @@
+numpy
+numba<=0.60.0
+joblib
+scipy
+emcee
+h5py
+multiprocess
+Corrfunc
+
+[cuda]
+cupy

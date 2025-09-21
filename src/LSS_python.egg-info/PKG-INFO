@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: LSS_python
+Version: 0.5.0
+Summary: A package to deal with some problems about Large Scale Structure. Full support by python(numba). cuda(cupy) is optinonal
+Author-email: LSS_python <xiaoliangms@outlook.com>
+Requires-Dist: numpy
+Requires-Dist: numba<=0.60.0
+Requires-Dist: joblib
+Requires-Dist: scipy
+Requires-Dist: emcee
+Requires-Dist: h5py
+Requires-Dist: multiprocess
+Requires-Dist: Corrfunc
+Provides-Extra: cuda
+Requires-Dist: cupy; extra == "cuda"

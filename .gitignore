@@ -1,7 +1,9 @@
 # python tmp #
 ##########################
 __pycache__/
-cuda/__pycache__/
+src/LSS_python/cuda/__pycache__/
+build/
+bin/
 
 # vscode settings #
 ############################
