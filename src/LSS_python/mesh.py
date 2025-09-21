@@ -315,7 +315,7 @@ class Mesh:
             raise ValueError("mode must be 'all', 'real' or 'complex'.")
         
         self.attrs["modes"] = modes
-        joblib.dump(self.attrs, os.path.join(output_dir, "attrs.pkl"))
+        joblib.dump(self.attrs, os.path.join(output_dir, "attrs_dict.pkl"))
         
         for mode in modes:
             if mode == "real":
@@ -367,7 +367,7 @@ class Mesh:
                 else:
                     self.attrs["Nmesh"] = None
                     self.Nmesh = None
-                raise warnings.warn("No attrs.pkl found. The attrs will only contrain the Nmesh, if exists real field.")
+                warnings.warn("No attrs.pkl found. The attrs will only contrain the Nmesh, if exists real field.")
                 
         return self 
     

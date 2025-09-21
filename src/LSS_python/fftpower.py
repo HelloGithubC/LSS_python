@@ -118,9 +118,9 @@ class FFTPower:
         self.power = None
 
     def run_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
-        mode="1d", linear=True, deal_ps_3d=True, ps_3d_kernel=None, ps_3d_inplace=True, nthreads=1, device_id=-1):
+        mode="1d", linear=True, do_deal_ps_3d=True, ps_3d_kernel=None, ps_3d_inplace=True, nthreads=1, device_id=-1):
         if device_id >= 0:
-            if deal_ps_3d:
+            if do_deal_ps_3d:
                 if ps_3d_inplace:
                     ps_3d_gpu = mesh.complex_field_gpu
                 else:
@@ -128,7 +128,7 @@ class FFTPower:
                 deal_ps_3d(ps_3d_gpu, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=np.prod(mesh.attrs["BoxSize"]), shotnoise=mesh.attrs["shotnoise"], device_id=device_id)
             return self.run(mesh.complex_field_gpu, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, linear=linear, device_id=device_id)
         else:
-            if deal_ps_3d:
+            if do_deal_ps_3d:
                 if ps_3d_inplace:
                     ps_3d = mesh.complex_field
                 else:
