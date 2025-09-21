@@ -125,7 +125,7 @@ class FFTPower:
                     ps_3d_gpu = mesh.complex_field_gpu
                 else:
                     ps_3d_gpu = cp.copy(mesh.complex_field_gpu)
-                deal_ps_3d(ps_3d_gpu, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=np.prod(mesh.attrs["BoxSize"]), shotnoise=0.0, device_id=device_id)
+                deal_ps_3d(ps_3d_gpu, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=np.prod(mesh.attrs["BoxSize"]), shotnoise=mesh.attrs["shotnoise"], device_id=device_id)
             return self.run(mesh.complex_field_gpu, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, linear=linear, device_id=device_id)
         else:
             if deal_ps_3d:
@@ -133,7 +133,7 @@ class FFTPower:
                     ps_3d = mesh.complex_field
                 else:
                     ps_3d = np.copy(mesh.complex_field)
-                deal_ps_3d(ps_3d, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=np.prod(mesh.attrs["BoxSize"]), shotnoise=0.0)
+                deal_ps_3d(ps_3d, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=np.prod(mesh.attrs["BoxSize"]), shotnoise=mesh.attrs["shotnoise"])
             return self.run(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, linear=linear, nthreads=nthreads)
 
     def run(
