@@ -1,103 +1,27 @@
-import numpy as np 
-from numba import njit, set_num_threads, prange, get_thread_id
+import numpy as np
+from .JIT.fftpower import deal_ps_3d_multithreads, deal_ps_3d_single, cal_ps_from_numba
 
-@njit(parallel=True)
-def deal_ps_3d_multithreads(ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
-    set_num_threads(nthreads)
-    for ix in prange(ps_3d.shape[0]):
-        for iy in prange(ps_3d.shape[1]):
-            for iz in prange(ps_3d.shape[2]):
-                kernel_element = ps_3d_kernel[ix, iy, iz] if ps_3d_kernel is not None else 1.0
-                ps_3d[ix, iy, iz] *= kernel_element
-                ps_3d[ix, iy, iz] = ps_3d[ix, iy, iz] * np.conj(ps_3d[ix, iy, iz]) * ps_3d_factor - shotnoise
-    return
-
-@njit
-def deal_ps_3d_single(ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0):
-    for ix in range(ps_3d.shape[0]):
-        for iy in range(ps_3d.shape[1]):
-            for iz in range(ps_3d.shape[2]):
-                kernel_element = ps_3d_kernel[ix, iy, iz] if ps_3d_kernel is not None else 1.0
-                ps_3d[ix, iy, iz] *= kernel_element
-                ps_3d[ix, iy, iz] = ps_3d[ix, iy, iz] * np.conj(ps_3d[ix, iy, iz]) * ps_3d_factor - shotnoise
-    return
-
-def deal_ps_3d(ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1, device_id=-1):
+def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, inplace=True, nthreads=1, device_id=-1, c_api=False):
+    if not inplace:
+        ps_3d = np.copy(complex_field)
+    else:
+        ps_3d = complex_field
     if device_id >= 0:
         import cupy as cp
         from .cuda.fftpower import deal_ps_3d_from_cuda
         with cp.cuda.Device(device_id):
             deal_ps_3d_from_cuda(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise)
     else:
-        if nthreads > 1:
-            deal_ps_3d_multithreads(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+        if c_api:
+            from .CPP.fftpower import deal_ps_3d_c_api
+            deal_ps_3d_c_api(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
         else:
-            deal_ps_3d_single(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise)
-
-@njit(parallel=True)
-def run_core(ps_3d, k_arrays_list, k_array, mu_array, linear=True, nthreads=1):
-    set_num_threads(nthreads)
-    kx_array, ky_array, kz_array = k_arrays_list
-    kbin = k_array.shape[0] - 1 
-    mubin = mu_array.shape[0] - 1
-    k_diff = k_array[1] - k_array[0]
-    if mubin <= 1:
-        use_mu = False
-        mu_diff = 1.0
-    else:
-        use_mu = True
-        mu_diff = mu_array[1] - mu_array[0]
-    
-    Pkmu_threads = np.zeros((nthreads, kbin, mubin), dtype=np.complex128)
-    count_threads = np.zeros((nthreads, kbin, mubin), dtype=np.uint32)
-    k_mesh_threads = np.zeros((nthreads, kbin, mubin), dtype=np.float64)
-    mu_mesh_threads = np.zeros((nthreads, kbin, mubin), dtype=np.float64)
-
-    kx_array = np.abs(kx_array)
-    ky_array = np.abs(ky_array)
-    for ix in prange(len(kx_array)):
-        kx = kx_array[ix]
-        for iy in prange(len(ky_array)):
-            ky = ky_array[iy]
-            for iz in prange(len(kz_array)):
-                kz = kz_array[iz]
-                if (kx <= k_array[0] / 2.0 and  ky <= k_array[0] / 2.0 and kz <= k_array[0] / 2.0) or \
-                (kx >= k_array[-1] and ky >= k_array[-1] and kz >= k_array[-1]):
-                    continue
-                mode = 1 if iz == 0 else 2
-                k = np.sqrt(kx**2 + ky**2 + kz**2)
-                if k < k_array[0] or k > k_array[-1]:
-                    continue
-                if linear:
-                    k_i = int((k - k_array[0]) / k_diff)
-                else:
-                    k_i = int(np.digitize(k, k_array) - 1)
-                if k_i == kbin:
-                    k_i -= 1 
-
-                if use_mu:
-                    mu = kz / k 
-                    if mu < mu_array[0] or mu > mu_array[-1]:
-                        continue
-                    if linear:
-                        mu_i = int((mu - mu_array[0]) / mu_diff)
-                    else:
-                        mu_i = int(np.digitize(mu, mu_array) - 1)
-                    if mu_i == mubin:
-                        mu_i -= 1
-                else:
-                    mu = 0.0
-                    mu_i = 0 
-                thread_id = get_thread_id()
-                Pkmu_threads[thread_id, k_i, mu_i] += ps_3d[ix, iy, iz] * mode
-                k_mesh_threads[thread_id, k_i, mu_i] += k * mode
-                mu_mesh_threads[thread_id, k_i, mu_i] += mu * mode
-                count_threads[thread_id, k_i, mu_i] += mode
-    Pkmu = np.sum(Pkmu_threads, axis=0)
-    k_mesh = np.sum(k_mesh_threads, axis=0)
-    mu_mesh = np.sum(mu_mesh_threads, axis=0)
-    count = np.sum(count_threads, axis=0)
-    return k_mesh, mu_mesh, Pkmu, count 
+            if nthreads > 1:
+                deal_ps_3d_multithreads(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+            else:
+                deal_ps_3d_single(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise)
+    if not inplace:
+        return ps_3d
 
 class FFTPower:
     def __init__(self, Nmesh, BoxSize, shotnoise=0.0):
@@ -117,33 +41,37 @@ class FFTPower:
         }
         self.power = None
 
-    def run_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
-        mode="1d", linear=True, do_deal_ps_3d=True, ps_3d_kernel=None, ps_3d_inplace=True, nthreads=1, device_id=-1):
+    def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
+    mode="1d", k_logarithmic=False, ps_3d_inplace=True, nthreads=1, device_id=-1, c_api=False):
+        shotnoise = 0.0
         if device_id >= 0:
-            if do_deal_ps_3d:
-                if ps_3d_inplace:
-                    ps_3d_gpu = mesh.complex_field_gpu
-                else:
-                    ps_3d_gpu = cp.copy(mesh.complex_field_gpu)
-                deal_ps_3d(ps_3d_gpu, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=np.prod(mesh.attrs["BoxSize"]), shotnoise=mesh.attrs["shotnoise"], device_id=device_id)
-            return self.run(mesh.complex_field_gpu, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, linear=linear, device_id=device_id)
+            import cupy as cp
+            if ps_3d_inplace:
+                ps_3d_gpu = mesh.complex_field_gpu
+            else:
+                ps_3d_gpu = cp.copy(mesh.complex_field_gpu)
+            ps_3d_need = ps_3d_gpu
+            boxsize_prod = cp.prod(self.BoxSize, dtype=cp.float32)
         else:
-            if do_deal_ps_3d:
-                if ps_3d_inplace:
-                    ps_3d = mesh.complex_field
-                else:
-                    ps_3d = np.copy(mesh.complex_field)
-                deal_ps_3d(ps_3d, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=np.prod(mesh.attrs["BoxSize"]), shotnoise=mesh.attrs["shotnoise"])
-            return self.run(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, linear=linear, nthreads=nthreads)
+            if ps_3d_inplace:
+                ps_3d = mesh.complex_field
+            else:
+                ps_3d = np.copy(mesh.complex_field)
+            ps_3d_need = ps_3d
+            boxsize_prod = np.prod(self.BoxSize, dtype=np.float32)
+        
+        deal_ps_3d(ps_3d_need, ps_3d_kernel=None, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, nthreads=nthreads)
 
-    def run(
+        return self.cal_ps_from_3d(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
+
+    def cal_ps_from_3d(
         self, ps_3d,
         kmin, kmax, dk, Nmu=None, k_arrays=None,
-        mode="1d", linear=True, nthreads=1, device_id=-1
+        mode="1d", k_logarithmic=False, nthreads=1, device_id=-1, c_api=False
     ):
         if device_id >= 0:
             import cupy as cp
-            from .cuda.fftpower import run_fftpower_from_cuda
+            from .cuda.fftpower import cal_ps_from_cuda
             use_gpu = True 
         else:
             use_gpu = False 
@@ -197,7 +125,7 @@ class FFTPower:
                 k_z_array_gpu = cp.asarray(k_z_array, dtype=cp.float64)
                 k_array_gpu = cp.asarray(k_array, dtype=cp.float64)
                 mu_array_gpu = cp.asarray(mu_array, dtype=cp.float64)
-                power_k, power_mu, power, power_modes = run_fftpower_from_cuda(
+                power_k, power_mu, power, power_modes = cal_ps_from_cuda(
                     ps_3d,
                     [k_x_array_gpu, k_y_array_gpu, k_z_array_gpu],
                     k_array_gpu,
@@ -208,14 +136,25 @@ class FFTPower:
                 power = cp.asnumpy(power)
                 power_modes = cp.asnumpy(power_modes)
         else:
-            power_k, power_mu, power, power_modes = run_core(
+            if c_api:
+                from .CPP.fftpower import cal_ps_c_api
+                power_k, power_mu, power, power_modes = cal_ps_c_api(
                 ps_3d,
                 [k_x_array, k_y_array, k_z_array],
                 k_array,
                 mu_array,
-                linear=linear,
+                k_logarithmic=k_logarithmic,
                 nthreads=nthreads,
             )
+            else:
+                power_k, power_mu, power, power_modes = cal_ps_from_numba(
+                    ps_3d,
+                    [k_x_array, k_y_array, k_z_array],
+                    k_array,
+                    mu_array,
+                    k_logarithmic=k_logarithmic,
+                    nthreads=nthreads,
+                )
         
         masked_index = power_modes == 0
         need_index = np.logical_not(masked_index)
@@ -235,6 +174,63 @@ class FFTPower:
         self.attrs["kmax"] = kmax
         self.attrs["dk"] = dk
         return self.power
+    
+    def intergrate_fftpower(self, kmin=-1, kmax=-1, mu_min=-1, mu_max=-1, integrate="k", easy_mu_array=False, norm=False):
+        power = self.power 
+        k_array = np.nanmean(power["k"], axis=1)
+        if easy_mu_array:
+            mu_array_edges = np.linspace(0.0, 1.0, self.attrs["Nmu"]+1)
+            mu_array = (mu_array_edges[:-1] + mu_array_edges[1:]) / 2.0
+        else:
+            mu_array = np.nanmean(power["mu"], axis=0)
+        
+        if kmin <= k_array[0]:
+            k_min_index = 0
+        else:
+            k_min_index_source = np.where(k_array >= kmin)[0]
+            if len(k_min_index_source) == 0:
+                raise ValueError(f"kmin({kmin:.2f}) is too large")
+            else:
+                k_min_index = k_min_index_source[0]
+        if kmax >= k_array[-1]:
+            k_max_index = len(k_array)
+        else:
+            k_max_index_source = np.where(k_array >= kmax)[0]
+            if len(k_max_index_source) == 0:
+                raise ValueError("kmax({kmax:.2f}) is too small")
+            else:
+                k_max_index = k_max_index_source[0]
+
+        if mu_min <= mu_array[0] or mu_min < 0:
+            mu_min_index = 0
+        else:
+            mu_min_index_source = np.where(mu_array >= mu_min)[0]
+            if len(mu_min_index_source) == 0:
+                raise ValueError(f"mu_min({mu_min:.2f}) is too large")
+            else:
+                mu_min_index = mu_min_index_source[0]
+        if mu_max >= mu_array[-1] or mu_max < 0:
+            mu_max_index = len(mu_array)
+        else:
+            mu_max_index_source = np.where(mu_array >= mu_max)[0]
+            if len(mu_max_index_source) == 0:
+                raise ValueError("mu_max({mu_max:.2f}) is too small")
+            else:
+                mu_max_index = mu_max_index_source[0]
+
+        Pkmu_select = np.real(power["Pkmu"][k_min_index:k_max_index, mu_min_index:mu_max_index]) - self.attrs["shotnoise"]
+        if integrate == "k":
+            Pkmu_integrate = np.nanmean(Pkmu_select, axis=0)
+            if norm:
+                Pkmu_integrate = Pkmu_integrate / np.nanmean(Pkmu_integrate)
+            return mu_array[mu_min_index: mu_max_index], Pkmu_integrate
+        elif integrate == "mu":
+            Pkmu_integrate = np.nanmean(Pkmu_select, axis=1)
+            if norm:
+                Pkmu_integrate = Pkmu_integrate / np.nanmean(Pkmu_integrate)
+            return k_array[k_min_index: k_max_index], Pkmu_integrate
+        else:
+            raise ValueError("integrate must be k or mu")
     
     def save(self, filename):
         import joblib

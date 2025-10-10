@@ -106,12 +106,9 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, **ka
         mode: Default '2d'
         nthreads: Default 1
         device_id: If >= 0, use GPU. Default -1.
-        cuda_kernel: Only be valid when device_id >= 0. Default None
     """
     from .fftpower import FFTPower
     device_id = kargs.get("device_id", -1)
-    if device_id >= 0:
-        import cupy as cp 
     z = redshift
     Hz_f, Hz_m = Hz(z, omega_mf, w_f), Hz(z, omega_mm, w_m)
     DA_f, DA_m = DA(z, omega_mf, w_f), DA(z, omega_mm, w_m)
@@ -132,19 +129,21 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, **ka
 
     fftpower_new = FFTPower(Nmesh=Nmesh, BoxSize=boxsize_array, shotnoise=0.0)
     fftpower_new.is_run_ps_3d = True
-    _ = fftpower_new.run(
+    _ = fftpower_new.cal_ps_from_3d(
             ps_3d,
             k_min,
             k_max,
             dk,
             Nmu=Nmu,
             mode=mode,
-            linear=True,
+            k_logarithmic=False,
             nthreads=nthreads,
-            device_id=device_id
+            device_id=device_id,
+            c_api=True
     )
 
     HI_factor = cal_HI_factor(redshift, omega_mm, boxsize_array, Nmesh)
+    fftpower_new.attrs["HI_factor"] = HI_factor
     if mode == "1d":
         fftpower_new.power["Pk"] *= HI_factor ** 2 * np.prod(convert_array)
     else:

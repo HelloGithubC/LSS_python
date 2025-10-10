@@ -15,5 +15,7 @@ src/LSS_python.egg-info/SOURCES.txt
 src/LSS_python.egg-info/dependency_links.txt
 src/LSS_python.egg-info/requires.txt
 src/LSS_python.egg-info/top_level.txt
+src/LSS_python/CPP/__init__.py
+src/LSS_python/CPP/mesh.py
 src/LSS_python/cuda/fftpower.py
 src/LSS_python/cuda/mesh.py

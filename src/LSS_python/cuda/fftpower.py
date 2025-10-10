@@ -1,11 +1,11 @@
 import numpy as np 
 import cupy as cp 
 
-def get_deal_ps_core_kernel():
-    kernel_code = r'''
-    #include <cupy/complex.cuh>
-    extern "C" __global__
-    void deal_ps_core(complex<float>* ps_3d, complex<float>* ps_3d_kernel, const int nx, const int ny, const int nz, const double boxsize_prod, const double shotnoise)
+kernel_code = r'''
+#include <cupy/complex.cuh>
+extern "C" 
+{
+    __global__  void deal_ps_core(complex<float>* ps_3d, complex<float>* ps_3d_kernel, const int nx, const int ny, const int nz, const double boxsize_prod, const double shotnoise)
     {
         int iz = threadIdx.x;
         int iy = blockIdx.y;
@@ -36,20 +36,15 @@ def get_deal_ps_core_kernel():
         {
             kernel_element = 1.0;
         }
-        ps_3d[index] *= kernel_element;
         ps_3d[index] = ps_3d[index] * conj(ps_3d[index]);
         ps_3d[index].real(ps_3d[index].real() * boxsize_prod);
         ps_3d[index].imag(ps_3d[index].imag() * boxsize_prod);
         ps_3d[index].real(ps_3d[index].real() - shotnoise);
+        ps_3d[index] *= kernel_element;
         return;
     }
-    '''
-    return cp.RawKernel(kernel_code, 'deal_ps_core')
 
-def get_run_fftpower_core_kernel():
-    kernel_code = r'''
-    extern "C" __global__
-    void run_fftpower_core(const float2* ps_3d, const double* kx_array, const double* ky_array, const double* kz_array, const double* k_array, const double* mu_array, const int nx, const int ny, const int nz, const int nk, const int nmu, const double k_diff, const double mu_diff, double2* Pkmu, double* k_mesh, double* mu_mesh, unsigned long long* count)
+    __global__  void cal_ps_3d_core(const float2* ps_3d, const double* kx_array, const double* ky_array, const double* kz_array, const double* k_array, const double* mu_array, const int nx, const int ny, const int nz, const int nk, const int nmu, const double k_diff, const double mu_diff, double2* Pkmu, double* k_mesh, double* mu_mesh, unsigned long long* count)
     {
         bool use_nmu = true;
         if (nmu == 1)
@@ -112,11 +107,14 @@ def get_run_fftpower_core_kernel():
         atomicAdd(&mu_mesh[mu_i + k_i * nmu], mu * mode);
         atomicAdd(&count[mu_i + k_i * nmu], mode);
     }
-    '''
-    return cp.RawKernel(kernel_code, 'run_fftpower_core')
+}
 
-deal_ps_core_kernel = get_deal_ps_core_kernel()
-run_fftpower_core_kernel = get_run_fftpower_core_kernel()
+'''
+
+kernel_module = cp.RawModule(code=kernel_code)
+
+deal_ps_core_kernel = kernel_module.get_function('deal_ps_core')
+cal_ps_3d_core_kernel = kernel_module.get_function('cal_ps_3d_core')
 
 def deal_ps_3d_from_cuda(ps_3d_gpu, ps_kernel_3d_gpu=None, ps_3d_factor=1.0, shotnoise=0.0):
     if ps_kernel_3d_gpu is None:
@@ -124,7 +122,7 @@ def deal_ps_3d_from_cuda(ps_3d_gpu, ps_kernel_3d_gpu=None, ps_3d_factor=1.0, sho
     nx, ny, nz = ps_3d_gpu.shape
     deal_ps_core_kernel((nx,ny), (nz,), (ps_3d_gpu, ps_kernel_3d_gpu, nx, ny, nz, ps_3d_factor, shotnoise))
 
-def run_fftpower_from_cuda(ps_3d_gpu, k_arrays, k_bin_array, mu_bin_array):
+def cal_ps_from_cuda(ps_3d_gpu, k_arrays, k_bin_array, mu_bin_array):
     nx, ny, nz = ps_3d_gpu.shape
     k_x_array, k_y_array, k_z_array = k_arrays
     nk = k_bin_array.shape[0] - 1
@@ -138,7 +136,7 @@ def run_fftpower_from_cuda(ps_3d_gpu, k_arrays, k_bin_array, mu_bin_array):
     power_mu = cp.zeros((nk, nmu), dtype=cp.float64)
     modes = cp.zeros((nk, nmu), dtype = cp.uint64)
 
-    run_fftpower_core_kernel(
+    cal_ps_3d_core_kernel(
             (nx, ny), 
             (nz,),
             (ps_3d_gpu,

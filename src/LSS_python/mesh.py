@@ -2,140 +2,8 @@ import os, joblib
 import warnings
 
 import numpy as np 
-from numba import njit, prange, get_thread_id, set_num_threads
 
-@njit 
-def run_cic_single(pos, weight, field, BoxSize_array, Nmesh_array):
-    if weight is None:
-        use_weight = False
-    else:
-        use_weight = True
-    nparticle = pos.shape[0]
-    pos_i = np.zeros(3, dtype=np.uint32)
-    for i in range(nparticle):
-        sub_BoxSize = BoxSize_array / Nmesh_array
-        pos_temp = np.copy(pos[i])
-        
-        diff_ratio_temp = np.zeros((3,2), dtype=np.float64)
-        for j in range(3):
-            if pos_temp[j] < 0.0 or pos_temp[j] > BoxSize_array[j]:
-                continue
-            pos_i[j] = np.uint32(pos_temp[j] / sub_BoxSize[j])
-            if pos_i[j] == Nmesh_array[j]:
-                pos_i[j] = 0
-                pos_temp[j] = 0.0 
-            
-            diff_ratio_temp[j,0] = (pos_temp[j] - pos_i[j] * sub_BoxSize[j]) / sub_BoxSize[j]
-            diff_ratio_temp[j,1] = 1.0 - diff_ratio_temp[j,0]
-
-        x_i, y_i, z_i = pos_i 
-        x_i_next = x_i + 1 if x_i < Nmesh_array[0] - 1 else 0
-        y_i_next = y_i + 1 if y_i < Nmesh_array[1] - 1 else 0
-        z_i_next = z_i + 1 if z_i < Nmesh_array[2] - 1 else 0
-
-        weight_temp = weight[i] if use_weight else 1.0
-
-        field[x_i, y_i, z_i] += (diff_ratio_temp[0,1] * diff_ratio_temp[1,1] * diff_ratio_temp[2,1]) * weight_temp
-        field[x_i, y_i, z_i_next] += (diff_ratio_temp[0,1] * diff_ratio_temp[1,1] * diff_ratio_temp[2,0]) * weight_temp
-        field[x_i, y_i_next, z_i] += (diff_ratio_temp[0,1] * diff_ratio_temp[1,0] * diff_ratio_temp[2,1]) * weight_temp
-        field[x_i, y_i_next, z_i_next] += (diff_ratio_temp[0,1] * diff_ratio_temp[1,0] * diff_ratio_temp[2,0]) * weight_temp
-
-        field[x_i_next, y_i, z_i] += (diff_ratio_temp[0,0] * diff_ratio_temp[1,1] * diff_ratio_temp[2,1]) * weight_temp
-        field[x_i_next, y_i, z_i_next] += (diff_ratio_temp[0,0] * diff_ratio_temp[1,1] * diff_ratio_temp[2,0]) * weight_temp
-        field[x_i_next, y_i_next, z_i] += (diff_ratio_temp[0,0] * diff_ratio_temp[1,0] * diff_ratio_temp[2,1]) * weight_temp
-        field[x_i_next, y_i_next, z_i_next] += (diff_ratio_temp[0,0] * diff_ratio_temp[1,0] * diff_ratio_temp[2,0]) * weight_temp
-
-@njit(parallel=True)
-def run_cic_multithreads(pos, weight, field, BoxSize_array, Nmesh_array,nthreads=2):
-    if weight is None:
-        use_weight = False
-    else:
-        use_weight = True
-    NDIM = 3
-    if nthreads < 2:
-        raise ValueError("nthreads must be greater than 1. Or you can call run_cic_single")
-    else:
-        if field.shape[2] < nthreads:
-            raise ValueError("nthreads must be less than Nmesh. Or you can call run_cic_single")
-        nparticle = pos.shape[0]
-        batch_size = int(nparticle / nthreads)
-        rest_particle = nparticle - batch_size * nthreads
-        set_num_threads(nthreads)
-        sub_BoxSize = BoxSize_array / Nmesh_array
-        for _ in prange(nthreads):
-            thread_id = get_thread_id()
-            if thread_id < rest_particle:
-                index_start = thread_id * (batch_size + 1)
-                index_end = index_start + batch_size + 1
-            else:
-                index_start = thread_id * batch_size + rest_particle
-                index_end = index_start + batch_size
-            for i in range(len(pos)):
-                pos_temp = np.copy(pos[i])
-                for j in range(NDIM):
-                    if pos_temp[j] < 0.0 or pos_temp[j] > BoxSize_array[j]:
-                        continue
-                z_i = np.int64(pos_temp[2] / sub_BoxSize[2])
-                if z_i == Nmesh_array[2]:
-                    z_i = 0
-                    pos_temp[2] = 0.0
-                z_i_next = z_i + 1 if z_i < Nmesh_array[2] - 1 else 0
-                if (z_i < index_start or z_i >= index_end) and (z_i_next < index_start or z_i_next >= index_end):
-                    continue
-                else:
-                    diff_ratio_temp = np.zeros((NDIM,2), dtype=np.float64)
-                    x_i = np.int64(pos_temp[0] / sub_BoxSize[0])
-                    if x_i == Nmesh_array[0]:
-                        x_i = 0
-                        pos_temp[0] = 0.0
-                    x_i_next = x_i + 1 if x_i < Nmesh_array[0] - 1 else 0
-                    y_i = np.int64(pos_temp[1] / sub_BoxSize[1])
-                    if y_i == Nmesh_array[1]:
-                        y_i = 0 
-                        pos_temp[1] = 0.0
-                    y_i_next = y_i + 1 if y_i < Nmesh_array[1] - 1 else 0
-
-                    pos_i = np.array([x_i, y_i, z_i], dtype=np.int64)
-
-                    for j in range(NDIM):
-                        diff_ratio_temp[j, 0] = (pos_temp[j] - pos_i[j] * sub_BoxSize[j]) / sub_BoxSize[j]
-                        diff_ratio_temp[j, 1] = 1.0 - diff_ratio_temp[j, 0]
-
-                    weight_temp = weight[i] if use_weight else 1.0
-
-                    if index_start - 1 <= z_i < index_end - 1:
-                        field[x_i, y_i, z_i] += (diff_ratio_temp[0,1] * diff_ratio_temp[1,1] * diff_ratio_temp[2,1]) * weight_temp
-                        field[x_i, y_i_next, z_i] += (diff_ratio_temp[0,1] * diff_ratio_temp[1,0] * diff_ratio_temp[2,1]) * weight_temp
-                        field[x_i_next, y_i, z_i] += (diff_ratio_temp[0,0] * diff_ratio_temp[1,1] * diff_ratio_temp[2,1]) * weight_temp
-                        field[x_i_next, y_i_next, z_i] += (diff_ratio_temp[0,0] * diff_ratio_temp[1,0] * diff_ratio_temp[2,1]) * weight_temp
-
-                        field[x_i, y_i, z_i_next] += (diff_ratio_temp[0,1] * diff_ratio_temp[1,1] * diff_ratio_temp[2,0]) * weight_temp
-                        field[x_i, y_i_next, z_i_next] += (diff_ratio_temp[0,1] * diff_ratio_temp[1,0] * diff_ratio_temp[2,0]) * weight_temp
-                        field[x_i_next, y_i, z_i_next] += (diff_ratio_temp[0,0] * diff_ratio_temp[1,1] * diff_ratio_temp[2,0]) * weight_temp
-                        field[x_i_next, y_i_next, z_i_next] += (diff_ratio_temp[0,0] * diff_ratio_temp[1,0] * diff_ratio_temp[2,0]) * weight_temp
-                    elif z_i == index_end - 1:
-                        field[x_i, y_i, z_i] += (diff_ratio_temp[0,1] * diff_ratio_temp[1,1] * diff_ratio_temp[2,1]) * weight_temp
-                        field[x_i, y_i_next, z_i] += (diff_ratio_temp[0,1] * diff_ratio_temp[1,0] * diff_ratio_temp[2,1]) * weight_temp
-                        field[x_i_next, y_i, z_i] += (diff_ratio_temp[0,0] * diff_ratio_temp[1,1] * diff_ratio_temp[2,1]) * weight_temp
-                        field[x_i_next, y_i_next, z_i] += (diff_ratio_temp[0,0] * diff_ratio_temp[1,0] * diff_ratio_temp[2,1]) * weight_temp
-                    else:
-                        continue 
-
-@njit(parallel=True)
-def do_compensated(complex_field, k_arrays, ntreads=1):
-    set_num_threads(ntreads)
-    k_x_array, k_y_array, k_z_array = k_arrays
-    for i in prange(complex_field.shape[0]):
-        k_x = k_x_array[i]
-        w_x = np.sqrt(1.0 - 2.0/3.0 * np.sin(k_x/2.0)**2)
-        for j in range(complex_field.shape[1]):
-            k_y = k_y_array[j]
-            w_y = np.sqrt(1.0 - 2.0/3.0 * np.sin(k_y/2.0)**2)
-            for k in range(complex_field.shape[2]):
-                k_z = k_z_array[k]
-                w_z = np.sqrt(1.0 - 2.0/3.0 * np.sin(k_z/2.0)**2)
-                complex_field[i, j, k] /= w_x * w_y * w_z
-                
+from .JIT.mesh import to_mesh_numba, do_compensation_from_numba, do_interlacing_from_numba
 
 class Mesh:
     def __init__(self, Nmesh, BoxSize):
@@ -151,34 +19,34 @@ class Mesh:
         self.attrs = {
             "Nmesh": self.Nmesh, 
             "BoxSize": self.BoxSize,
+            "resampler": None,
+            "compensated":None, 
+            "interlaced": None
         }
 
         self.real_field = None 
         self.real_field_gpu = None 
+        self.real_field_inverse = None
+        self.real_field_inverse_gpu = None
         self.complex_field = None
         self.complex_field_gpu = None
 
-    def run_cic(self, pos, weight, nthreads=1, device_id=-1, is_norm=False, field_extern=None):
+    def to_mesh(self, pos, resampler="CIC", interlaced=False, weights=None, values=None, nthreads=1, device_id=-1, is_norm=False, field_extern=None, c_api=False) -> None:
         """ The function to run CIC
         pos: ndarray, shape=(nparticle, 3); or list of ndarray
+        resampler: str, the resampler to use, can be "NGP", "CIC", "TSC , "PCS"
+        interlaced: bool. If True, will do shift and set field as self.real_field_shift default.
         weight: ndarray, shape=(nparticle,); or list of ndarray
+        values: ndarray, shape=(nparticle,); or list of ndarray
 
+        nthreads: int, the number of threads to use. Only be valid when using C/C++ API
+        device_id: int, the id of GPU device(if >= 0). Advice to set pos, weights and values as float32 type, because only the float32 array will be copied to GPU. (float64 will be converted to float32)
+
+        c_api: bool, whether to use C/C++ API. Only support CPU
         """
-        if device_id >= 0:
-            import cupy as cp 
-            from .cuda.mesh import run_cic_from_cuda
-            use_gpu = True 
-            if field_extern is None:
-                with cp.cuda.Device(device_id):
-                    self.real_field_gpu = cp.zeros((self.Nmesh[0], self.Nmesh[1], self.Nmesh[2]), dtype=cp.float32)
-            else:
-                self.real_field_gpu = field_extern
-        else:
-            use_gpu = False 
-            if field_extern is None:
-                self.real_field = np.zeros((self.Nmesh[0], self.Nmesh[1], self.Nmesh[2]), dtype=np.float32)
-            else:
-                self.real_field = field_extern
+        self.attrs["resampler"] = resampler
+        self.attrs["interlaced"] = interlaced
+        self.attrs["is_norm"] = is_norm
             
         if isinstance(pos, np.ndarray):
             pos_list = [pos,]
@@ -186,31 +54,68 @@ class Mesh:
             pos_list = list(pos)
         else:
             raise ValueError("pos must be a ndarray or list of ndarray")
-        if weight is not None:
-            if isinstance(weight, np.ndarray):
-                weight_list = [weight,]
-            elif isinstance(weight, list) or isinstance(weight, tuple):
-                weight_list = list(weight)
+        if weights is not None:
+            if isinstance(weights, np.ndarray):
+                weights_list = [weights,]
+            elif isinstance(weights, list) or isinstance(weights, tuple):
+                weights_list = list(weights)
             else:
                 raise ValueError("weight must be a ndarray or list of ndarray")
-            use_weight = True
         else:
-            use_weight = False
+            weights_list = [None,] * len(pos_list)
+
+        if values is not None:
+            if isinstance(values, np.ndarray):
+                values_list = [values,]
+            elif isinstance(values, list) or isinstance(values, tuple):
+                values_list = list(values)
+            else:
+                raise ValueError("values must be a ndarray or list of ndarray")
+        else:
+            values_list = [None, ] * len(pos_list)
+
+        field_dtype = pos_list[0].dtype
+
+        if device_id >= 0:
+            if c_api:
+                raise ValueError("c_api is not valid when using GPU")
+            import cupy as cp 
+            from .cuda.mesh import to_mesh_from_cuda
+            use_gpu = True 
+            if field_extern is None:
+                with cp.cuda.Device(device_id):
+                    self.real_field_gpu = cp.zeros((self.Nmesh[0], self.Nmesh[1], self.Nmesh[2]), dtype=cp.float32)
+            else:
+                self.real_field_gpu = field_extern
+            if interlaced:
+                self.real1_gpu = cp.zeros((self.Nmesh[0], self.Nmesh[1], self.Nmesh[2]), dtype=cp.float32)
+                self.real2_gpu = cp.zeros((self.Nmesh[0], self.Nmesh[1], self.Nmesh[2]), dtype=cp.float32)
+        else:
+            use_gpu = False 
+            if field_extern is None:
+                self.real_field = np.zeros((self.Nmesh[0], self.Nmesh[1], self.Nmesh[2]), dtype=field_dtype)
+            else:
+                self.real_field = field_extern
+            if interlaced:
+                self.real1 = np.zeros((self.Nmesh[0], self.Nmesh[1], self.Nmesh[2]), dtype=field_dtype)
+                self.real2 = np.zeros((self.Nmesh[0], self.Nmesh[1], self.Nmesh[2]), dtype=field_dtype)
         
         N_total = 0 
         W_total = 0.0 
         W2_total = 0.0 
 
         for i, pos_e in enumerate(pos_list):
-            if pos_e.dtype != np.float32:
+            if pos_e.dtype != np.float32 or pos_e.dtype != np.float64:
                 pos_e = pos_e.astype(np.float32)
-            if use_weight:
-                weight_e = weight_list[i]
-                if weight_e.dtype != np.float32:
-                    weight_e = weight_e.astype(np.float32)
-            else:
-                weight_e = None
-
+            weight_e = weights_list[i]
+            if weight_e is not None:
+                if weight_e.dtype != pos_e.dtype:
+                    weight_e = weight_e.astype(pos_e.dtype)
+            value_e = values_list[i]
+            if value_e is not None:
+                if value_e.dtype != pos_e.dtype:
+                    value_e = value_e.astype(pos_e.dtype)
+            
             N_total += pos_e.shape[0]
             W_total += np.sum(weight_e) if weight_e is not None else N_total
             W2_total += np.sum(weight_e**2) if weight_e is not None else N_total
@@ -218,88 +123,153 @@ class Mesh:
             if use_gpu:
                 with cp.cuda.Device(device_id):
                     pos_gpu = cp.asarray(pos_e, dtype=cp.float32)
-                    if use_weight:
+                    if weight_e is not None:
                         weight_gpu = cp.asarray(weight_e, dtype=cp.float32)
                     else:
                         weight_gpu = None
-                    run_cic_from_cuda(pos_gpu, weight_gpu, self.real_field_gpu, cp.asarray(self.BoxSize, dtype=cp.float64), cp.asarray(self.Nmesh, dtype=cp.int32))
+                    if value_e is not None:
+                        value_gpu = cp.asarray(value_e, dtype=cp.float32)
+                    else:
+                        value_gpu = None
+                    if interlaced:
+                        to_mesh_from_cuda(pos_gpu, weight_gpu, value_gpu, self.real1_gpu, cp.asarray(self.BoxSize, dtype=cp.float64), cp.asarray(self.Nmesh, dtype=cp.uint32), resampler=resampler, shift=0.0)
+                        to_mesh_from_cuda(pos_gpu, weight_gpu, value_gpu, self.real2_gpu, cp.asarray(self.BoxSize, dtype=cp.float64), cp.asarray(self.Nmesh, dtype=cp.uint32), resampler=resampler, shift=0.5)
+                    else:
+                        to_mesh_from_cuda(pos_gpu, weight_gpu, value_gpu, self.real_field_gpu, cp.asarray(self.BoxSize, dtype=cp.float64), cp.asarray(self.Nmesh, dtype=cp.uint32), resampler=resampler, shift=0.0)
             else:
-                if nthreads == 1:
-                    run_cic_single(pos_e, weight_e, self.real_field, self.BoxSize, self.Nmesh)
+                if not c_api:
+                    if interlaced:
+                        to_mesh_numba(pos_e, weight_e, value_e, self.real1, self.BoxSize, self.Nmesh, resampler=resampler, shift=0.0)
+                        to_mesh_numba(pos_e, weight_e, value_e, self.real2, self.BoxSize, self.Nmesh, resampler=resampler, shift=0.5)
+                    else:
+                        to_mesh_numba(pos_e, weight_e, value_e, self.real_field, self.BoxSize, self.Nmesh, resampler=resampler, shift=0.0)
                 else:
-                    run_cic_multithreads(pos_e, weight_e, self.real_field, self.BoxSize, self.Nmesh, nthreads)
+                    from .CPP.mesh import to_mesh_c_api
+                    if interlaced:
+                        to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real1, weight_e, value_e, resampler=resampler, shift=0.0, nthreads=nthreads)
+                        to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real2, weight_e, value_e, resampler=resampler, shift=0.5, nthreads=nthreads)
+                    else:
+                          to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real_field, weight_e, value_e, resampler=resampler, shift=0.0, nthreads=nthreads)
+
         self.attrs["N"] = N_total 
         self.attrs["W"] = W_total
         self.attrs["W2"] = W2_total
-        self.attrs["num_per_cell"] = W_total / np.prod(self.Nmesh)
-        self.attrs["shotnoise"] = np.prod(self.BoxSize) * W2_total / W_total**2
+        self.attrs["num_per_cell"] = (W_total / np.prod(self.Nmesh)).astype(field_dtype)
+        self.attrs["shotnoise"] = (np.prod(self.BoxSize) * W2_total / W_total**2).astype(field_dtype)
         if is_norm:
             if use_gpu:
-                self.real_field_gpu /= self.attrs["num_per_cell"]
+                if interlaced:
+                    self.real_field_gpu[...] = (self.real1_gpu + self.real2_gpu) / 2.0 / self.attrs["num_per_cell"]
+                else:
+                    self.real_field_gpu /= self.attrs["num_per_cell"]
             else:
-                self.real_field /= self.attrs["num_per_cell"]
+                if interlaced:
+                    self.real_field[...] = (self.real1 + self.real2) / 2.0 / self.attrs["num_per_cell"]
+                else:
+                    self.real_field /= self.attrs["num_per_cell"]
+        else:
+            self.attrs["shotnoise"] *= self.attrs["num_per_cell"] ** 2
+            if use_gpu:
+                if interlaced:
+                    self.real_field_gpu[...] = (self.real1_gpu + self.real2_gpu) / 2.0
+            else:
+                if interlaced:
+                    self.real_field[...] = (self.real1 + self.real2) / 2.0
 
-    def r2c(self, compensated=False, k_arrays=None, device_id=-1, nthreads=1):
+    def r2c(self, compensated=False, k_arrays_interlace=None, device_id=-1, nthreads=1, c_api=False) -> None:
+        self.attrs["compensated"] = compensated
         if device_id >= 0:
             from cupyx.scipy.fft import rfftn
             import cupy as cp
+            from .cuda.mesh import do_interlacing_from_cuda
             if self.real_field_gpu is None:
                 raise ValueError('No real field to convert to complex field.')
             else:
                 with cp.cuda.Device(device_id):
-                    self.complex_field_gpu = rfftn(self.real_field_gpu) / cp.prod(cp.asarray(self.Nmesh, dtype=cp.float32))
+                    if self.attrs["interlaced"]:
+                        complex1_gpu = rfftn(self.real1_gpu, norm="forward")
+                        complex2_gpu = rfftn(self.real2_gpu, norm="forward")
+                        if k_arrays_interlace is not None:
+                            k_arrays_interlace_gpu = [cp.asarray(k_arrays_interlace[i], dtype=cp.float32) for i in range(len(k_arrays_interlace))]
+                        do_interlacing_from_cuda(complex1_gpu, complex2_gpu, cp.asarray(self.BoxSize, dtype=cp.float32), cp.asarray(self.Nmesh, dtype=cp.int32), k_arrays_interlace_gpu)
+                        if self.attrs["is_norm"]:
+                            self.complex_field_gpu = self.complex_field_gpu / self.attrs["num_per_cell"]
+                        else:
+                            self.complex_field_gpu = complex1_gpu 
+                    else:
+                        self.complex_field_gpu = rfftn(self.real_field_gpu, norm="forward")
         else:
             from scipy.fft import rfftn
             if self.real_field is None:
                 raise ValueError('No real field to convert to complex field.')
             else:
-                self.complex_field = rfftn(self.real_field) / self.Nmesh.astype(np.float32).prod()
+                if self.attrs["interlaced"]:
+                    complex1 = rfftn(self.real1, norm="forward", workers=nthreads)
+                    complex2 = rfftn(self.real2, norm="forward", workers=nthreads)
+                    if c_api:
+                        from .CPP.mesh import do_interlacing_c_api
+                        do_interlacing_c_api(complex1, complex2, self.BoxSize, self.Nmesh, k_arrays_interlace, nthreads) 
+                    else:
+                        do_interlacing_from_numba(complex1, complex2, self.BoxSize, self.Nmesh, k_arrays_interlace)
+                    if self.attrs["is_norm"]:
+                        self.complex_field = complex1 / self.attrs["num_per_cell"]
+                    else:
+                        self.complex_field = complex1
+                else:
+                    self.complex_field = rfftn(self.real_field, norm="forward", workers=nthreads)
         if compensated:
-            self.do_compensated(k_arrays, device_id, nthreads)
+            self.do_compensation(device_id, nthreads, c_api)
 
     def c2r(self, device_id=-1):
         if device_id >= 0:
-            from cupyx.scipy.fft import ifftn 
+            from cupyx.scipy.fft import irfftn 
             import cupy as cp 
             if self.complex_field_gpu is None:
                 raise ValueError('No complex field to convert to real field.')
             else:
                 with cp.cuda.Device(device_id):
-                    self.real_field_gpu = ifftn(self.complex_field_gpu) * cp.prod(self.Nmesh.astype(cp.float32))
+                    self.real_field_inverse_gpu = irfftn(self.complex_field_gpu, norm="forward")
         else:
-            from scipy.fft import ifftn 
-            self.real_field = ifftn(self.complex_field) * self.Nmesh.astype(np.float32).prod()
+            from scipy.fft import irfftn 
+            self.real_field_inverse = irfftn(self.complex_field, norm="forward")
 
-    def do_compensated(self, k_arrays, device_id=-1, nthreads=1):
+    def do_compensation(self, device_id=-1, nthreads=1, c_api=False):
         if device_id >= 0:
             import cupy as cp 
-            from .cuda.mesh import do_compensated_from_cuda
+            from .cuda.mesh import do_compensation_from_cuda
             use_gpu = True 
             k_z_length = self.complex_field_gpu.shape[2]
         else:
             use_gpu = False 
             k_z_length = self.complex_field.shape[2]
         
-        if k_arrays is None:
-            k_arrays = [
-            np.fft.fftfreq(n=self.Nmesh[0], d=1.0).astype(np.float32)
+        k_arrays = [
+            np.fft.fftfreq(n=self.Nmesh[0], d=1.0)
             * 2.0
             * np.pi,
-            np.fft.fftfreq(n=self.Nmesh[1], d=1.0).astype(np.float32)
+            np.fft.fftfreq(n=self.Nmesh[1], d=1.0)
             * 2.0
             * np.pi,
-            np.fft.fftfreq(n=self.Nmesh[2], d=1.0).astype(np.float32)[
+            np.fft.fftfreq(n=self.Nmesh[2], d=1.0)[
                 : k_z_length
             ]
             * 2.0
             * np.pi,
         ]
         if use_gpu:
+            if self.complex_field_gpu is None:
+                raise ValueError('No complex field to do compensated summation.')
             with cp.cuda.Device(device_id):
                 k_arrays_gpu = [cp.asarray(k_array, dtype=cp.float32) for k_array in k_arrays]
-                do_compensated_from_cuda(self.complex_field_gpu, k_arrays_gpu)
+                do_compensation_from_cuda(self.complex_field_gpu, k_arrays_gpu, resampler=self.attrs["resampler"])
         else:
-            do_compensated(self.complex_field, k_arrays, nthreads)
+            if self.complex_field is None:
+                raise ValueError('No complex field to do compensated summation.')
+            if c_api:
+                from .CPP.mesh import do_compensation_c_api
+                do_compensation_c_api(self.complex_field, k_arrays, resampler=self.attrs["resampler"], interlaced=self.attrs["interlaced"], nthreads=nthreads)
+            else:
+                do_compensation_from_numba(self.complex_field, k_arrays, resampler=self.attrs["resampler"], interlace=self.attrs["interlaced"], nthreads=nthreads)
 
     def save(self, output_dir, mode="all"):
         if not os.path.exists(output_dir):
@@ -336,7 +306,7 @@ class Mesh:
                     np.save(os.path.join(output_dir, "complex_field.npy"), cp.asnumpy(self.real_field_gpu))
 
     @classmethod
-    def load(cls, input_dir):
+    def load(cls, input_dir, only_real=False, only_complex=False):
         attrs_filename = os.path.join(input_dir, "attrs_dict.pkl")
         real_field_filename = os.path.join(input_dir, "real_field.npy")
         complex_field_filename = os.path.join(input_dir, "complex_field.npy")
@@ -346,11 +316,11 @@ class Mesh:
         else:
             self = Mesh(Nmesh=512, BoxSize=1000.0) # Arbitrary values to initialize the object
 
-            if os.path.exists(real_field_filename):
+            if os.path.exists(real_field_filename) and not only_complex:
                 self.real_field = np.load(real_field_filename)
             else:
                 self.real_field = None
-            if os.path.exists(complex_field_filename):
+            if os.path.exists(complex_field_filename) and not only_real:
                 self.complex_field = np.load(complex_field_filename)
             else:
                 self.complex_field = None
