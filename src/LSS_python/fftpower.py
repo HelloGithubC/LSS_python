@@ -40,10 +40,11 @@ class FFTPower:
             "shotnoise": shotnoise,
         }
         self.power = None
+        self.removed_shotnoise = False
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
-    mode="1d", k_logarithmic=False, ps_3d_inplace=True, nthreads=1, device_id=-1, c_api=False):
-        shotnoise = 0.0
+    mode="1d", k_logarithmic=False, ps_3d_inplace=True, nthreads=1, device_id=-1, c_api=False, test_mode=False):
+        shotnoise = self.attrs["shotnoise"]
         if device_id >= 0:
             import cupy as cp
             if ps_3d_inplace:
@@ -61,13 +62,14 @@ class FFTPower:
             boxsize_prod = np.prod(self.BoxSize, dtype=np.float32)
         
         deal_ps_3d(ps_3d_need, ps_3d_kernel=None, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, nthreads=nthreads)
+        self.removed_shotnoise = True
 
-        return self.cal_ps_from_3d(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
+        return self.cal_ps_from_3d(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api, test_mode=test_mode)
 
     def cal_ps_from_3d(
         self, ps_3d,
         kmin, kmax, dk, Nmu=None, k_arrays=None,
-        mode="1d", k_logarithmic=False, nthreads=1, device_id=-1, c_api=False
+        mode="1d", k_logarithmic=False, nthreads=1, device_id=-1, c_api=False, test_mode=False
     ):
         if device_id >= 0:
             import cupy as cp
@@ -156,6 +158,17 @@ class FFTPower:
                     nthreads=nthreads,
                 )
         
+        if not self.removed_shotnoise:
+            power -= self.attrs["shotnoise"]
+        if test_mode:
+            self.test_mode = True
+            if mode == "2d":
+                self.power_test = {"k": np.copy(power_k), "mu": np.copy(power_mu), "Pkmu": np.copy(power), "modes": np.copy(power_modes)}
+            else:
+                self.power_test = {"k": np.copy(power_k).ravel(), "Pk": np.copy(power).ravel(), "modes": np.copy(power_modes).ravel()}
+        else:
+            self.test_mode = False
+
         masked_index = power_modes == 0
         need_index = np.logical_not(masked_index)
         power_k[masked_index] = np.nan 
@@ -218,7 +231,7 @@ class FFTPower:
             else:
                 mu_max_index = mu_max_index_source[0]
 
-        Pkmu_select = np.real(power["Pkmu"][k_min_index:k_max_index, mu_min_index:mu_max_index]) - self.attrs["shotnoise"]
+        Pkmu_select = np.real(power["Pkmu"][k_min_index:k_max_index, mu_min_index:mu_max_index])
         if integrate == "k":
             Pkmu_integrate = np.nanmean(Pkmu_select, axis=0)
             if norm:
@@ -239,6 +252,8 @@ class FFTPower:
             "power": self.power,
             "attrs": self.attrs,
         }
+        if self.test_mode:
+            save_dict["power_test"] = self.power_test
         joblib.dump(save_dict, filename)
 
     @classmethod

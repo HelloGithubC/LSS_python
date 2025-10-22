@@ -77,9 +77,9 @@ def cal_rho(distance_array, h, use_max_distance_as_h=False):
         h = np.max(distance_array) / 2.0
     return np.sum(w_kernel(distance_array, h))
 
-def create_rho(data, boxsize, nthreads=1):
+def create_rho(data, boxsize, k=30, nthreads=1):
     kdtree = KDTree(data, boxsize=boxsize + 1e-5)
-    distance_array, _ = kdtree.query(data, k=30, workers=nthreads)
+    distance_array, _ = kdtree.query(data, k=k, workers=nthreads)
     rho_array = cal_rho_array(distance_array, h=None, use_max_distance_as_h=True)
     data_new = np.concatenate([data, rho_array[:, None]], axis=1)
     return data_new

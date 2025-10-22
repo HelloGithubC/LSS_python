@@ -57,7 +57,7 @@ class xismu(object):
             self.RR[self.RR == 0] = 1e-15
         
     @classmethod
-    def load(cls, filename, data_type="CUTE", smax=150, sbin=150, mubin=120, deal_with_0s0mu=True):
+    def load(cls, filename, data_type="BINARY", smax=150, sbin=150, mubin=120, deal_with_0s0mu=True):
         """
             deal_with_0s0mu: deal with the case that s=0 and mu=0. Only be valid when using BINARY data.
         """
@@ -82,7 +82,7 @@ class xismu(object):
             raise ValueError("S and Mu must be included in the data when using load")
         return self
 
-    def dump(self, filename, with_weight=True, has_converted=False):
+    def save(self, filename, with_weight=True, has_converted=False):
         result_dict = {}
         result_dict["with_weight"] = with_weight
         if with_weight:
@@ -154,7 +154,8 @@ class xismu(object):
             self.DD[0,0] = 0.0 
             self.DR[0,0] = 0.0
             self.RR[0,0] = 1e-15
-            self.xis[0,0] = 0.0
+            if self.xis is not None:
+                self.xis[0,0] = 0.0
         
         s_array = source.get("s_array", None)
         mu_array = source.get("mu_array", None)
