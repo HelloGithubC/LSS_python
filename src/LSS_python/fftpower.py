@@ -62,7 +62,7 @@ class FFTPower:
             boxsize_prod = np.prod(self.BoxSize, dtype=np.float32)
         
         deal_ps_3d(ps_3d_need, ps_3d_kernel=None, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, nthreads=nthreads)
-        self.removed_shotnoise = True
+        self.removed_shotnoise = True # Avoid shotnoise being removed twice
 
         return self.cal_ps_from_3d(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api, test_mode=test_mode)
 
@@ -163,9 +163,9 @@ class FFTPower:
         if test_mode:
             self.test_mode = True
             if mode == "2d":
-                self.power_test = {"k": np.copy(power_k), "mu": np.copy(power_mu), "Pkmu": np.copy(power), "modes": np.copy(power_modes)}
+                self.power_test = {"k": np.copy(power_k), "mu": np.copy(power_mu), "Pkmu": np.copy(np.real(power)), "Pkmu_C": np.copy(power), "modes": np.copy(power_modes)}
             else:
-                self.power_test = {"k": np.copy(power_k).ravel(), "Pk": np.copy(power).ravel(), "modes": np.copy(power_modes).ravel()}
+                self.power_test = {"k": np.copy(power_k).ravel(), "Pk": np.copy(np.real(power)).ravel(), "Pk_C": np.copy(power).ravel(), "modes": np.copy(power_modes).ravel()}
         else:
             self.test_mode = False
 
