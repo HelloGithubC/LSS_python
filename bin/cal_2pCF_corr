@@ -1,4 +1,4 @@
-#! /home/xiaoliang/.conda/envs/xiaoliang/bin/python -u
+#! python
 
 import numpy as np 
 from LSS_python.tpcf import cal_tpCF_from_pairs, run_tpCF
@@ -51,7 +51,7 @@ def read_data(filename, data_type, pos_key=None, weight_key=None, weight_set_one
         
     
 parser = argparse.ArgumentParser(
-    prog="cal_tpCF_corr.py", usage="To cal tpCF with Corrfunc."
+    prog="cal_tpCF_box", usage="To cal tpCF with Corrfunc for simulation box"
 )
 
 parser.add_argument("data_filename", help="Need suffix to support the automatic naming rules. Or use --output_filename and --rr_filename to specify the relevant files.", type=str)

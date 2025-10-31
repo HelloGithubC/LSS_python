@@ -1,6 +1,7 @@
 import joblib, os
 import numpy as np 
 from Corrfunc.theory import DDsmu
+from Corrfunc.mocks import DDsmu_mocks
 
 from .base import Hz, DA, comov_dist, traz
 
@@ -522,6 +523,84 @@ def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, 
                     joblib.dump(RR_result, output_RR)
     return result_dict
 
+def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_parts=["all"], refine_factors=(2, 2, 1), output_dict=None, nthreads=1, verbose=False):
+    """
+    mock_catalog & random_catalog: ndarray, three cols: [x, y, z](without weight) or four cols: [x, y, z, weight]
+    run_parts: List. Support all, ALL, DD, DR, RR. If including all or ALL, run_parts will be set to ["DD", "DR", "RR"]
+    """
+
+    if "all" in run_parts or "ALL" in run_parts:
+        run_parts = ["DD", "DR", "RR"]
+    if isinstance(run_parts, str):
+        run_parts = [run_parts]
+
+    if "DD" in run_parts or "DR" in run_parts:
+        if mock_catalog.dtype != random_catalog.dtype:
+            if mock_catalog.dtype == np.float32:
+                random_catalog = mock_catalog.astype(np.float32, copy=False)
+            elif mock_catalog.dtype == np.float64:
+                random_catalog = mock_catalog.astype(np.float64, copy=False)
+            else:
+                raise ValueError("The data type of mock_catalog and random_catalog should be np.float32 or np.float64")
+        
+    if output_dict is not None:
+        output_DD = output_dict.get("DD", None)
+        output_DR = output_dict.get("DR", None)
+        output_RR = output_dict.get("RR", None)
+
+    x_refine_factor, y_refine_factor, z_refine_factor = refine_factors
+    result_dict = {
+        "DD": None,
+        "DR": None,
+        "RR": None,
+    }
+    for run_part in run_parts:
+        if run_part == "DD":
+            if mock_catalog is None:
+                raise ValueError("DD: mock_catalog is not set")
+            else:
+                autocorr = True 
+                if verbose:
+                    print("Now running DD")
+                if with_weight:
+                    DD_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, weights1=mock_catalog[:,3], weight_type="pair_product", verbose=verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                else:
+                    DD_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, verbose=verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                result_dict["DD"] = DD_result
+                if output_DD is not None:
+                    joblib.dump(DD_result, output_DD)
+            
+        if run_part == "DR":
+            if mock_catalog is None or random_catalog is None:
+                raise ValueError("DR: mock_catalog or random_catalog is not set")
+            else:
+                if verbose:
+                    print("Now running DR")
+                autocorr = False 
+                if with_weight:
+                    DR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, weights1=mock_catalog[:,3], RA2=random_catalog[:,0], DEC2=random_catalog[:,1], CZ2=random_catalog[:,2], weights2=random_catalog[:,3], weight_type="pair_product", verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                else:
+                    DR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, RA2=random_catalog[:,0], DEC2=random_catalog[:,1], CZ2=random_catalog[:,2], verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                result_dict["DR"] = DR_result
+                if output_DR is not None:
+                    joblib.dump(DR_result, output_DR)
+                    
+        if run_part == "RR":
+            if random_catalog is None:
+                raise ValueError("RR: random_catalog is not set")
+            else:
+                if verbose:
+                    print("Now running RR")
+                autocorr = True 
+                if with_weight:
+                    RR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=random_catalog[:,0], DEC1=random_catalog[:,1], CZ1=random_catalog[:,2], is_comoving_dist=True, weights1=random_catalog[:,3], weight_type="pair_product", verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                else:
+                    RR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=random_catalog[:,0], DEC1=random_catalog[:,1], CZ1=random_catalog[:,2], is_comoving_dist=True, verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                result_dict["RR"] = RR_result
+                if output_RR is not None:
+                    joblib.dump(RR_result, output_RR)
+    return result_dict
+
 def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mubin, with_weight=False):
     result_dict = {}
     result_dict["DDnpairs"] = DD_result["npairs"].reshape(sbin, mubin)
@@ -545,7 +624,8 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
         RR = result_dict["RRnpairs"]
 
     result_dict["sedges"] = np.append(DD_result["smin"].reshape(sbin, mubin)[:,0], DD_result["smax"].reshape(sbin, mubin)[-1,0])
-    result_dict["muedges"] = np.append([0], DD_result["mu_max"].reshape(sbin, mubin)[0])
+    mumax_str = "mumax" if "mumax" in DD_result.dtype.names else "mu_max"
+    result_dict["muedges"] = np.append([0], DD_result[mumax_str].reshape(sbin, mubin)[0])
 
     dataNum = data.shape[0]
     randomNum = random.shape[0]

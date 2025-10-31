@@ -3,7 +3,6 @@
 __pycache__/
 src/LSS_python/cuda/__pycache__/
 build/
-bin/
 tests/
 
 # vscode settings #
