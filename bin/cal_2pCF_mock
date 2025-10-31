@@ -1,0 +1,152 @@
+#! python
+
+import numpy as np 
+import argparse, os, sys
+import joblib 
+
+from LSS_python.tpcf import run_tpCF_mock, cal_tpCF_from_pairs
+
+def read_data(filename): # 临时版本
+    return np.load(filename)
+
+def split_filename(filename):
+    file_dir, file_name = os.path.split(filename)
+    if file_dir == "":
+        pass
+    else:
+        file_dir += "/"
+    file_name, file_ext = os.path.splitext(file_name)
+    return file_dir, file_name, file_ext
+
+parser = argparse.ArgumentParser(prog="run_2pCF_mock", usage="To run mock corr")
+
+parser.add_argument("mock_filename", help="data filename. Format: RA, DEC, Z(comving distance), Weight(optional, need wight_weight set)")
+parser.add_argument("random_filename", help="random filename. Format: The same as mock_filename")
+
+parser.add_argument("--s_min", "-smin", type=float, default=0.0, help="The minimum separation. Default: 0.0")
+parser.add_argument("--s_max", "-smax", type=float, default=150.0, help="The maximum separation. Default: 150.0") 
+parser.add_argument("--s_bin", "-sbin", type=int, default=150, help="The s bin size. Default: 150")
+parser.add_argument("--mu_bin", "-mubin", type=int, default=120, help="The mu bin size. Default: 120")
+parser.add_argument("--with_weight", "-ww", action="store_true", help="Use weight")
+parser.add_argument("--weight_pow", "-wp", type=float, default=0.0, help="The weight power. Default: 0.0 (default mean not weight, so with_weight will be ignored)")
+parser.add_argument("--xyz_refine_factors", "-xyz", type=int, nargs=3, default=[2, 2, 1], help="The refine factors for xyz. Default: [2, 2, 1]")
+
+parser.add_argument("--rr_filename", "-rr", help="The output filename for rr", default=None)
+parser.add_argument("--tpcf_filename", "-o", help="The output filename for tpcf", default=None)
+
+parser.add_argument("--nthreads", "-n", type=int, default=1, help="The number of threads to use")
+
+parser.add_argument("--save_dd_dr", "-save", action="store_true", help="Save the dd and dr")
+parser.add_argument("--only_run_rr", "-only_rr", action="store_true", help="Only run rr")
+parser.add_argument("--force", "-f", action="store_true", help="Force overwrite")
+parser.add_argument("--force_rr", "-frr", action="store_true", help="Force overwrite rr")
+parser.add_argument("--verbose", "-v", action="store_true", help="Verbose")
+
+if len(sys.argv) == 1:
+    parser.print_help()
+    sys.exit(0)
+args = parser.parse_args()
+
+mock_filename = args.mock_filename
+random_filename = args.random_filename
+
+smin = args.s_min
+smax = args.s_max
+sbin = args.s_bin
+mubin = args.mu_bin
+with_weight = args.with_weight
+weight_power = args.weight_pow
+xyz_refine_factors = args.xyz_refine_factors
+
+rr_filename = args.rr_filename
+tpcf_filename = args.tpcf_filename 
+
+nthreads = args.nthreads
+
+save_dd_dr = args.save_dd_dr
+only_run_rr = args.only_run_rr
+force = args.force
+force_rr = args.force_rr
+verbose = args.verbose
+
+if smin == 0.0:
+    smin = 1e-6
+sedges = np.linspace(smin, smax, sbin+1)
+
+
+output_dict = {
+    "DD": None,
+    "DR": None, 
+    "RR": None
+}
+
+if weight_power == 0.0:
+    with_weight = False 
+if with_weight:
+    weight_str = f"-weight{weight_power}"
+else:
+    weight_str = ""
+
+if rr_filename is None:
+    random_dir, random_file_name, random_file_ext = split_filename(random_filename)
+    rr_filename = random_dir + "RR-" + random_file_name + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
+
+if only_run_rr:
+    if not os.path.exists(rr_filename) or force_rr:
+        random_catalog = read_data(random_filename)
+        run_parts = ["RR"]
+        output_dict["RR"] = rr_filename
+        _ = run_tpCF_mock(None, random_catalog, sedges, mubin, with_weight, run_parts, xyz_refine_factors, output_dict, nthreads, verbose)
+    else:
+        print(f"{rr_filename} exists and not force_rr. Skip")
+else:
+    mock_dir, mock_file_name, mock_file_ext = split_filename(mock_filename)
+
+    run_parts = []
+    if not os.path.exists(rr_filename) or force_rr:
+        output_dict["RR"] = rr_filename
+        run_parts.append("RR")
+        RR_result = None
+    else:
+        RR_result = joblib.load(rr_filename)
+    
+    DD_result_filename = mock_dir + "DD-" + mock_file_name + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
+    DR_result_filename = mock_dir + "DR-" + mock_file_name + "-" + random_file_name + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
+
+    if not os.path.exists(DD_result_filename) or force:
+        run_parts.append("DD")
+        if save_dd_dr:
+            output_dict["DD"] = DD_result_filename
+        DD_result = None
+    else:
+        DD_result = joblib.load(DD_result_filename)
+    if not os.path.exists(DR_result_filename) or force:
+        run_parts.append("DR")
+        if save_dd_dr:
+            output_dict["DR"] = DR_result_filename
+        DR_result = None 
+    else:
+        DR_result = joblib.load(DR_result_filename)
+    
+    mock_catalog = read_data(mock_filename)
+    random_catalog = read_data(random_filename)
+
+    if mock_catalog.dtype != random_catalog.dtype:
+        random_catalog = random_catalog.astype(mock_catalog.dtype)
+
+    if with_weight:
+        if not only_run_rr:
+            mock_catalog[:,3] = mock_catalog[:,3] ** float(weight_power)
+        random_catalog[:,3] = random_catalog[:,3] ** float(weight_power)
+
+    result_dict = run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_parts, xyz_refine_factors, output_dict, nthreads, verbose)
+    
+    DD_result = result_dict["DD"] if DD_result is None else DD_result 
+    DR_result = result_dict["DR"] if DR_result is None else DR_result 
+    RR_result = result_dict["RR"] if RR_result is None else RR_result
+
+    if tpcf_filename is None:
+        tpcf_filename = mock_dir + "tpCF-" + mock_file_name + "-" + random_file_name + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
+    tpCF_result = cal_tpCF_from_pairs(DD_result, DR_result, RR_result, mock_catalog, random_catalog, sbin, mubin, with_weight)
+    joblib.dump(tpCF_result, tpcf_filename)
+
