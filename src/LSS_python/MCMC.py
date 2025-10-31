@@ -44,6 +44,7 @@ def get_chain(
         return chain, loglikes
     else:
         return chain
+
     
 def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, detail, progress_kwargs, output):
     sampler = emcee.EnsembleSampler(
