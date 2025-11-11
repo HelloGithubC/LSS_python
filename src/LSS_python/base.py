@@ -31,7 +31,7 @@ def comov_dist(z, omega_m, w=-1.0, z_start=0.0, z_point=1000):
     z = np.linspace(z_start,z,z_point)
     dz = np.diff(z)
     H_inv_array = np.empty(len(z), dtype=np.float64)
-    for i in prange(len(z)):
+    for i in range(len(z)):
         H_inv_array[i] = 1.0 / Hz(z[i], omega_m, w)
     return 0.5 * CONST_C * np.sum(dz * (H_inv_array[1:] + H_inv_array[:-1]))
 

@@ -61,7 +61,10 @@ class FFTPower:
             ps_3d_need = ps_3d
             boxsize_prod = np.prod(self.BoxSize, dtype=np.float32)
         
-        deal_ps_3d(ps_3d_need, ps_3d_kernel=None, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, nthreads=nthreads)
+        if ps_3d_need is None:
+            raise ValueError("mesh.complex_field(_gpu) is None. Please check if you have run the r2c or converted it to correct device.")
+        
+        deal_ps_3d(ps_3d_need, ps_3d_kernel=None, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, nthreads=nthreads, c_api=c_api)
         self.removed_shotnoise = True # Avoid shotnoise being removed twice
 
         return self.cal_ps_from_3d(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api, test_mode=test_mode)
@@ -71,6 +74,8 @@ class FFTPower:
         kmin, kmax, dk, Nmu=None, k_arrays=None,
         mode="1d", k_logarithmic=False, nthreads=1, device_id=-1, c_api=False, test_mode=False
     ):
+        if ps_3d is None:
+            raise ValueError("mesh.complex_field(_gpu) is None. Please check if you have run the r2c or converted it to correct device.")
         if device_id >= 0:
             import cupy as cp
             from .cuda.fftpower import cal_ps_from_cuda
