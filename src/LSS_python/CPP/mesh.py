@@ -12,6 +12,7 @@ def to_mesh_c_api(pos, boxsize, ngrids, field, weights=None, values=None, resamp
     if dtype == np.float32 or dtype == np.float64:
         pass 
     else:
+        print(f"Warning: pos is not float32 or float64 ({dtype}). Now try converting to float32")
         try:
             pos = pos.astype(np.float32)
             dtype = np.float32
@@ -35,12 +36,12 @@ def to_mesh_c_api(pos, boxsize, ngrids, field, weights=None, values=None, resamp
     
     if weights is not None:
         if weights.shape[0] != pos.shape[0]:
-            raise ValueError("Weights must have the same number of particles as positions")
+            raise ValueError(f"Weights must have the same number of particles as positions ({weights.shape[0]:d} != {pos.shape[0]:d})")
         if weights.dtype != dtype:
             weights = weights.astype(dtype)
     if values is not None:
         if values.shape[0] != pos.shape[0]:
-            raise ValueError("Values must have the same number of particles as positions")
+            raise ValueError(f"Values must have the same number of particles as positions ({values.shape[0]:d} != {pos.shape[0]:d})")
         if values.dtype != dtype:
             values = values.astype(dtype)
 
@@ -62,9 +63,9 @@ def to_mesh_c_api(pos, boxsize, ngrids, field, weights=None, values=None, resamp
     ctypes_ptr = ctypes.c_float if dtype == np.float32 else ctypes.c_double
     
     if field.shape != tuple(ngrids_array):
-        raise ValueError("Output array must have the same shape as ngrids")
+        raise ValueError(f"Output field must have the same shape as ngrids ({field.shape} != {tuple(ngrids_array)})")
     if field.dtype != dtype:
-        raise ValueError("Output array must have the same dtype as positions")
+        raise ValueError(f"Output field must have the same dtype as positions ({field.dtype} != {dtype})")
 
     pos_ptr = pos.ctypes.data_as(ctypes.POINTER(ctypes_ptr))
     field_ptr = field.ctypes.data_as(ctypes.POINTER(ctypes_ptr))

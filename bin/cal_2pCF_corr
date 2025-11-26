@@ -1,4 +1,4 @@
-#! python
+#! python -u
 
 import numpy as np 
 from LSS_python.tpcf import cal_tpCF_from_pairs, run_tpCF
@@ -94,7 +94,6 @@ random_fileallname = argv.random_filename
 boxsize = argv.boxsize
 
 nthreads = argv.nthreads
-os.environ['NUMEXPR_MAX_THREADS'] = f"{nthreads:d}"
 
 data_type = argv.data_type
 pos_key = argv.pos_key

@@ -105,7 +105,8 @@ class Mesh:
         W2_total = 0.0 
 
         for i, pos_e in enumerate(pos_list):
-            if pos_e.dtype != np.float32 or pos_e.dtype != np.float64:
+            if pos_e.dtype != np.float32 and pos_e.dtype != np.float64:
+                print(f"Waring:  pos is not float32 or float64 ({pos_e.dtype}). Now try converting to float32")
                 pos_e = pos_e.astype(np.float32)
             weight_e = weights_list[i]
             if weight_e is not None:
