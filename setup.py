@@ -1,15 +1,15 @@
-from setuptools import setup, find_packages
-from setuptools.command.install import install
-from setuptools.command.develop import develop
-import subprocess
-import sys, glob
 import os
+import sys
+import subprocess
 
+# ========== 在 setup() 之前构建 C++ 库 ==========
 def build_cpp_extensions():
-    """构建 C++ 共享库"""
+    if not os.path.exists("src/LSS_python/CPP/lib"):
+        os.makedirs("src/LSS_python/CPP/lib", exist_ok=True)
+    
     print("Building C++ extensions with Makefile...")
     result = subprocess.run(
-        ['make'],
+        ["make"],
         capture_output=True,
         text=True,
         cwd=os.path.dirname(os.path.abspath(__file__))
@@ -18,17 +18,23 @@ def build_cpp_extensions():
         print("Make failed:")
         print(result.stdout)
         print(result.stderr)
-        sys.exit(result.returncode)
+        sys.exit(1)
     print("C++ extensions built successfully")
+
+# 关键：在 setup() 被调用前执行！
+build_cpp_extensions()
+# ============================================
+
+from setuptools import setup
+from setuptools.command.install import install
+from setuptools.command.develop import develop
 
 class CustomInstall(install):
     def run(self):
-        build_cpp_extensions()
         super().run()
 
 class CustomDevelop(develop):
     def run(self):
-        build_cpp_extensions()
         super().run()
 
 setup(
