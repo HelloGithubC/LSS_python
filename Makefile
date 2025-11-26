@@ -3,8 +3,8 @@ CXX := g++
 CXXFLAGS := -O2 -Wall -shared -std=c++11 -fPIC -fopenmp
 
 # 目录设置
-SRC_DIR := ./src
-LIB_DIR := ./lib
+SRC_DIR := src/LSS_python/CPP/src
+LIB_DIR := src/LSS_python/CPP/lib
 
 # 目标文件设置
 TARGETS := $(LIB_DIR)/fftpower.so $(LIB_DIR)/mesh.so
@@ -24,7 +24,7 @@ $(LIB_DIR)/mesh.so: $(SRC_DIR)/mesh.cpp
 
 # 清理目标
 clean:
-	rm -rf $(LIB_DIR)
+	rm -f $(LIB_DIR)/*.so
 
 # 重新编译
 rebuild: clean all

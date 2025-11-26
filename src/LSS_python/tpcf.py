@@ -555,6 +555,20 @@ def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_
         "RR": None,
     }
     for run_part in run_parts:
+        if with_weight:
+            mock_weight = mock_catalog[:,3]
+            n_columns = mock_catalog.shape[1] - 4
+            for i in range(n_columns):
+                mock_weight *= mock_catalog[:,4+i]
+            if "DR" in run_parts or "RR" in run_parts:
+                random_weight = random_catalog[:,3]
+                n_columns = random_catalog.shape[1] - 4
+                for i in range(n_columns):
+                    random_weight *= random_catalog[:,4+i]
+        else:
+            mock_weight = mock_catalog[:,3]
+            if "DR" in run_parts or "RR" in run_parts:
+                random_weight = random_catalog[:,3]
         if run_part == "DD":
             if mock_catalog is None:
                 raise ValueError("DD: mock_catalog is not set")
@@ -562,10 +576,7 @@ def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_
                 autocorr = True 
                 if verbose:
                     print("Now running DD")
-                if with_weight:
-                    DD_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, weights1=mock_catalog[:,3], weight_type="pair_product", verbose=verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
-                else:
-                    DD_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, verbose=verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                DD_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, weights1=mock_weight, weight_type="pair_product", verbose=verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 result_dict["DD"] = DD_result
                 if output_DD is not None:
                     joblib.dump(DD_result, output_DD)
@@ -577,10 +588,7 @@ def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_
                 if verbose:
                     print("Now running DR")
                 autocorr = False 
-                if with_weight:
-                    DR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, weights1=mock_catalog[:,3], RA2=random_catalog[:,0], DEC2=random_catalog[:,1], CZ2=random_catalog[:,2], weights2=random_catalog[:,3], weight_type="pair_product", verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
-                else:
-                    DR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, RA2=random_catalog[:,0], DEC2=random_catalog[:,1], CZ2=random_catalog[:,2], verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                DR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, weights1=mock_weight, RA2=random_catalog[:,0], DEC2=random_catalog[:,1], CZ2=random_catalog[:,2], weights2=random_weight, weight_type="pair_product", verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 result_dict["DR"] = DR_result
                 if output_DR is not None:
                     joblib.dump(DR_result, output_DR)
@@ -592,10 +600,7 @@ def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_
                 if verbose:
                     print("Now running RR")
                 autocorr = True 
-                if with_weight:
-                    RR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=random_catalog[:,0], DEC1=random_catalog[:,1], CZ1=random_catalog[:,2], is_comoving_dist=True, weights1=random_catalog[:,3], weight_type="pair_product", verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
-                else:
-                    RR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=random_catalog[:,0], DEC1=random_catalog[:,1], CZ1=random_catalog[:,2], is_comoving_dist=True, verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                RR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=random_catalog[:,0], DEC1=random_catalog[:,1], CZ1=random_catalog[:,2], is_comoving_dist=True, weights1=random_weight, weight_type="pair_product", verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 result_dict["RR"] = RR_result
                 if output_RR is not None:
                     joblib.dump(RR_result, output_RR)

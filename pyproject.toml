@@ -1,3 +1,4 @@
+[build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
@@ -6,7 +7,7 @@ name = "LSS_python"
 version = "0.5.0"
 description = "A package to deal with some problems about Large Scale Structure. Full support by python(numba). cuda(cupy) is optinonal"
 authors = [
-    {name = "LSS_python", email = "xiaoliangms@outlook.com"},
+    {name = "Liang Xiao", email = "xiaoliangms@outlook.com"},
 ]
 
 # 这里是基础依赖
@@ -20,6 +21,12 @@ dependencies = [
     "multiprocess",
     "Corrfunc",
 ]
+
+[tool.setuptools.package-dir]
+your_package = "src/LSS_python"
+
+[tool.setuptools.packages-data]
+"LSS_python.CPP" = ["src/LSS_python/CPP/lib/*.so"]
 
 # 这里是可选依赖
 [project.optional-dependencies]

@@ -273,7 +273,7 @@ def get_default_params(param_name):
         raise ValueError(f"File format {default_fileformat} is not supported")
     
 
-def read_gadget2(filename=None, filenames_list=None, use_long_int=False):
+def read_gadget2(filename=None, filenames_list=None, use_long_int=False, only_pos=False, sub_rate=1.0, show_progress=False):
     if filename is None and filenames_list is None:
         raise ValueError("Either filename or filenames_list must be provided")
     if filename is not None:
@@ -284,7 +284,13 @@ def read_gadget2(filename=None, filenames_list=None, use_long_int=False):
     vel_list = []
     id_list = []
 
-    for i, filename in enumerate(filenames_list):
+    if show_progress:
+        import tqdm 
+        iterator = tqdm.tqdm(enumerate(filenames_list), total=len(filenames_list), desc="Reading gadget2")
+    else:
+        iterator = enumerate(filenames_list)
+
+    for i, filename in iterator:
         f = open(filename, "rb")
         header_flag_1 = np.fromfile(f, dtype=np.int32, count=1)[0]
         headers_array[i] = np.fromfile(f, dtype=gadget2_header_dtype, count=1)[0]
@@ -297,24 +303,39 @@ def read_gadget2(filename=None, filenames_list=None, use_long_int=False):
         pos_flag_2 = np.fromfile(f, dtype=np.int32, count=1)[0]
         if pos_flag_1 != pos_flag_2:
             raise ValueError(f"file {filename} is not a gadget2 snapshot(pos_flag not consistent)")
-        vel_flag_1 = np.fromfile(f, dtype=np.int32, count=1)[0]
-        vel_temp = np.fromfile(f, dtype=np.float32, count=npar*3).reshape(npar, 3)
-        vel_flag_2 = np.fromfile(f, dtype=np.int32, count=1)[0]
-        if vel_flag_1 != vel_flag_2:
-            raise ValueError(f"file {filename} is not a gadget2 snapshot(vel_flag not consistent)")
-        id_flag_1 = np.fromfile(f, dtype=np.int32, count=1)[0]
-        id_temp = np.fromfile(f, dtype=np.uint64 if use_long_int else np.uint32, count=npar)
-        id_flag_2 = np.fromfile(f, dtype=np.int32, count=1)[0]
-        if id_flag_1 != id_flag_2:
-            raise ValueError(f"file {filename} is not a gadget2 snapshot(id_flag not consistent)")
+        if not only_pos:
+            vel_flag_1 = np.fromfile(f, dtype=np.int32, count=1)[0]
+            vel_temp = np.fromfile(f, dtype=np.float32, count=npar*3).reshape(npar, 3)
+            vel_flag_2 = np.fromfile(f, dtype=np.int32, count=1)[0]
+            if vel_flag_1 != vel_flag_2:
+                raise ValueError(f"file {filename} is not a gadget2 snapshot(vel_flag not consistent)")
+            id_flag_1 = np.fromfile(f, dtype=np.int32, count=1)[0]
+            id_temp = np.fromfile(f, dtype=np.uint64 if use_long_int else np.uint32, count=npar)
+            id_flag_2 = np.fromfile(f, dtype=np.int32, count=1)[0]
+            if id_flag_1 != id_flag_2:
+                raise ValueError(f"file {filename} is not a gadget2 snapshot(id_flag not consistent)")
+        else:
+            vel_temp = None 
+            id_temp = None
+
+        if sub_rate < 1.0:
+            index_choose = np.random.choice(npar, int(npar*sub_rate), replace=False)
+            pos_temp = pos_temp[index_choose]
+            if not only_pos:
+                vel_temp = vel_temp[index_choose]
+                id_temp = id_temp[index_choose]
         
         pos_list.append(pos_temp)
         vel_list.append(vel_temp)
-        id_list.append(id_temp.astype(np.int64))
+        id_list.append(id_temp)
     
     pos_array = np.concatenate(pos_list, axis=0)
-    vel_array = np.concatenate(vel_list, axis=0)
-    id_array = np.concatenate(id_list, axis=0)
+    if not only_pos:
+        vel_array = np.concatenate(vel_list, axis=0)
+        id_array = np.concatenate(id_list, axis=0)
+    else:
+        vel_array = None
+        id_array = None
     if headers_array.shape[0] == 1:
         headers_array = headers_array[0]
     

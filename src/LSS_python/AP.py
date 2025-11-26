@@ -2,7 +2,7 @@ import numpy as np
 from numba import njit
 import math
 
-from .base import Hz, DA, cal_HI_factor
+from .base import Hz, DA, Hz_jit, DA_jit, cal_HI_factor
 
 def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None):
     sbin = xismu.xis.shape[0]
@@ -117,3 +117,4 @@ def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxs
     position = position * convert_array
     position[position > boxsize] -= boxsize
     return position
+

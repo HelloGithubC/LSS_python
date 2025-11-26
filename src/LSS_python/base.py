@@ -20,6 +20,17 @@ def comov_dist_jit(z, omega_m, w=-1.0, z_start=0.0, z_point=1000):
     for i in range(z_point):
         H_inv_array[i] = 1.0 / Hz_jit(z[i], omega_m, w)
     return 0.5 * CONST_C * np.sum(dz * (H_inv_array[1:] + H_inv_array[:-1]))
+@njit
+def comov_dist_array_jit(z_array, omega_m, w=-1.0, z_start=0.0, z_point=1000):
+    comov_dist_array = np.empty(len(z_array), dtype=z_array.dtype)
+    for j, z in enumerate(z_array):
+        z_temp = np.linspace(z_start,z,z_point)
+        dz = np.diff(z_temp)
+        H_inv_array = np.empty(len(z_temp), dtype=np.float64)
+        for i in range(z_point):
+            H_inv_array[i] = 1.0 / Hz_jit(z_temp[i], omega_m, w)
+        comov_dist_array[j] = 0.5 * CONST_C * np.sum(dz * (H_inv_array[1:] + H_inv_array[:-1]))
+    return comov_dist_array
 
 def Hz(z, omega_m, w=-1.0):
     return 100 * np.sqrt(omega_m*(1+z)**3 + (1-omega_m)*(1+z)**(3*(1+w)))

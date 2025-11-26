@@ -44,7 +44,7 @@ class FFTPower:
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
     mode="1d", k_logarithmic=False, ps_3d_inplace=True, nthreads=1, device_id=-1, c_api=False, test_mode=False):
-        shotnoise = self.attrs["shotnoise"]
+        shotnoise = mesh.attrs["shotnoise"]
         if device_id >= 0:
             import cupy as cp
             if ps_3d_inplace:

@@ -35,16 +35,19 @@ def dw_kernel_jit(d_array, h):
     return dw_array
 
 @njit 
-def cal_rho_array(distance_array, h, use_max_distance_as_h=False):
+def cal_rho_array(distance_array, h, use_max_distance_as_h=True):
     """ cal rho to get MCF
     Note:
         distance_array: [n_galaxy, n_neighbor]
+        h: The smoothing length. Only used when use_max_distance_as_h is False
     """
     rho_array = np.zeros(distance_array.shape[0], dtype=np.float64)
     for i in range(distance_array.shape[0]):
         if use_max_distance_as_h:
-            h = np.max(distance_array[i]) / 2.0
-        rho_temp = w_kernel_jit(distance_array[i], h)
+            h_need = np.max(distance_array[i]) / 2.0
+        else:
+            h_need = h
+        rho_temp = w_kernel_jit(distance_array[i], h_need)
         rho_array[i] = np.sum(rho_temp)
     return rho_array
 
@@ -77,9 +80,16 @@ def cal_rho(distance_array, h, use_max_distance_as_h=False):
         h = np.max(distance_array) / 2.0
     return np.sum(w_kernel(distance_array, h))
 
-def create_rho(data, boxsize, k=30, nthreads=1):
+def create_rho(data, boxsize, k=30, nthreads=1, only_return_rho=True):
+    """ The main function to create rho
+    Note:
+        data: [n_galaxy, 3]
+    """
     kdtree = KDTree(data, boxsize=boxsize + 1e-5)
     distance_array, _ = kdtree.query(data, k=k, workers=nthreads)
     rho_array = cal_rho_array(distance_array, h=None, use_max_distance_as_h=True)
-    data_new = np.concatenate([data, rho_array[:, None]], axis=1)
-    return data_new
+    if only_return_rho:
+        return rho_array
+    else:
+        data_new = np.concatenate([data, rho_array[:, None]], axis=1)
+        return data_new
