@@ -22,6 +22,8 @@ def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0
                 deal_ps_3d_single(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise)
     if not inplace:
         return ps_3d
+    else:
+        return complex_field
 
 class FFTPower:
     def __init__(self, Nmesh, BoxSize, shotnoise=0.0):
