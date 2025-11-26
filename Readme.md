@@ -8,4 +8,4 @@ This project is a simple python package including some useful functions for my w
 pip install ./ --user 
 ```
 
-Some sub-packages has C/C++ support and need to be compiled. Use `python setup.py build_ext --inplace` to compile them before using pip.
+Note that the package: Corrfunc need installed numpy to compile and it always meets mistakes when compiling. Recommend to install Corrfunc by yourself first.

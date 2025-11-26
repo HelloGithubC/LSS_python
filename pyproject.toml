@@ -13,7 +13,7 @@ authors = [
 # 这里是基础依赖
 dependencies = [
     "numpy",
-    "numba==0.61.0",
+    "numba",
     "joblib",
     "scipy",
     "emcee",
@@ -26,7 +26,7 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-LSS_python.CPP = ["lib/*.so"]
+"LSS_python.CPP" = ["lib/*.so"]
 
 # 这里是可选依赖
 [project.optional-dependencies]
