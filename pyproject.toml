@@ -22,11 +22,11 @@ dependencies = [
     "Corrfunc",
 ]
 
-[tool.setuptools.package-dir]
-your_package = "src/LSS_python"
+[tool.setuptools.packages.find]
+where = ["src"]
 
-[tool.setuptools.packages-data]
-"LSS_python.CPP" = ["src/LSS_python/CPP/lib/*.so"]
+[tool.setuptools.package-data]
+LSS_python.CPP = ["lib/*.so"]
 
 # 这里是可选依赖
 [project.optional-dependencies]
