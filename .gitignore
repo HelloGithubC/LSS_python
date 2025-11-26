@@ -4,7 +4,7 @@ __pycache__/
 src/LSS_python/cuda/__pycache__/
 build/
 tests/
-src/LSS_python/CPP/lib/*
+src/LSS_python/CPP/lib/*.so
 
 # vscode settings #
 ############################
