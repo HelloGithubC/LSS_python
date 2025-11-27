@@ -1,4 +1,4 @@
-#! python -u
+#!python -u
 
 import numpy as np 
 from LSS_python.tpcf import cal_tpCF_from_pairs, run_tpCF

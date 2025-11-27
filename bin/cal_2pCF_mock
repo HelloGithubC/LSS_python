@@ -1,4 +1,4 @@
-#! python -u
+#!python -u
 
 import numpy as np 
 import argparse, os, sys
