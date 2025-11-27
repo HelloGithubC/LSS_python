@@ -2,6 +2,7 @@
 ##########################
 __pycache__/
 src/LSS_python/cuda/__pycache__/
+src/LSS_python.egg-info
 build/
 tests/
 src/LSS_python/CPP/lib/*.so
