@@ -169,7 +169,7 @@ class xismu(object):
             mu_array = (muedges[1:] + muedges[:-1]) / 2.0
         self.S, self.Mu = np.meshgrid(s_array, mu_array, indexing="ij")
     
-    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=True, mupack=1, is_norm=False, quick_return=False):
+    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, mupack=1, is_norm=False, quick_return=False):
         """ A powerful function to integrate the tpcf
 
         Parameters
@@ -190,6 +190,9 @@ class xismu(object):
         re_calculate : bool
             Whether to re-calculate the tpcf based on DD, DR and RR
         """
+
+        if not s_xis and not intximu:
+            raise ValueError("s_xis or intximu must be True")
 
         if hasattr(self, "s_array"):
             s_array = self.s_array
