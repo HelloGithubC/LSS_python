@@ -387,6 +387,7 @@ class xismu(object):
         mubin2=120,
         smin_mapping=3.0,
         smax_mapping=60.0,
+        assistant_xismu=None
     ):
         from ._AP_core import mapping_smudata_to_another_cosmology_DenseToSparse, LoopStopException
         from .base import Hz_jit, DA_jit
@@ -431,6 +432,17 @@ class xismu(object):
         temp_DR = new_data[:, :, 1] * self.DRnorm
         temp_RR = new_data[:, :, 2] * self.RRnorm
 
+        if assistant_xismu is not None:
+            Mu_temp = assistant_xismu.Mu
+            S_temp = assistant_xismu.S
+            if Mu_temp.shape != (sbin2, mubin2) or S_temp.shape != (sbin2, mubin2):
+                raise ValueError(
+                    "Check your shapes of Mu or S in assistant_xismu, which are different from (sbin2, mubin2) "
+                )
+        else:
+            Mu_temp = None
+            S_temp = None
+
         return xismu(
             smax=self.smax,
             sbin=sbin2,
@@ -438,8 +450,8 @@ class xismu(object):
             DDnorm=self.DDnorm,
             DRnorm=self.DRnorm,
             RRnorm=self.RRnorm,
-            Mu=None, 
-            S=None, 
+            Mu=Mu_temp,
+            S=S_temp,
             DD=temp_DD,
             DR=temp_DR,
             RR=temp_RR,
