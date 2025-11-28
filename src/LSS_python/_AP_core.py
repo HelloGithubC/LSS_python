@@ -1,4 +1,4 @@
-from numba import njit, prange, set_num_threads
+from numba import njit, jit, prange, set_num_threads
 import numpy as np 
 import math
 
@@ -197,7 +197,17 @@ def simple_core(
             )
 
 @njit(parallel=True)
-def convert_dense_core(pairs_dense_mesh, dense_mesh, cosmology_tuple, bound_tuple, smu_bin_tuple, dsmu_sparse_tuple, scope_tunple=(1, 10), nthreads=1):
+def convert_dense_core(pairs_dense_mesh, dense_mesh, cosmology_tuple, bound_tuple, smu_bin_tuple, dsmu_sparse_tuple, scope_tunple=(1.0, 10.0), nthreads=1):
+    """
+    Args:
+        pairs_dense_mesh: (sbin, mubin, N), where N is the number of pairs(DD, DR, RR, Xis as an example)
+        dense_mesh: (sbin, mubin, 4, 2)
+        cosmology_tuple: (Hz_f, Hz_m, DA_f, DA_m)
+        bound_tuple: (smin, smax, mumin, mumax)
+        smu_bin_tuple: (sbin_dense, sbin_sparse, mubin_dense, mubin_sparse)
+        dsmu_sparse_tuple: (ds_sparse, dmu_sparse)
+        scope_tunple: (s_scope, mu_scope)
+    """
     Hz_f, Hz_m, DA_f, DA_m = cosmology_tuple
     smin, smax, mumin, mumax = bound_tuple
     sbin_dense, sbin_sparse, mubin_dense, mubin_sparse = smu_bin_tuple
@@ -210,6 +220,7 @@ def convert_dense_core(pairs_dense_mesh, dense_mesh, cosmology_tuple, bound_tupl
     set_num_threads(nthreads)
     for i_s in prange(sbin_dense):
         for i_mu in range(mubin_dense):
+            masked_mesh_temp = True
             for i_p in range(4):
                 s_f, mu_f = dense_mesh[i_s, i_mu, i_p]
                 
@@ -219,37 +230,39 @@ def convert_dense_core(pairs_dense_mesh, dense_mesh, cosmology_tuple, bound_tupl
                 if np.isnan(mu_t):
                     mu_t = mu_f
                 if s_t < smin or s_t > smax or mu_t < mumin or mu_t > mumax:
-                    dense_mesh_converted[i_s, i_mu, :, 0] = np.nan
-                    dense_mesh_converted[i_s, i_mu, :, 1] = np.nan
-                    masked_mesh[i_s, i_mu] = True
-                    break 
+                    pass
+                else:
+                    masked_mesh_temp = False
                 dense_mesh_converted[i_s, i_mu, i_p] = (s_t, mu_t)
+            if masked_mesh_temp:
+                masked_mesh[i_s, i_mu] = True
+                dense_mesh_converted[i_s, i_mu] = dense_mesh[i_s, i_mu]
     scope_mesh = np.zeros(shape=dense_mesh.shape[:2], dtype=np.int16)
     outpoint_mesh = np.zeros(shape=dense_mesh.shape[:2], dtype=np.int16)
     pairs_sparse_mesh = np.zeros(shape=(sbin_sparse, mubin_sparse, )+ pairs_dense_mesh.shape[2:], dtype=np.float64)
 
     for i_s in prange(sbin_dense):
         for i_mu in range(mubin_dense):
-            if masked_mesh[i_s, i_mu]:
-                scope_mesh[i_s, i_mu] = -99
-                outpoint_mesh[i_s, i_mu] = -99
-                continue
-            scope_mesh[i_s, i_mu] = 0
             s_sparse_0_temp, mu_sparse_0_temp = dense_mesh_converted[i_s, i_mu, 0]
             s_bin_sparse_0_temp = np.int32(s_sparse_0_temp / ds_sparse)
             mu_bin_sparse_0_temp = np.int32(mu_sparse_0_temp / dmu_sparse)
-            for i_p in range(1,4):
-                s_sparse_temp, mu_sparse_temp = dense_mesh_converted[i_s, i_mu, i_p]
-                s_bin_sparse_temp = np.int32(s_sparse_temp / ds_sparse)
-                mu_bin_sparse_temp = np.int32(mu_sparse_temp / dmu_sparse)
-                add_scope_temp = (s_bin_sparse_temp - s_bin_sparse_0_temp) * 1 + (mu_bin_sparse_temp - mu_bin_sparse_0_temp) * 2
-                scope_mesh[i_s, i_mu] += add_scope_temp
-                if add_scope_temp != 0:
-                    outpoint_mesh[i_s, i_mu] += 1
+            scope_mesh[i_s, i_mu] = 0.0
+            outpoint_mesh[i_s, i_mu] = 0
+            if masked_mesh[i_s, i_mu]:
+                pass
+            else:
+                for i_p in range(1,4):
+                    s_sparse_temp, mu_sparse_temp = dense_mesh_converted[i_s, i_mu, i_p]
+                    s_bin_sparse_temp = np.int32(s_sparse_temp / ds_sparse)
+                    mu_bin_sparse_temp = np.int32(mu_sparse_temp / dmu_sparse)
+                    add_scope_temp = (s_bin_sparse_temp - s_bin_sparse_0_temp) * s_scope + (mu_bin_sparse_temp - mu_bin_sparse_0_temp) * mu_scope
+                    scope_mesh[i_s, i_mu] += add_scope_temp
+                    if add_scope_temp != 0:
+                        outpoint_mesh[i_s, i_mu] += 1
             scope_temp = scope_mesh[i_s, i_mu]
             outpoint_temp = outpoint_mesh[i_s, i_mu]
             mesh_0 = pairs_sparse_mesh[s_bin_sparse_0_temp, mu_bin_sparse_0_temp]
-            if (scope_temp == 0 and outpoint_temp == 0) or (scope_temp == -s_scope and outpoint_temp == 1) or (scope_temp == s_scope and outpoint_temp == 1):
+            if (scope_temp == 0.0 and outpoint_temp == 0) or (scope_temp == -s_scope and outpoint_temp == 1) or (scope_temp == s_scope and outpoint_temp == 1):
                 rate_0 = 1.0
                 rate_1 = 0.0
                 mesh_0 += pairs_dense_mesh[i_s, i_mu] * rate_0
@@ -304,10 +317,7 @@ def convert_dense_core(pairs_dense_mesh, dense_mesh, cosmology_tuple, bound_tupl
                 mesh_1 += pairs_dense_mesh[i_s, i_mu] * rate_1
                 mesh_2 += pairs_dense_mesh[i_s, i_mu] * rate_2
             else:
-                ## nopython
-                raise ValueError(f"scope and outpoint is not supported")
-                ## python
-                # raise ValueError(f"scope({scope_temp}) at ({i_s:d}, {i_mu:d}) is not supported")
+                print(scope_temp, outpoint_temp, i_s, i_mu)
     return pairs_sparse_mesh, dense_mesh_converted, scope_mesh, outpoint_mesh
 
 @njit(parallel=True)
