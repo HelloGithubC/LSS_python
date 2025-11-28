@@ -56,7 +56,7 @@ parser = argparse.ArgumentParser(
 
 parser.add_argument("data_filename", help="Need suffix to support the automatic naming rules. Or use --output_filename and --rr_filename to specify the relevant files.", type=str)
 parser.add_argument("random_filename", help="Need suffix to ... (the same as data_filename)", type=str)
-parser.add_argument("boxsize", type=float)
+parser.add_argument("boxsize", type=float, help="If <=0, will be calculated from data or random (only when --only-run-rr set)")
 parser.add_argument("nthreads", type=int)
 
 parser.add_argument("--data_type", "-type", type=str, default="binary", help="Only support ascii and binary. Only support npy format in binary, whether is structed array or not.")
@@ -165,8 +165,12 @@ if not with_weight:
 
 if not only_run_rr:
     data_catalog = read_data(data_dir + data_filename + data_fileext, data_type, pos_key, weight_key, weight_set_one=weight_set_one)
+    if boxsize <= 0.0:
+        boxsize = np.max(data_catalog[:, :3], axis=0) + 1e-10
 
 random_catalog = read_data(random_dir + random_filename + random_fileext, data_type, pos_key, weight_key, weight_set_one=weight_set_one)
+if only_run_rr and boxsize <= 0.0:
+    boxsize = np.max(random_catalog[:, :3], axis=0) + 1e-10
 
 if not only_run_rr:
     if data_catalog.dtype != random_catalog.dtype:
