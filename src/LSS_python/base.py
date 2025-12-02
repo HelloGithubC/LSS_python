@@ -90,6 +90,55 @@ def traz(V_array, x_array, y_array=None):
         delta_Y_mesh = Y_mesh[1:, 1:] - Y_mesh[:-1, :-1]
         total_V = 0.25 * np.sum(delta_X_mesh * delta_Y_mesh * (V_array[1:,1:] + V_array[:-1,:-1] + V_array[1:,:-1] + V_array[:-1,1:]))
         return total_V
+
+def get_chi2(snap_ids_pair, P_ap_dict, P_sys_dict=None, sys_array=None, cov_source_dict=None, need_slice = slice(None, -1, None), do_pinv=False, pinv_rcond=1e-5, cov_shift=5, cov_matrix_inv=None):
+    snap1, snap2 = snap_ids_pair
+
+    P_ap_size = P_ap_dict[snap1][need_slice].shape[-1]
+    P_ap_num = np.prod(P_ap_dict[snap1].shape[:-1])
+
+    if cov_matrix_inv is None:
+        if cov_source_dict is None:
+            raise ValueError("cov_matrix_inv must be set when cov_source_dict is None")
+        
+        cov_source_size = cov_source_dict[snap1][need_slice].shape[-1]
+        cov_source_num = np.prod(cov_source_dict[snap1].shape[:-1])
+
+        if P_ap_size != cov_source_size:
+            raise ValueError(f"The size of P_source({P_ap_size:d}) and cov_source({cov_source_size:d}) must be the same")
+        
+        cov_source_diff_array = np.zeros(shape=(cov_source_num, cov_source_size))
+
+        cov_source_array_1 = cov_source_dict[snap1].reshape(-1,cov_source_size)
+        cov_source_array_2 = cov_source_dict[snap2].reshape(-1,cov_source_size)
+
+        for i_cov in range(cov_source_num):
+            i_cov_shift = i_cov + cov_shift
+            if i_cov_shift >= cov_source_num:
+                i_cov_shift -= cov_source_num
+            cov_source_diff_array[i_cov] = (cov_source_array_1[i_cov_shift] - cov_source_array_2[i_cov])[need_slice]
+        cov_matrix = np.cov(cov_source_diff_array, rowvar=False)
+        cov_matrix_inv = np.linalg.pinv(cov_matrix, rcond=pinv_rcond) if do_pinv else np.linalg.inv(cov_matrix)
+    else:
+        cov_matrix_size = cov_matrix_inv.shape[0]
+        if P_ap_size != cov_matrix_size:
+            raise ValueError(f"The size of P_source({P_ap_size:d}) and cov_matrix_inv({cov_matrix_size:d}) must be the same")
+        
+    chi2_array = np.zeros(shape=(P_ap_num,))
+    P_ap_array_1 = P_ap_dict[snap1].reshape(-1,P_ap_size)
+    P_ap_array_2 = P_ap_dict[snap2].reshape(-1,P_ap_size)
+    if sys_array is None:
+        sys_array = P_sys_dict[snap1] - P_sys_dict[snap2]
+    
+    for i_ap in range(P_ap_num):
+        P_temp = ((P_ap_array_1[i_ap] - P_ap_array_2[i_ap] - sys_array).reshape(-1,1))[need_slice]
+        chi2_array[i_ap] = cal_chi2_core(P_temp, cov_matrix_inv)
+
+    return chi2_array
+
+def cal_chi2_core(P, cov_matrix_inv):
+    return P.T @ cov_matrix_inv @ P
+    
     
 def get_level(chi2_array, smooth=False, smooth_sigma=0.5, return_number=False, return_chi2_smoothed=False):
     threashold = 0.68
