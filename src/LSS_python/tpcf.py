@@ -326,7 +326,7 @@ class xismu(object):
     def cosmo_conv_simple(
         self, omstd=0.3071, wstd=-1, omwrong=0.5, wwrong=-1,
         redshift=0.0001,
-        smin_mapping=3.0, smax_mapping=60.0,
+        smin_mapping=3.0, smax_mapping=60.0
     ):
         from ._AP_core import mapping_smudata_to_another_cosmology_simple
         from .base import Hz_jit, DA_jit
@@ -349,6 +349,7 @@ class xismu(object):
             ],
             axis=2,
         )
+
         new_data = mapping_smudata_to_another_cosmology_simple(
             data,
             DAstd,
@@ -390,9 +391,10 @@ class xismu(object):
         mubin2=120,
         smin_mapping=3.0,
         smax_mapping=60.0,
-        assistant_xismu=None
+        assistant_xismu=None, 
+        test_mode=False
     ):
-        from ._AP_core import mapping_smudata_to_another_cosmology_DenseToSparse, LoopStopException
+        from ._AP_core import mapping_smudata_to_another_cosmology_DenseToSparse, mapping_smudata_dense
         from .base import Hz_jit, DA_jit
 
         if int(self.sbin) == 150 and int(self.mubin) == 120:
@@ -413,7 +415,15 @@ class xismu(object):
             ],
             axis=2,
         )
-        try:
+        if test_mode:
+            new_data = mapping_smudata_dense(
+                data, 
+                (Hstd, Hnew, DAstd, DAnew),
+                (self.sbin, sbin2, self.mubin, mubin2), 
+                (0.0, 150.0, 0.0, 1.0),
+                (smin_mapping, smax_mapping, 0.0, 1.0),
+            )
+        else:
             new_data = mapping_smudata_to_another_cosmology_DenseToSparse(
                 data,
                 DAstd,
@@ -428,8 +438,6 @@ class xismu(object):
                 smax_mapping=smax_mapping,
                 compute_rows=[0, 1, 2],
             )
-        except LoopStopException as e:
-            raise LoopStopException(e)
 
         temp_DD = new_data[:, :, 0] * self.DDnorm
         temp_DR = new_data[:, :, 1] * self.DRnorm

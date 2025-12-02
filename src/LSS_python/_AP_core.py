@@ -147,25 +147,61 @@ def mapping_smudata_to_another_cosmology_DenseToSparse(
         s2bound_max,
     )
 
-    try:
-        mapping_dense_core(
-            smutab1,
-            smutab2,
-            ipositions,
-            convert_tuple,
-            bound_index_tuple,
-            save_count_array,
-            save_counts,
-        )
-    except LoopStopException as e:
-        print(
-            f"DAstd: {DAstd:.5f}, DAnew: {DAnew:.5f}, Hstd: {Hstd:.5f}, Hnew: {Hnew:.5f}"
-        )
-        raise LoopStopException(e)
+    mapping_dense_core(
+        smutab1,
+        smutab2,
+        ipositions,
+        convert_tuple,
+        bound_index_tuple,
+        save_count_array,
+        save_counts,
+    )
     if save_counts:
         return smutab2, save_count_array
     else:
         return smutab2
+
+@njit    
+def mapping_smudata_dense(
+    smutabstd,
+    cosmos_tuple,
+    smu_bin_tuple,
+    smu_all_bound_tuple,
+    smu_mapping_bound_tuple
+):
+    """
+    Args:
+        cosmo_tuple: (Hz_f, Hz_m, DA_f, DA_m)
+        smu_bin_tuple: (sbin_dense, sbin_sparse, mubin_dense, mubin_sparse)
+        smu_all_bound_tuple: (smin_all, smax_all, mumin_all, mumax_all)
+        smu_mapping_bound_tuple: (smin, smax, mumin, mumax)
+    """
+    smin_all, smax_all, mumin_all, mumax_all = smu_all_bound_tuple
+    sbin_dense, sbin_sparse, mubin_dense, mubin_sparse = smu_bin_tuple
+
+    delta_s = (smax_all - smin_all)
+    delta_mu = (mumax_all - mumin_all)
+    dsmu_tuple = (delta_s / sbin_dense, delta_s / sbin_sparse, delta_mu / mubin_dense, delta_mu / mubin_sparse)
+
+    smutab1 = smutabstd
+    element_size = smutab1.shape[2]
+    
+    smutab2 = np.zeros(shape=(sbin_sparse, mubin_sparse, element_size))
+    for i_s_sparse in range(sbin_sparse):
+        for i_mu_sparse in range(mubin_sparse):
+            need_convert, i_smu_dense, rates_array = convert_dense_core(
+                (i_s_sparse, i_mu_sparse), 
+                cosmos_tuple, 
+                smu_all_bound_tuple, 
+                smu_mapping_bound_tuple, 
+                (sbin_dense, mubin_dense),
+                dsmu_tuple
+            )
+            i_s_dense, i_mu_dense = i_smu_dense 
+            i_s_dense_size, i_mu_dense_size = rates_array.shape
+            for i_element in range(element_size):
+                smutab2[i_s_sparse, i_mu_sparse, i_element] = np.sum(rates_array * smutab1[i_s_dense:i_s_dense + i_s_dense_size, i_mu_dense:i_mu_dense + i_mu_dense_size, i_element])
+    return smutab2
     
 @njit
 def simple_core(
@@ -195,130 +231,6 @@ def simple_core(
             smutab[s2_index, mu2_index] = LinearInterpolation_2d(
                 smutabstd, (s1_int, mu1_int), (s1_int_add, mu1_int_add), (s1, mu1)
             )
-
-@njit(parallel=True)
-def convert_dense_core(pairs_dense_mesh, dense_mesh, cosmology_tuple, bound_tuple, smu_bin_tuple, dsmu_sparse_tuple, scope_tunple=(1.0, 10.0), nthreads=1):
-    """
-    Args:
-        pairs_dense_mesh: (sbin, mubin, N), where N is the number of pairs(DD, DR, RR, Xis as an example)
-        dense_mesh: (sbin, mubin, 4, 2)
-        cosmology_tuple: (Hz_f, Hz_m, DA_f, DA_m)
-        bound_tuple: (smin, smax, mumin, mumax)
-        smu_bin_tuple: (sbin_dense, sbin_sparse, mubin_dense, mubin_sparse)
-        dsmu_sparse_tuple: (ds_sparse, dmu_sparse)
-        scope_tunple: (s_scope, mu_scope)
-    """
-    Hz_f, Hz_m, DA_f, DA_m = cosmology_tuple
-    smin, smax, mumin, mumax = bound_tuple
-    sbin_dense, sbin_sparse, mubin_dense, mubin_sparse = smu_bin_tuple
-    ds_sparse, dmu_sparse = dsmu_sparse_tuple
-    s_scope, mu_scope = scope_tunple
-
-    dense_mesh_converted = np.empty(shape=dense_mesh.shape)
-    masked_mesh = np.zeros(shape=dense_mesh.shape[:2], dtype=np.bool_)
-    
-    set_num_threads(nthreads)
-    for i_s in prange(sbin_dense):
-        for i_mu in range(mubin_dense):
-            masked_mesh_temp = True
-            for i_p in range(4):
-                s_f, mu_f = dense_mesh[i_s, i_mu, i_p]
-                
-                s_t, mu_t = smu_cosmo_convert(s_f, mu_f, DA_f, DA_m, Hz_f, Hz_m)
-                if np.isnan(s_t):
-                    s_t = s_f 
-                if np.isnan(mu_t):
-                    mu_t = mu_f
-                if s_t < smin or s_t > smax or mu_t < mumin or mu_t > mumax:
-                    pass
-                else:
-                    masked_mesh_temp = False
-                dense_mesh_converted[i_s, i_mu, i_p] = (s_t, mu_t)
-            if masked_mesh_temp:
-                masked_mesh[i_s, i_mu] = True
-                dense_mesh_converted[i_s, i_mu] = dense_mesh[i_s, i_mu]
-    scope_mesh = np.zeros(shape=dense_mesh.shape[:2], dtype=np.int16)
-    outpoint_mesh = np.zeros(shape=dense_mesh.shape[:2], dtype=np.int16)
-    pairs_sparse_mesh = np.zeros(shape=(sbin_sparse, mubin_sparse, )+ pairs_dense_mesh.shape[2:], dtype=np.float64)
-
-    for i_s in prange(sbin_dense):
-        for i_mu in range(mubin_dense):
-            s_sparse_0_temp, mu_sparse_0_temp = dense_mesh_converted[i_s, i_mu, 0]
-            s_bin_sparse_0_temp = np.int32(s_sparse_0_temp / ds_sparse)
-            mu_bin_sparse_0_temp = np.int32(mu_sparse_0_temp / dmu_sparse)
-            scope_mesh[i_s, i_mu] = 0.0
-            outpoint_mesh[i_s, i_mu] = 0
-            if masked_mesh[i_s, i_mu]:
-                pass
-            else:
-                for i_p in range(1,4):
-                    s_sparse_temp, mu_sparse_temp = dense_mesh_converted[i_s, i_mu, i_p]
-                    s_bin_sparse_temp = np.int32(s_sparse_temp / ds_sparse)
-                    mu_bin_sparse_temp = np.int32(mu_sparse_temp / dmu_sparse)
-                    add_scope_temp = (s_bin_sparse_temp - s_bin_sparse_0_temp) * s_scope + (mu_bin_sparse_temp - mu_bin_sparse_0_temp) * mu_scope
-                    scope_mesh[i_s, i_mu] += add_scope_temp
-                    if add_scope_temp != 0:
-                        outpoint_mesh[i_s, i_mu] += 1
-            scope_temp = scope_mesh[i_s, i_mu]
-            outpoint_temp = outpoint_mesh[i_s, i_mu]
-            mesh_0 = pairs_sparse_mesh[s_bin_sparse_0_temp, mu_bin_sparse_0_temp]
-            if (scope_temp == 0.0 and outpoint_temp == 0) or (scope_temp == -s_scope and outpoint_temp == 1) or (scope_temp == s_scope and outpoint_temp == 1):
-                rate_0 = 1.0
-                rate_1 = 0.0
-                mesh_0 += pairs_dense_mesh[i_s, i_mu] * rate_0
-            elif scope_temp == 2*s_scope and outpoint_temp == 2:
-                s_sparse_1_temp = dense_mesh_converted[i_s, i_mu, 3, 0]
-                s_diff_rate_temp = ((s_bin_sparse_0_temp + 1) * ds_sparse - s_sparse_0_temp) / (s_sparse_1_temp - s_sparse_0_temp)
-                mu_diff_rate_temp = 1.0
-                rate_0 = s_diff_rate_temp * mu_diff_rate_temp
-                rate_1 = 1.0 - rate_0 
-                mesh_1 = pairs_sparse_mesh[s_bin_sparse_0_temp + 1, mu_bin_sparse_0_temp]
-                mesh_0 += pairs_dense_mesh[i_s, i_mu] * rate_0
-                mesh_1 += pairs_dense_mesh[i_s, i_mu] * rate_1
-            elif (scope_temp == mu_scope + (mu_scope - s_scope) and outpoint_temp == 2) or (scope_temp == mu_scope*2 and outpoint_temp == 2) or (scope_temp == mu_scope + (mu_scope + s_scope) and outpoint_temp == 2) or (scope_temp == mu_scope + (mu_scope + s_scope) and outpoint_temp == 3):
-                mu_sparse_1_temp = dense_mesh_converted[i_s, i_mu, 3, 1]
-                mu_diff_rate_temp = ((mu_bin_sparse_0_temp + 1) * dmu_sparse - mu_sparse_0_temp) / (mu_sparse_1_temp - mu_sparse_0_temp)
-                s_diff_rate_temp = 1.0
-                rate_0 = mu_diff_rate_temp * s_diff_rate_temp
-                rate_1 = 1.0 - rate_0
-                mesh_1 = pairs_sparse_mesh[s_bin_sparse_0_temp, mu_bin_sparse_0_temp + 1]
-                mesh_0 += pairs_dense_mesh[i_s, i_mu] * rate_0
-                mesh_1 += pairs_dense_mesh[i_s, i_mu] * rate_1
-            elif scope_temp == 3*s_scope and outpoint_temp == 3:
-                rate_0 = 0.0 
-                rate_1 = 1.0 
-                mesh_1 = pairs_sparse_mesh[s_bin_sparse_0_temp + 1, mu_bin_sparse_0_temp]
-                mesh_1 += pairs_dense_mesh[i_s, i_mu] * rate_1
-            elif scope_temp == 2 * s_scope + 2 * mu_scope:
-                s_sparse_1_temp, mu_sparse_1_temp = dense_mesh_converted[i_s, i_mu, 3]
-                s_diff_rate_temp = ((s_bin_sparse_0_temp + 1) * ds_sparse - s_sparse_0_temp) / (s_sparse_1_temp - s_sparse_0_temp)
-                mu_diff_rate_temp = ((mu_bin_sparse_0_temp + 1) * dmu_sparse - mu_sparse_0_temp) / (mu_sparse_1_temp - mu_sparse_0_temp)
-                rate_0 = s_diff_rate_temp * mu_diff_rate_temp
-                rate_1 = (1.0 - s_diff_rate_temp) * mu_diff_rate_temp
-                rate_2 = s_diff_rate_temp * (1.0 - mu_diff_rate_temp)
-                rate_3 = (1.0 - s_diff_rate_temp) * (1.0 - mu_diff_rate_temp)
-                mesh_1 = pairs_sparse_mesh[s_bin_sparse_0_temp + 1, mu_bin_sparse_0_temp]
-                mesh_2 = pairs_sparse_mesh[s_bin_sparse_0_temp, mu_bin_sparse_0_temp + 1]
-                mesh_3 = pairs_sparse_mesh[s_bin_sparse_0_temp + 1, mu_bin_sparse_0_temp + 1]
-                mesh_0 += pairs_dense_mesh[i_s, i_mu] * rate_0
-                mesh_1 += pairs_dense_mesh[i_s, i_mu] * rate_1
-                mesh_2 += pairs_dense_mesh[i_s, i_mu] * rate_2
-                mesh_3 += pairs_dense_mesh[i_s, i_mu] * rate_3
-            elif scope_temp == s_scope + 2*(s_scope + mu_scope) and outpoint_temp == 3:
-                mu_sparse_1_temp = dense_mesh_converted[i_s, i_mu, 3, 1]
-                s_diff_rate_temp = 1.0 
-                mu_diff_rate_temp = ((mu_bin_sparse_0_temp + 1) * dmu_sparse - mu_sparse_0_temp) / (mu_sparse_1_temp - mu_sparse_0_temp)
-                rate_0 = 0.0
-                rate_1 = s_diff_rate_temp * mu_diff_rate_temp
-                rate_2 = 1.0 - rate_1
-                mesh_1 = pairs_sparse_mesh[s_bin_sparse_0_temp, mu_bin_sparse_0_temp + 1]
-                mesh_2 = pairs_sparse_mesh[s_bin_sparse_0_temp, mu_bin_sparse_0_temp]
-                mesh_0 += pairs_dense_mesh[i_s, i_mu] * rate_0
-                mesh_1 += pairs_dense_mesh[i_s, i_mu] * rate_1
-                mesh_2 += pairs_dense_mesh[i_s, i_mu] * rate_2
-            else:
-                print(scope_temp, outpoint_temp, i_s, i_mu)
-    return pairs_sparse_mesh, dense_mesh_converted, scope_mesh, outpoint_mesh
 
 @njit(parallel=True)
 def convert_dense_core_test(dense_mesh, cosmology_tuple, bound_tuple, smu_bin_tuple, dsmu_sparse_tuple, scope_tunple, nthreads=1):
@@ -914,3 +826,260 @@ def mapping_dense_core(
                             smutab2[is2, imu2, i] += smutab1[is1, imu1, i] * rate
                         if save_counts:
                             save_count_array[is2, imu2] += rate
+
+
+@njit 
+def find_dense_in_sparse(smu_points_sparse_1_tuple, smu_all_bound_tuple, dsmu_dense_tuple):
+    s_points_sparse_1, mu_points_sparse_1 = smu_points_sparse_1_tuple
+    smin_all, smax_all, mumin_all, mumax_all = smu_all_bound_tuple
+    ds_dense, dmu_dense = dsmu_dense_tuple
+
+    s_sparse_1_min = np.min(s_points_sparse_1)
+    mu_sparse_1_min = np.min(mu_points_sparse_1)
+    if s_sparse_1_min < smin_all:
+        s_sparse_1_min = smin_all
+    if mu_sparse_1_min < mumin_all:
+        mu_sparse_1_min = mumin_all
+    s_sparse_1_max = np.max(s_points_sparse_1)
+    mu_sparse_1_max = np.max(mu_points_sparse_1)
+    if s_sparse_1_max > smax_all:
+        s_sparse_1_max = smax_all
+    if mu_sparse_1_max > mumax_all:
+        mu_sparse_1_max = mumax_all
+
+    i_s_dense_1_min = np.int32((s_sparse_1_min - smin_all) / ds_dense)
+    i_mu_dense_1_min = np.int32((mu_sparse_1_min - mumin_all) / dmu_dense)
+    i_s_dense_1_max = np.int32((s_sparse_1_max - smin_all) / ds_dense)
+    i_mu_dense_1_max = np.int32((mu_sparse_1_max - mumin_all) / dmu_dense)
+
+    return i_s_dense_1_min, i_s_dense_1_max, i_mu_dense_1_min, i_mu_dense_1_max
+
+@njit 
+def get_rate(outpoint, scope, smu_scope_tuple, smu_dense_points, smu_sparse_tuple):
+    if outpoint == 0:
+        return 1.0
+    if outpoint == 4:
+        return 0.0 
+    
+    s_scope, mu_scope = smu_scope_tuple
+    s_sparse_low, s_sparse_high, mu_sparse_low, mu_sparse_high = smu_sparse_tuple
+    dense_s = (smu_dense_points[1, 0] - smu_dense_points[0,0])
+    dense_mu = (smu_dense_points[2,1] - smu_dense_points[0,1])
+    dense_area =  dense_s * dense_mu
+
+    if outpoint == 2:
+        if scope == s_scope * 2:
+            in_area = (2 * s_sparse_high - smu_dense_points[0,0] - smu_dense_points[2,0]) * (smu_dense_points[2,1] - smu_dense_points[0,1]) / 2.0
+        elif scope == -s_scope * 2:
+            in_area = (smu_dense_points[1,0] + smu_dense_points[3,0] - 2 * s_sparse_low) * (smu_dense_points[3,1] - smu_dense_points[1,1]) / 2.0
+        elif scope == mu_scope * 2 or scope == mu_scope * 2 - s_scope or scope == mu_scope * 2 + s_scope:
+            return (mu_sparse_high - smu_dense_points[0,1]) / dense_mu
+        elif scope == -mu_scope * 2 or scope == -mu_scope * 2 + s_scope or scope == -mu_scope * 2 - s_scope:
+            return (smu_dense_points[2,1] - mu_sparse_low) / dense_mu
+        else:
+            print(outpoint, scope)
+            return 0.0
+    if outpoint == 3:
+        if scope == -s_scope * 3 or scope == s_scope * 3:
+            return 0.0
+        if scope == -(s_scope + mu_scope) * 2 or scope == -(s_scope + mu_scope) * 2 + s_scope or scope == -(s_scope + mu_scope) * 2 - s_scope:
+            high_temp = smu_dense_points[3,1] - mu_sparse_low
+            top_line = smu_dense_points[3,0] - s_sparse_low
+            middle_line = top_line + (smu_dense_points[1,0] - smu_dense_points[3,0]) *  high_temp / dense_mu
+            in_area = (top_line + middle_line) * high_temp / 2.0
+        elif scope == 2 * (mu_scope - s_scope) or scope == 2 * (mu_scope - s_scope) - s_scope or scope == 2 * (mu_scope - s_scope) + s_scope:
+            high_temp = mu_sparse_high - smu_dense_points[1,1]
+            tail_line = smu_dense_points[1,0] - s_sparse_low
+            middle_line = tail_line + (smu_dense_points[3,0] - smu_dense_points[1,0]) * high_temp / dense_mu 
+            in_area = (tail_line + middle_line) * high_temp / 2.0
+        elif scope == (s_scope + mu_scope) * 2 or scope == (s_scope + mu_scope) * 2 - s_scope or scope == (s_scope + mu_scope) * 2 + s_scope:
+            high_temp = mu_sparse_high - smu_dense_points[0,1]
+            tail_line = s_sparse_high - smu_dense_points[0,0]
+            middle_line = tail_line + (smu_dense_points[2,0] - smu_dense_points[0,0]) *  high_temp / dense_mu
+            in_area = (tail_line + middle_line) * high_temp / 2.0
+        elif scope == 2 * (s_scope - mu_scope) or scope == 2 * (s_scope - mu_scope) - s_scope or scope == 2 * (s_scope - mu_scope) + s_scope:
+            high_temp = smu_dense_points[2,1] - mu_sparse_low
+            top_line = s_sparse_high - smu_dense_points[2,0]
+            middle_line = top_line + (smu_dense_points[0,0] - smu_dense_points[2,0]) * high_temp / dense_mu
+            in_area = (top_line + middle_line) * high_temp / 2.0 
+        else:
+            print(outpoint, scope)
+            return 0.0
+    if outpoint == 1:
+        if scope == s_scope or scope == -s_scope:
+            return 1.0
+    return in_area / dense_area
+
+@njit
+def get_rates_dense(need_convert, i_smu_dense_1_bound_tuple, i_smu_sparse_tuple, smu_all_bound_tuple, cosmos_tuple, smu_bin_dense_tuple, dsmu_tuple, smu_scope_tuple):
+    """ 
+    Args:
+        need_convert (bool)
+        i_smu_dense_1_bound_tuple (tuple): (i_s_dense_1_min, i_s_dense_1_max, i_mu_dense_1_min, i_mu_dense_1_max)
+        i_smu_sparse_tuple (tuple): (i_s_sparse, i_mu_sparse)
+        smu_all_bound_tuple (tuple): (smin_all, smax_all, mumin_all, mumax_all)
+        cosmos_tuple (tuple): (Hz_f, Hz_m, DA_f, DA_m)
+        smu_bin_dense_tuple (tuple): (sbin_dense, mubin_dense)
+        dsmu_tuple (tuple): (ds_dense, ds_sparse, dmu_dense, dmu_sparse)
+    """
+    i_s_dense_1_min, i_s_dense_1_max, i_mu_dense_1_min, i_mu_dense_1_max = i_smu_dense_1_bound_tuple
+    i_s_sparse, i_mu_sparse = i_smu_sparse_tuple
+    smin_all, smax_all, mumin_all, mumax_all = smu_all_bound_tuple
+    Hz_f, Hz_m, DA_f, DA_m = cosmos_tuple
+    ds_dense, ds_sparse, dmu_dense, dmu_sparse = dsmu_tuple
+    sbin_dense, mubin_dense = smu_bin_dense_tuple
+    s_scope, mu_scope = smu_scope_tuple
+
+    s_sparse = ds_sparse * i_s_sparse
+    mu_sparse = dmu_sparse * i_mu_sparse
+    smu_sparse_tuple = (s_sparse, s_sparse + ds_sparse, mu_sparse, mu_sparse + dmu_sparse)
+
+    if i_s_dense_1_max < sbin_dense:
+        i_s_add_temp = 2 
+    else:
+        i_s_add_temp = 1
+    if i_mu_dense_1_max < mubin_dense:
+        i_mu_add_temp = 2 
+    else:
+        i_mu_add_temp = 1
+    smu_points_dense_2 = np.empty((i_s_dense_1_max - i_s_dense_1_min + i_s_add_temp, i_mu_dense_1_max - i_mu_dense_1_min + i_mu_add_temp, 2))
+    for is_dense_1 in range(i_s_dense_1_min, i_s_dense_1_max + i_s_add_temp):
+        for imu_dense_1 in range(i_mu_dense_1_min, i_mu_dense_1_max + i_mu_add_temp):
+            s_dense_1_temp = smin_all + is_dense_1 * ds_dense
+            mu_dense_1_temp = mumin_all + imu_dense_1 * dmu_dense
+            if need_convert:
+                s_dense_2_temp, mu_dense_2_temp = smu_cosmo_convert(
+                    s_dense_1_temp, mu_dense_1_temp, DA_f, DA_m, Hz_f, Hz_m
+                )
+            else:
+                s_dense_2_temp, mu_dense_2_temp = s_dense_1_temp, mu_dense_1_temp
+            if s_dense_2_temp >= smax_all:
+                s_dense_2_temp = smax_all - 1e-8
+            if s_dense_2_temp < smin_all:
+                s_dense_2_temp = smin_all + 1e-8
+            if mu_dense_2_temp >= mumax_all:
+                mu_dense_2_temp = mumax_all - 1e-8
+            if mu_dense_2_temp < mumin_all:
+                mu_dense_2_temp = mumin_all + 1e-8
+            is_temp = is_dense_1 - i_s_dense_1_min
+            imu_temp = imu_dense_1 - i_mu_dense_1_min
+            smu_points_dense_2[is_temp, imu_temp, 0] = s_dense_2_temp
+            smu_points_dense_2[is_temp, imu_temp, 1] = mu_dense_2_temp
+    
+    s_cubes_dense_size = smu_points_dense_2.shape[0] - 1 
+    mu_cubes_dense_size = smu_points_dense_2.shape[1] - 1
+
+    rates_dense = np.zeros(shape=(s_cubes_dense_size, mu_cubes_dense_size))
+    
+    if need_convert:
+        for i_s_cube_dense in range(s_cubes_dense_size):
+            for i_mu_cube_dense in range(mu_cubes_dense_size):
+                scope_temp = 0 
+                outpoint_temp = 0
+                smu_dense_points_temp = np.empty((4, 2))
+                for mu_add in (0,1):
+                    for s_add in (0,1):
+                        s_point_temp = smu_points_dense_2[i_s_cube_dense + s_add, i_mu_cube_dense + mu_add, 0]
+                        mu_point_temp = smu_points_dense_2[i_s_cube_dense + s_add, i_mu_cube_dense + mu_add, 1]
+                        smu_dense_points_temp[mu_add * 2 + s_add] = (s_point_temp, mu_point_temp)
+                        i_s_sparse_2_temp = np.int32((s_point_temp - smin_all) / ds_sparse)
+                        i_mu_sparse_2_temp = np.int32((mu_point_temp - mumin_all) / dmu_sparse)
+                        scope_s_add_temp = (i_s_sparse_2_temp - i_s_sparse) * s_scope
+                        scope_mu_add_temp = (i_mu_sparse_2_temp - i_mu_sparse) * mu_scope
+                        scope_temp += scope_s_add_temp + scope_mu_add_temp
+                        if scope_s_add_temp != 0 or scope_mu_add_temp != 0:
+                            outpoint_temp += 1
+                rates_dense[i_s_cube_dense, i_mu_cube_dense] = get_rate(
+                    outpoint_temp, scope_temp, 
+                    smu_scope_tuple,
+                    smu_dense_points_temp, 
+                    smu_sparse_tuple
+                )
+    else:
+        for i_s_cube_dense in range(s_cubes_dense_size):
+            for i_mu_cube_dense in range(mu_cubes_dense_size):
+                s_point_temp = smu_points_dense_2[i_s_cube_dense, i_mu_cube_dense, 0] + 0.5 * ds_dense 
+                mu_point_temp = smu_points_dense_2[i_s_cube_dense, i_mu_cube_dense, 1] + 0.5 * dmu_sparse
+                i_s_sparse_2_temp = np.int32((s_point_temp - smin_all) / ds_sparse)
+                i_mu_sparse_2_temp = np.int32((mu_point_temp - mumin_all) / dmu_sparse)
+                if i_s_sparse_2_temp == i_s_sparse and i_mu_sparse_2_temp == i_mu_sparse:
+                    rates_dense[i_s_cube_dense, i_mu_cube_dense] = 1.0
+                else:
+                    rates_dense[i_s_cube_dense, i_mu_cube_dense] = 0.0
+    return rates_dense
+
+@njit 
+def convert_dense_core(i_smu_sparse, cosmos_tuple, smu_all_bound_tuple, smu_bound_tuple, smu_bin_dense_tuple, dsmu_tuple, smu_scope_tuple=(1,5)):
+    """
+    Args:
+        i_smu_sparse: (i_s, i_mu)
+        cosmo_tuple: (Hz_f, Hz_m, DA_f, DA_m)
+        smu_all_bound_tuple: (smin_all, smax_all, mumin_all, mumax_all)
+        smu_bound_tuple: (smin, smax, mumin, mumax)
+        smu_bin_dense_tuple: (sbin_dense, mubin_dense)
+        dsmu_tuple: (ds_dense, ds_sparse, dmu_dense, dmu_sparse)
+        scope_tuple: (s_scope, mu_scope)
+    Return:
+        need_convert: bool
+        smu_point_dense_2: 2-element-tuple, the first element of dense mesh. 
+        rates_dense: ndarray
+    """
+    i_s_sparse, i_mu_sparse = i_smu_sparse
+    Hz_f, Hz_m, DA_f, DA_m = cosmos_tuple
+    sbin_dense, mubin_dense = smu_bin_dense_tuple
+    smin_all, smax_all, mumin_all, mumax_all = smu_all_bound_tuple
+    smin, smax, mumin, mumax = smu_bound_tuple
+    ds_dense, ds_sparse, dmu_dense, dmu_sparse = dsmu_tuple
+
+    s_sparse_2 = smin_all + i_s_sparse * ds_sparse
+    mu_sparse_2 = mumin_all + i_mu_sparse * dmu_sparse 
+
+    any_points_in_bound = False
+    s_points_sparse_2 = np.empty((2, 2))
+    mu_points_sparse_2 = np.empty((2, 2))
+    for s_add in (0,1):
+        s_sparse_2_temp = s_sparse_2 + s_add * ds_sparse
+        for mu_add in (0,1):
+            mu_sparse_2_temp = mu_sparse_2 + mu_add * dmu_sparse
+            s_points_sparse_2[s_add, mu_add] = s_sparse_2_temp
+            mu_points_sparse_2[s_add, mu_add] = mu_sparse_2_temp
+            if any_points_in_bound:
+                continue
+            if s_sparse_2_temp >= smin and s_sparse_2_temp <= smax and mu_sparse_2_temp >= mumin and mu_sparse_2_temp <= mumax:
+                any_points_in_bound = True
+                
+    if any_points_in_bound:
+        need_convert = True
+        s_points_sparse_1, mu_points_sparse_1 = smu_cosmo_convert(
+            s_points_sparse_2, mu_points_sparse_2, DA_m, DA_f, Hz_m, Hz_f
+        )
+        
+        i_s_dense_1_min, i_s_dense_1_max, i_mu_dense_1_min, i_mu_dense_1_max = find_dense_in_sparse(
+            (s_points_sparse_1, mu_points_sparse_1), 
+            smu_all_bound_tuple, 
+            (ds_dense, dmu_dense)
+        )
+        i_s_dense_bound_tuple = (i_s_dense_1_min, i_s_dense_1_max, i_mu_dense_1_min, i_mu_dense_1_max)
+
+    else:
+        need_convert = False
+
+        i_s_dense_2_min, i_s_dense_2_max, i_mu_dense_2_min, i_mu_dense_2_max = find_dense_in_sparse(
+            (s_points_sparse_2, mu_points_sparse_2), 
+            smu_all_bound_tuple, 
+            (ds_dense, dmu_dense)
+        )
+        i_s_dense_bound_tuple = (i_s_dense_2_min, i_s_dense_2_max, i_mu_dense_2_min, i_mu_dense_2_max)
+
+    rates_dense = get_rates_dense(
+        need_convert, 
+        i_s_dense_bound_tuple,
+        i_smu_sparse,
+        smu_all_bound_tuple, 
+        cosmos_tuple, 
+        (sbin_dense, mubin_dense), 
+        dsmu_tuple, 
+        smu_scope_tuple
+    )
+
+    return need_convert, (i_s_dense_bound_tuple[0], i_s_dense_bound_tuple[2]), rates_dense
