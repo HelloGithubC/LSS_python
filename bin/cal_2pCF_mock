@@ -153,7 +153,6 @@ else:
         weight_power_index = 4
         if not only_run_rr:
             mock_catalog[:,weight_power_index] = mock_catalog[:,weight_power_index] ** float(weight_power)
-        random_catalog[:,weight_power_index] = random_catalog[:,weight_power_index] ** float(weight_power)
         
 
     result_dict = run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_parts, xyz_refine_factors, output_dict, nthreads, verbose)
