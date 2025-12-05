@@ -570,6 +570,10 @@ def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_
         output_DD = output_dict.get("DD", None)
         output_DR = output_dict.get("DR", None)
         output_RR = output_dict.get("RR", None)
+    else:
+        output_DD = None
+        output_DR = None
+        output_RR = None
 
     x_refine_factor, y_refine_factor, z_refine_factor = refine_factors
     result_dict = {

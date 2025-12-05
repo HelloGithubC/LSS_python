@@ -85,7 +85,9 @@ def create_rho(data, boxsize, k=30, nthreads=1, only_return_rho=True):
     Note:
         data: [n_galaxy, 3]
     """
-    kdtree = KDTree(data, boxsize=boxsize + 1e-5)
+    if boxsize is not None:
+        boxsize += 1e-5
+    kdtree = KDTree(data, boxsize=boxsize)
     distance_array, _ = kdtree.query(data, k=k, workers=nthreads)
     rho_array = cal_rho_array(distance_array, h=None, use_max_distance_as_h=True)
     if only_return_rho:
