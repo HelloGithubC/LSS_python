@@ -581,21 +581,26 @@ def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_
         "DR": None,
         "RR": None,
     }
-    for run_part in run_parts:
-        if with_weight:
+
+    if with_weight:
+        if "DR" in run_parts or "DD" in run_parts:
             mock_weight = mock_catalog[:,3]
             n_columns = mock_catalog.shape[1] - 4
             for i in range(n_columns):
                 mock_weight *= mock_catalog[:,4+i]
-            if "DR" in run_parts or "RR" in run_parts:
-                random_weight = random_catalog[:,3]
-                n_columns = random_catalog.shape[1] - 4
-                for i in range(n_columns):
-                    random_weight *= random_catalog[:,4+i]
-        else:
+        if "DR" in run_parts or "RR" in run_parts:
+            random_weight = random_catalog[:,3]
+            n_columns = random_catalog.shape[1] - 4
+            for i in range(n_columns):
+                random_weight *= random_catalog[:,4+i]
+            print(np.mean(random_weight))
+    else:
+        if "DR" in run_parts or "DD" in run_parts:
             mock_weight = mock_catalog[:,3]
-            if "DR" in run_parts or "RR" in run_parts:
-                random_weight = random_catalog[:,3]
+        if "DR" in run_parts or "RR" in run_parts:
+            random_weight = random_catalog[:,3]
+
+    for run_part in run_parts:
         if run_part == "DD":
             if mock_catalog is None:
                 raise ValueError("DD: mock_catalog is not set")
