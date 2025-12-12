@@ -31,7 +31,7 @@ def get_xismus_convert(source_xismu_dict, asistant_xismus_dict, snaps_pair, weip
                 redshift = redshift_dict[snap],
                 smin_mapping=mapping_s[0],
                 smax_mapping=mapping_s[1],
-                asistant_xismu = asistant_xismus_dict[snap]
+                asistant_xismu = asistant_xismus_dict[weipow_str]
             )
             new_xismus_dict[weipow_str][snap] = new_xismu
     xismus_diff_weipows_dict = {}
