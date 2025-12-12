@@ -22,7 +22,7 @@ def get_xismus_convert(source_xismu_dict, asistant_xismus_dict, snaps_pair, weip
 
     for snap in snaps_pair:
         for weipow_str in weipows_str_list:
-            xismu_source_temp = source_xismu_dict[snap][weipow_str]
+            xismu_source_temp = source_xismu_dict[weipow_str][snap]
             new_xismu = xismu_source_temp.cosmo_conv_DenseToSparse(
                 omstd = omega_mf,
                 wstd = w_f,
@@ -33,11 +33,11 @@ def get_xismus_convert(source_xismu_dict, asistant_xismus_dict, snaps_pair, weip
                 smax_mapping=mapping_s[1],
                 asistant_xismu = asistant_xismus_dict[snap]
             )
-            new_xismus_dict[snap][weipow_str] = new_xismu
+            new_xismus_dict[weipow_str][snap] = new_xismu
     xismus_diff_weipows_dict = {}
     for weipow_str in weipows_str_list:
-        mu_temp, xis_mu_temp_1 = new_xismus_dict[snap1][weipow_str].integrate_tpcf(smin=smin, smax=smax, mupack=mupack, mumax=mumax, is_norm=True, intximu=True, quick_return=True)
-        mu_temp, xis_mu_temp_2 = new_xismus_dict[snap2][weipow_str].integrate_tpcf(smin=smin, smax=smax, mupack=mupack,  mumax=mumax, is_norm=True, intximu=True, quick_return=True)
+        mu_temp, xis_mu_temp_1 = new_xismus_dict[weipow_str][snap].integrate_tpcf(smin=smin, smax=smax, mupack=mupack, mumax=mumax, is_norm=True, intximu=True, quick_return=True)
+        mu_temp, xis_mu_temp_2 = new_xismus_dict[weipow_str][snap].integrate_tpcf(smin=smin, smax=smax, mupack=mupack,  mumax=mumax, is_norm=True, intximu=True, quick_return=True)
         xismus_diff_weipows_dict[weipow_str] = xis_mu_temp_1 - xis_mu_temp_2
     return xismus_diff_weipows_dict
 def get_xismus_diff_concatenate_mcmc(xismus_diff_weipows_dict, weipows_str_list):
