@@ -6,19 +6,49 @@ from multiprocessing import Pool
 
 from LSS_python.tpcf import xismu
 
-def get_xismus_diff_mcmc(source_filenames_dict, snaps_pair, weipows_str_list, parameters, mupack=6, smin=6.0, smax=40.0):
+def get_xismus_convert(source_xismu_dict, asistant_xismus_dict, snaps_pair, weipows_str_list, parameters, redshift_dict, fiducial_parameters=(0.3071, -1.0), mapping_s=(3, 70), **args):
     snap1, snap2 = snaps_pair
-    omega_m, w_m = parameters
+    omega_mm, w_m = parameters
+    omega_mf, w_f = fiducial_parameters 
+    new_xismus_dict = {
+        snap1: {}, 
+        snap2: {},
+    }
+
+    smin = args.get("smin", 6.0)
+    smax = args.get("smax", 40.0)
+    mupack = args.get("mupack", 6)
+    mumax = args.get("mumax", 0.97)
+
     for snap in snaps_pair:
         for weipow_str in weipows_str_list:
-            source_filename = source_filenames_dict[snap][weipow_str]
-            xismu_source_temp = xismu.load(source_filename, sbin=750, mubin=600)
+            xismu_source_temp = source_xismu_dict[snap][weipow_str]
             new_xismu = xismu_source_temp.cosmo_conv_DenseToSparse(
-                
+                omstd = omega_mf,
+                wstd = w_f,
+                omwrong = omega_mm,
+                wwrong = w_m,
+                redshift = redshift_dict[snap],
+                smin_mapping=mapping_s[0],
+                smax_mapping=mapping_s[1],
+                asistant_xismu = asistant_xismus_dict[snap]
             )
+            new_xismus_dict[snap][weipow_str] = new_xismu
+    xismus_diff_weipows_dict = {}
+    for weipow_str in weipows_str_list:
+        mu_temp, xis_mu_temp_1 = new_xismus_dict[snap1][weipow_str].integrate_tpcf(smin=smin, smax=smax, mupack=mupack, mumax=mumax, is_norm=True, intximu=True, quick_return=True)
+        mu_temp, xis_mu_temp_2 = new_xismus_dict[snap2][weipow_str].integrate_tpcf(smin=smin, smax=smax, mupack=mupack,  mumax=mumax, is_norm=True, intximu=True, quick_return=True)
+        xismus_diff_weipows_dict[weipow_str] = xis_mu_temp_1 - xis_mu_temp_2
+    return xismus_diff_weipows_dict
+def get_xismus_diff_concatenate_mcmc(xismus_diff_weipows_dict, weipows_str_list):
+    xismus_diff_weipows_list = []
+    for weipow_str in weipows_str_list:
+        xismus_diff_weipows_list.append(xismus_diff_weipows_dict[weipow_str])
+    return np.concatenate(xismus_diff_weipows_list)
+
 
 def cal_chi2_core(P, cov_matrix_inv):
-    return P.T @ cov_matrix_inv @ P
+    return (P.T @ cov_matrix_inv @ P)[0,0]
 
 def get_chain(
     backend_filename, is_CPL=False, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True
