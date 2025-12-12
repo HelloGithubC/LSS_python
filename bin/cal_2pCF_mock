@@ -2,7 +2,7 @@
 
 import numpy as np 
 import argparse, os, sys
-import joblib 
+import joblib
 
 from LSS_python.tpcf import run_tpCF_mock, cal_tpCF_from_pairs
 
@@ -43,6 +43,7 @@ parser.add_argument("--s_bin", "-sbin", type=int, default=150, help="The s bin s
 parser.add_argument("--mu_bin", "-mubin", type=int, default=120, help="The mu bin size. Default: 120")
 parser.add_argument("--with_weight", "-ww", action="store_true", help="Use weight. Note this is not the intrisic weight of survey, i.e. the forth column.")
 parser.add_argument("--weight_pow", "-wp", type=float, default=0.0, help="The weight power of the fifth column (rho). Default: 0.0 (default mean not weight, so with_weight will be ignored)")
+parser.add_argument("--weight_log", '-wlog', action="store_true")
 parser.add_argument("--xyz_refine_factors", "-xyz", type=int, nargs=3, default=[2, 2, 1], help="The refine factors for xyz. Default: [2, 2, 1]")
 
 parser.add_argument("--rr_filename", "-rr", help="The output filename for rr", default=None)
@@ -68,8 +69,11 @@ smin = args.s_min
 smax = args.s_max
 sbin = args.s_bin
 mubin = args.mu_bin
+
 with_weight = args.with_weight
 weight_power = args.weight_pow
+weight_log = args.weight_log
+
 xyz_refine_factors = args.xyz_refine_factors
 
 rr_filename = args.rr_filename
@@ -82,6 +86,10 @@ only_run_rr = args.only_run_rr
 force = args.force
 force_rr = args.force_rr
 verbose = args.verbose
+
+if not verbose:
+    import warnings
+    warnings.filterwarnings("ignore")
 
 if smin == 0.0:
     smin = 1e-10
@@ -152,6 +160,14 @@ else:
     if with_weight:
         weight_power_index = 4
         if not only_run_rr:
+            if weight_log:
+                mock_weight = mock_catalog[:, weight_power_index]
+                mock_weight_log = np.log10(mock_weight)
+                weight_log_minus_index = mock_weight_log < 0.0
+                weight_log_positive_index = mock_weight_log > 0.0
+                mock_weight_log[weight_log_minus_index] = (1.0 / -mock_weight_log[weight_log_minus_index]) * 10.0
+                mock_weight_log[weight_log_positive_index] = mock_weight_log[weight_log_positive_index] * 10.0
+                mock_catalog[:, weight_power_index] = mock_weight_log
             mock_catalog[:,weight_power_index] = mock_catalog[:,weight_power_index] ** float(weight_power)
         
 

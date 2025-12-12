@@ -392,7 +392,6 @@ class xismu(object):
         smin_mapping=3.0,
         smax_mapping=60.0,
         assistant_xismu=None, 
-        test_mode=False
     ):
         from ._AP_core import mapping_smudata_to_another_cosmology_DenseToSparse, mapping_smudata_dense
         from .base import Hz_jit, DA_jit
@@ -415,29 +414,29 @@ class xismu(object):
             ],
             axis=2,
         )
-        if test_mode:
-            new_data = mapping_smudata_dense(
-                data, 
-                (Hstd, Hnew, DAstd, DAnew),
-                (self.sbin, sbin2, self.mubin, mubin2), 
-                (0.0, 150.0, 0.0, 1.0),
-                (smin_mapping, smax_mapping, 0.0, 1.0),
-            )
-        else:
-            new_data = mapping_smudata_to_another_cosmology_DenseToSparse(
-                data,
-                DAstd,
-                DAnew,
-                Hstd,
-                Hnew,
-                deltas1=self.smax / self.sbin,
-                deltamu1=1.0 / self.mubin,
-                deltas2=self.smax / sbin2,
-                deltamu2=1.0 / mubin2,
-                smin_mapping=smin_mapping,
-                smax_mapping=smax_mapping,
-                compute_rows=[0, 1, 2],
-            )
+        # if test_mode:
+        new_data = mapping_smudata_dense(
+            data, 
+            (Hstd, Hnew, DAstd, DAnew),
+            (self.sbin, sbin2, self.mubin, mubin2), 
+            (0.0, 150.0, 0.0, 1.0),
+            (smin_mapping, smax_mapping, 0.0, 1.0),
+        )
+        # else:
+        #     new_data = mapping_smudata_to_another_cosmology_DenseToSparse(
+        #         data,
+        #         DAstd,
+        #         DAnew,
+        #         Hstd,
+        #         Hnew,
+        #         deltas1=self.smax / self.sbin,
+        #         deltamu1=1.0 / self.mubin,
+        #         deltas2=self.smax / sbin2,
+        #         deltamu2=1.0 / mubin2,
+        #         smin_mapping=smin_mapping,
+        #         smax_mapping=smax_mapping,
+        #         compute_rows=[0, 1, 2],
+        #     )
 
         temp_DD = new_data[:, :, 0] * self.DDnorm
         temp_DR = new_data[:, :, 1] * self.DRnorm
@@ -593,7 +592,6 @@ def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_
             n_columns = random_catalog.shape[1] - 4
             for i in range(n_columns):
                 random_weight *= random_catalog[:,4+i]
-            print(np.mean(random_weight))
     else:
         if "DR" in run_parts or "DD" in run_parts:
             mock_weight = mock_catalog[:,3]

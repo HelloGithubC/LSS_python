@@ -4,6 +4,22 @@ import emcee
 from emcee.backends import HDFBackend
 from multiprocessing import Pool
 
+from LSS_python.tpcf import xismu
+
+def get_xismus_diff_mcmc(source_filenames_dict, snaps_pair, weipows_str_list, parameters, mupack=6, smin=6.0, smax=40.0):
+    snap1, snap2 = snaps_pair
+    omega_m, w_m = parameters
+    for snap in snaps_pair:
+        for weipow_str in weipows_str_list:
+            source_filename = source_filenames_dict[snap][weipow_str]
+            xismu_source_temp = xismu.load(source_filename, sbin=750, mubin=600)
+            new_xismu = xismu_source_temp.cosmo_conv_DenseToSparse(
+                
+            )
+
+def cal_chi2_core(P, cov_matrix_inv):
+    return P.T @ cov_matrix_inv @ P
+
 def get_chain(
     backend_filename, is_CPL=False, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True
 ):
