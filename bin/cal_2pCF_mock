@@ -47,7 +47,7 @@ parser.add_argument("--weight_log", '-wlog', action="store_true")
 parser.add_argument("--xyz_refine_factors", "-xyz", type=int, nargs=3, default=[2, 2, 1], help="The refine factors for xyz. Default: [2, 2, 1]")
 
 parser.add_argument("--rr_filename", "-rr", help="The output filename for rr", default=None)
-parser.add_argument("--tpcf_filename", "-o", help="The output filename for tpcf", default=None)
+parser.add_argument("--tpcf_filename", "-tpcf", help="The output filename for tpcf", default=None)
 
 parser.add_argument("--nthreads", "-n", type=int, default=1, help="The number of threads to use")
 
