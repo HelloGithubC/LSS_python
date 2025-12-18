@@ -122,6 +122,9 @@ if only_run_rr:
     else:
         print(f"{rr_filename} exists and not force_rr. Skip")
 else:
+    if os.path.exists(tpcf_filename) and not force:
+        print(f"{tpcf_filename} exists and not force. Skip")
+        exit(0)
     mock_dir, mock_file_name, mock_file_ext = split_filename(mock_filename)
     random_dir, random_file_name, random_file_ext = split_filename(random_filename)
 
