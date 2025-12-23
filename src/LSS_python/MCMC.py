@@ -4,15 +4,13 @@ import emcee
 from emcee.backends import HDFBackend
 from multiprocessing import Pool
 
-from LSS_python.tpcf import xismu
-
 def get_xismus_convert(source_xismu_dict, asistant_xismus_dict, snaps_pair, weipows_str_list, parameters, redshift_dict, fiducial_parameters=(0.3071, -1.0), mapping_s=(3, 70), **args):
     snap1, snap2 = snaps_pair
     omega_mm, w_m = parameters
     omega_mf, w_f = fiducial_parameters 
     new_xismus_dict = {
-        snap1: {}, 
-        snap2: {},
+        weipow_str: {} 
+        for weipow_str in weipows_str_list
     }
 
     smin = args.get("smin", 6.0)
@@ -31,13 +29,13 @@ def get_xismus_convert(source_xismu_dict, asistant_xismus_dict, snaps_pair, weip
                 redshift = redshift_dict[snap],
                 smin_mapping=mapping_s[0],
                 smax_mapping=mapping_s[1],
-                asistant_xismu = asistant_xismus_dict[weipow_str]
+                assistant_xismu = asistant_xismus_dict[weipow_str]
             )
             new_xismus_dict[weipow_str][snap] = new_xismu
     xismus_diff_weipows_dict = {}
     for weipow_str in weipows_str_list:
-        mu_temp, xis_mu_temp_1 = new_xismus_dict[weipow_str][snap].integrate_tpcf(smin=smin, smax=smax, mupack=mupack, mumax=mumax, is_norm=True, intximu=True, quick_return=True)
-        mu_temp, xis_mu_temp_2 = new_xismus_dict[weipow_str][snap].integrate_tpcf(smin=smin, smax=smax, mupack=mupack,  mumax=mumax, is_norm=True, intximu=True, quick_return=True)
+        mu_temp, xis_mu_temp_1 = new_xismus_dict[weipow_str][snap1].integrate_tpcf(smin=smin, smax=smax, mupack=mupack, mumax=mumax, is_norm=True, intximu=True, quick_return=True)
+        mu_temp, xis_mu_temp_2 = new_xismus_dict[weipow_str][snap2].integrate_tpcf(smin=smin, smax=smax, mupack=mupack,  mumax=mumax, is_norm=True, intximu=True, quick_return=True)
         xismus_diff_weipows_dict[weipow_str] = xis_mu_temp_1 - xis_mu_temp_2
     return xismus_diff_weipows_dict
 def get_xismus_diff_concatenate_mcmc(xismus_diff_weipows_dict, weipows_str_list):
