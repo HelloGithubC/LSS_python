@@ -19,6 +19,15 @@ def to_mesh_c_api(pos, boxsize, ngrids, field, weights=None, values=None, resamp
         except:
             raise ValueError("Positions must be float32 or float64, or other types that can be cast to float32")
         
+    if not pos.flags.c_contiguous:
+        pos = np.ascontiguousarray(pos)
+
+    if weights is not None and not weights.flags.c_contiguous:
+        weights = np.ascontiguousarray(weights)
+
+    if values is not None and not values.flags.c_contiguous:
+        values = np.ascontiguousarray(values)
+        
     if resampler == "CIC":
         to_mesh_float = mesh_lib.run_cic_float
         to_mesh_double = mesh_lib.run_cic_double 

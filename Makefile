@@ -13,12 +13,12 @@ TARGETS := $(LIB_DIR)/fftpower.so $(LIB_DIR)/mesh.so
 all: $(TARGETS)
 
 # 编译fftpower.so
-$(LIB_DIR)/fftpower.so: $(SRC_DIR)/fftpower.cpp
+$(LIB_DIR)/fftpower.so: $(SRC_DIR)/fftpower.cpp $(SRC_DIR)/fftpower.hpp
 	@mkdir -p $(LIB_DIR)
 	$(CXX) $(CXXFLAGS) $< -o $@
 
 # 编译mesh.so
-$(LIB_DIR)/mesh.so: $(SRC_DIR)/mesh.cpp
+$(LIB_DIR)/mesh.so: $(SRC_DIR)/mesh.cpp $(SRC_DIR)/mesh.hpp
 	@mkdir -p $(LIB_DIR)
 	$(CXX) $(CXXFLAGS) $< -o $@
 

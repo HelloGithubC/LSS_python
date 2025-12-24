@@ -3,7 +3,22 @@
 extern "C" {
     void run_cic_float(const float *pos, float *field, size_t np, float boxSize[ndim], size_t ngrids[ndim], const float *weights, const float *values, float shift, int nthreads)
     {
+        // size_t ngrids_all = 1uL;
+        // for (size_t i = 0; i < ndim; ++i)
+        // {
+        //     ngrids_all *= ngrids[i];
+        // }
+        // double* field_double = new double[ngrids_all];
+        // for (size_t i = 0; i < ngrids_all; ++i)
+        // {
+        //     field_double[i] = field[i];
+        // }
         run_cic<float>(pos, field, np, boxSize, ngrids, weights, values, shift, nthreads);
+        // for (size_t i = 0; i < ngrids_all; ++i)
+        // {
+        //     field[i] = static_cast<float>(field_double[i]);
+        // }
+        // delete[] field_double;
     }
 
     void run_cic_double(const double *pos, double *field, size_t np, double boxSize[ndim], size_t ngrids[ndim], const double *weights, const double *values, double shift, int nthreads)
@@ -13,7 +28,22 @@ extern "C" {
 
     void run_ngp_float(const float *pos, float *field, size_t np, float boxSize[ndim], size_t ngrids[ndim], const float *weights, const float *values, float shift, int nthreads)
     {
+        // size_t ngrids_all = 1uL;
+        // for (size_t i = 0; i < ndim; ++i)
+        // {
+        //     ngrids_all *= ngrids[i];
+        // }
+        // double* field_double = new double[ngrids_all];
+        // for (size_t i = 0; i < ngrids_all; ++i)
+        // {
+        //     field_double[i] = field[i];
+        // }
         run_ngp<float>(pos, field, np, boxSize, ngrids, weights, values, shift, nthreads);
+        // for (size_t i = 0; i < ngrids_all; ++i)
+        // {
+        //     field[i] = static_cast<float>(field_double[i]);
+        // }
+        // delete[] field_double;
     }
 
     void run_ngp_double(const double *pos, double *field, size_t np, double boxSize[ndim], size_t ngrids[ndim], const double *weights, const double *values, double shift, int nthreads)
@@ -23,7 +53,22 @@ extern "C" {
 
     void run_tsc_float(const float *pos, float *field, size_t np, float boxSize[ndim], size_t ngrids[ndim], const float *weights, const float *values, float shift, int nthreads)
     {
+        // size_t ngrids_all = 1uL;
+        // for (size_t i = 0; i < ndim; ++i)
+        // {
+        //     ngrids_all *= ngrids[i];
+        // }
+        // double* field_double = new double[ngrids_all];
+        // for (size_t i = 0; i < ngrids_all; ++i)
+        // {
+        //     field_double[i] = field[i];
+        // }
         run_tsc<float>(pos, field, np, boxSize, ngrids, weights, values, shift, nthreads);
+        // for (size_t i = 0; i < ngrids_all; ++i)
+        // {
+        //     field[i] = static_cast<float>(field_double[i]);
+        // }
+        // delete[] field_double;
     }
 
     void run_tsc_double(const double *pos, double *field, size_t np, double boxSize[ndim], size_t ngrids[ndim], const double *weights, const double *values, double shift, int nthreads)
@@ -33,7 +78,22 @@ extern "C" {
 
     void run_pcs_float(const float *pos, float *field, size_t np, float boxSize[ndim], size_t ngrids[ndim], const float *weights, const float *values, float shift, int nthreads)
     {
+        // size_t ngrids_all = 1uL;
+        // for (size_t i = 0; i < ndim; ++i)
+        // {
+        //     ngrids_all *= ngrids[i];
+        // }
+        // double* field_double = new double[ngrids_all];
+        // for (size_t i = 0; i < ngrids_all; ++i)
+        // {
+        //     field_double[i] = field[i];
+        // }
         run_pcs<float>(pos, field, np, boxSize, ngrids, weights, values, shift, nthreads);
+        // for (size_t i = 0; i < ngrids_all; ++i)
+        // {
+        //     field[i] = static_cast<float>(field_double[i]);
+        // }
+        // delete[] field_double;
     }
 
     void run_pcs_double(const double *pos, double *field, size_t np, double boxSize[ndim], size_t ngrids[ndim], const double *weights, const double *values, double shift, int nthreads)
