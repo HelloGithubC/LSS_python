@@ -59,6 +59,7 @@ void run_cic(const T *pos, T *field,  size_t np, T boxSize[ndim], size_t ngrids[
             }
             
             double mass_temp = weight * value;
+            double field_temp = 0.0;
             
             std::array<u_char,2> delta_ixyz = {0u, 1u};
             for (auto& dix: delta_ixyz)
@@ -67,8 +68,10 @@ void run_cic(const T *pos, T *field,  size_t np, T boxSize[ndim], size_t ngrids[
                 {
                     for (auto& diz: delta_ixyz)
                     {
-                        #pragma omp atomic
-                        field[pos_i[diz][2] + pos_i[diy][1] * nz + pos_i[dix][0] * nz * ny] += static_cast<T>(diff_ratio_temp[2][diz] * diff_ratio_temp[1][diy] * diff_ratio_temp[0][dix] * mass_temp);
+                        field_temp = static_cast<double>(field[pos_i[diz][2] + pos_i[diy][1] * nz + pos_i[dix][0] * nz * ny]) + diff_ratio_temp[2][diz] * diff_ratio_temp[1][diy] * diff_ratio_temp[0][dix] * mass_temp;
+
+                        #pragma omp atomic write
+                        field[pos_i[diz][2] + pos_i[diy][1] * nz + pos_i[dix][0] * nz * ny] = static_cast<T>(field_temp);
                     } 
                 }
             }
