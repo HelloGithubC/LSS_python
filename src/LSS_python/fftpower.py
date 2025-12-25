@@ -45,10 +45,17 @@ class FFTPower:
         self.removed_shotnoise = False
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
-    mode="1d", k_logarithmic=False, ps_3d_inplace=True, nthreads=1, device_id=-1, c_api=False, test_mode=False):
+    mode="1d", k_logarithmic=False, ps_3d_inplace=True, nthreads=1, device_id=-1, c_api=False, compensated=True):
+        """
+        Calculate power spectrum from a mesh.
+            Args:
+                compensated: only used when mesh.complex_field is None.
+        """
         shotnoise = mesh.attrs["shotnoise"]
         if device_id >= 0:
             import cupy as cp
+            if mesh.complex_field_gpu is None:
+                mesh.r2c(compensated=compensated, nthreads=nthreads, device_id=device_id, c_api=c_api)
             if ps_3d_inplace:
                 ps_3d_gpu = mesh.complex_field_gpu
             else:
@@ -56,6 +63,8 @@ class FFTPower:
             ps_3d_need = ps_3d_gpu
             boxsize_prod = cp.prod(self.BoxSize, dtype=cp.float32)
         else:
+            if mesh.complex_field is None:
+                mesh.r2c(compensated=compensated, nthreads=nthreads, device_id=device_id, c_api=c_api)
             if ps_3d_inplace:
                 ps_3d = mesh.complex_field
             else:
@@ -69,12 +78,12 @@ class FFTPower:
         deal_ps_3d(ps_3d_need, ps_3d_kernel=None, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, nthreads=nthreads, c_api=c_api)
         self.removed_shotnoise = True # Avoid shotnoise being removed twice
 
-        return self.cal_ps_from_3d(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api, test_mode=test_mode)
+        return self.cal_ps_from_3d(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
 
     def cal_ps_from_3d(
         self, ps_3d,
         kmin, kmax, dk, Nmu=None, k_arrays=None,
-        mode="1d", k_logarithmic=False, nthreads=1, device_id=-1, c_api=False, test_mode=False
+        mode="1d", k_logarithmic=False, nthreads=1, device_id=-1, c_api=False
     ):
         if ps_3d is None:
             raise ValueError("mesh.complex_field(_gpu) is None. Please check if you have run the r2c or converted it to correct device.")
@@ -167,14 +176,14 @@ class FFTPower:
         
         if not self.removed_shotnoise:
             power -= self.attrs["shotnoise"]
-        if test_mode:
-            self.test_mode = True
-            if mode == "2d":
-                self.power_test = {"k": np.copy(power_k), "mu": np.copy(power_mu), "Pkmu": np.copy(np.real(power)), "Pkmu_C": np.copy(power), "modes": np.copy(power_modes)}
-            else:
-                self.power_test = {"k": np.copy(power_k).ravel(), "Pk": np.copy(np.real(power)).ravel(), "Pk_C": np.copy(power).ravel(), "modes": np.copy(power_modes).ravel()}
-        else:
-            self.test_mode = False
+        # if test_mode:
+        #     self.test_mode = True
+        #     if mode == "2d":
+        #         self.power_test = {"k": np.copy(power_k), "mu": np.copy(power_mu), "Pkmu": np.copy(np.real(power)), "Pkmu_C": np.copy(power), "modes": np.copy(power_modes)}
+        #     else:
+        #         self.power_test = {"k": np.copy(power_k).ravel(), "Pk": np.copy(np.real(power)).ravel(), "Pk_C": np.copy(power).ravel(), "modes": np.copy(power_modes).ravel()}
+        # else:
+            # self.test_mode = False
 
         masked_index = power_modes == 0
         need_index = np.logical_not(masked_index)
