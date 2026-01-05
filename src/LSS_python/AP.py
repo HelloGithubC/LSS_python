@@ -49,6 +49,7 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, devi
         Nmu: Default 30
         mode: Default '2d'
         nthreads: Default 1
+        add_HI: Default False.
         device_id: If >= 0, use GPU. Default -1.
     """
     from .fftpower import FFTPower
@@ -69,6 +70,7 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, devi
     Nmu = kargs.get("Nmu", 100)
     mode = kargs.get("mode", "2d")
     nthreads = kargs.get("nthreads", 1)
+    add_HI = kargs.get("add_HI", False)
 
     fftpower_new = FFTPower(Nmesh=Nmesh, BoxSize=boxsize_array, shotnoise=0.0)
     fftpower_new.is_run_ps_3d = True
@@ -85,12 +87,13 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, devi
             c_api=True
     )
 
-    HI_factor = cal_HI_factor(redshift, omega_mm, boxsize_array, Nmesh)
-    fftpower_new.attrs["HI_factor"] = HI_factor
-    if mode == "1d":
-        fftpower_new.power["Pk"] *= HI_factor ** 2 * np.prod(convert_array)
-    else:
-        fftpower_new.power["Pkmu"] *= HI_factor ** 2 * np.prod(convert_array)
+    if add_HI:
+        HI_factor = cal_HI_factor(redshift, omega_mm, boxsize_array, Nmesh)
+        fftpower_new.attrs["HI_factor"] = HI_factor
+        if mode == "1d":
+            fftpower_new.power["Pk"] *= HI_factor ** 2 * np.prod(convert_array)
+        else:
+            fftpower_new.power["Pkmu"] *= HI_factor ** 2 * np.prod(convert_array)
 
     return fftpower_new
 

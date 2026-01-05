@@ -98,10 +98,10 @@ else:
 
 fftpower_filename = argv.fftpower_filename
 if fftpower_filename is None:
-    fftpower_filename = f"fftpower-{data_name}-Nmesh${Nmesh:d}-k{kmin_str}to{kmax_str}_dk{dk_str}_{mode_str}"
+    fftpower_filename = data_dir + f"/fftpower-{data_name}-Nmesh{Nmesh:d}-k{kmin_str}to{kmax_str}_dk{dk_str}_{mode_str}.pkl"
 mesh_dir = argv.mesh_dir
 if mesh_dir is None:
-    mesh_dir = f"mesh-{data_name}-BoxSize{boxsize:.0f}_Nmesh{Nmesh:d}"
+    mesh_dir = data_dir + f"/mesh-{data_name}-BoxSize{boxsize:.0f}_Nmesh{Nmesh:d}"
 
 data = read_data(data_filename, weight_key, value_key)
 mesh = Mesh(Nmesh, boxsize)
@@ -119,13 +119,14 @@ force = argv.force
 force_mesh = argv.force_mesh
 verbose = argv.verbose
 
-if not os.path.exists(mesh_dir) or force_mesh:
+if not os.path.exists(mesh_dir + "/complex_field.npy") or force_mesh:
     if verbose:
         print("Now running mesh...")
         print(f"Number of particles is {data['Pos'].shape[0]:d}; Boxsize is {boxsize:.0f}; Nmesh is {Nmesh:d}.")
         print(f"Use resampler CIC; Use weights: {use_weight_key}; Use values: {use_value_key}; Use norm: {is_norm}")
         print(f"Use nthreads: {nthreads:d}")
     mesh.to_mesh(data["Pos"], resampler="CIC", weights=weights, values=values, nthreads=nthreads, is_norm=is_norm, c_api=True)
+    mesh.r2c(compensated=True, nthreads=nthreads, c_api=True)
     if verbose:
         print(f"Mesh created. Now saving mesh to {mesh_dir}")
     mesh.save(mesh_dir, mode="all")
@@ -135,7 +136,11 @@ elif only_run_mesh:
     print("Mesh already exists. Skip.")
     exit(0)
 else:
+    if verbose:
+        print("Mesh exists. Now reading ...")
     mesh = Mesh.load(mesh_dir, only_complex=True)
+    if verbose:
+        print("Mesh read done.")
 
 if not only_run_mesh:
     if not os.path.exists(fftpower_filename) or force:

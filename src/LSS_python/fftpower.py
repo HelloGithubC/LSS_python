@@ -1,4 +1,5 @@
 import numpy as np
+import os
 from .JIT.fftpower import deal_ps_3d_multithreads, deal_ps_3d_single, cal_ps_from_numba
 
 def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, inplace=True, nthreads=1, device_id=-1, c_api=False):
@@ -26,7 +27,7 @@ def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0
         return complex_field
 
 class FFTPower:
-    def __init__(self, Nmesh, BoxSize, shotnoise=0.0):
+    def __init__(self, Nmesh, BoxSize):
         if isinstance(Nmesh, int) or isinstance(Nmesh, float):
             self.Nmesh = np.array([Nmesh, Nmesh, Nmesh], dtype=np.int32)
         else:
@@ -39,17 +40,17 @@ class FFTPower:
         self.attrs = {
             "Nmesh": self.Nmesh,
             "BoxSize": self.BoxSize,
-            "shotnoise": shotnoise,
         }
         self.power = None
         self.removed_shotnoise = False
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
-    mode="1d", k_logarithmic=False, ps_3d_inplace=True, nthreads=1, device_id=-1, c_api=False, compensated=True):
+    mode="1d", k_logarithmic=False, ps_3d_inplace=True, mesh_kernel=None, compensated=True, nthreads=1, device_id=-1, c_api=False):
         """
         Calculate power spectrum from a mesh.
             Args:
                 compensated: only used when mesh.complex_field is None.
+                mesh_kernel: If set, its complex_field will be used to muliple the ps_3d.
         """
         shotnoise = mesh.attrs["shotnoise"]
         if device_id >= 0:
@@ -75,18 +76,23 @@ class FFTPower:
         if ps_3d_need is None:
             raise ValueError("mesh.complex_field(_gpu) is None. Please check if you have run the r2c or converted it to correct device.")
         
-        deal_ps_3d(ps_3d_need, ps_3d_kernel=None, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, nthreads=nthreads, c_api=c_api)
+        if mesh_kernel is not None:
+            ps_3d_kernel_need = mesh_kernel.complex_field_gpu if device_id >= 0 else mesh_kernel.complex_field
+        else:
+            ps_3d_kernel_need = None
+        
+        deal_ps_3d(ps_3d_need, ps_3d_kernel=ps_3d_kernel_need, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, nthreads=nthreads, c_api=c_api)
         self.removed_shotnoise = True # Avoid shotnoise being removed twice
+        self.attrs["shotnoise"] = shotnoise
 
         return self.cal_ps_from_3d(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
 
     def cal_ps_from_3d(
         self, ps_3d,
         kmin, kmax, dk, Nmu=None, k_arrays=None,
-        mode="1d", k_logarithmic=False, nthreads=1, device_id=-1, c_api=False
+        mode="1d", k_logarithmic=False, shotnoise=0.0,
+        nthreads=1, device_id=-1, c_api=False
     ):
-        if ps_3d is None:
-            raise ValueError("mesh.complex_field(_gpu) is None. Please check if you have run the r2c or converted it to correct device.")
         if device_id >= 0:
             import cupy as cp
             from .cuda.fftpower import cal_ps_from_cuda
@@ -110,6 +116,9 @@ class FFTPower:
         else:
             self.attrs["Nmu"] = 1
             mu_array = np.array([0.0, 1.0])
+
+        if "shotnoise" not in self.attrs:
+            self.attrs["shotnoise"] = shotnoise
 
         if k_arrays is None:
             k_x_array = (
@@ -213,7 +222,7 @@ class FFTPower:
         else:
             mu_array = np.nanmean(power["mu"], axis=0)
         
-        if kmin <= k_array[0]:
+        if kmin <= k_array[0] or kmin < 0.0:
             k_min_index = 0
         else:
             k_min_index_source = np.where(k_array >= kmin)[0]
@@ -221,7 +230,7 @@ class FFTPower:
                 raise ValueError(f"kmin({kmin:.2f}) is too large")
             else:
                 k_min_index = k_min_index_source[0]
-        if kmax >= k_array[-1]:
+        if kmax >= k_array[-1] or kmax < 0.0:
             k_max_index = len(k_array)
         else:
             k_max_index_source = np.where(k_array >= kmax)[0]
@@ -268,8 +277,11 @@ class FFTPower:
             "power": self.power,
             "attrs": self.attrs,
         }
-        if self.test_mode:
-            save_dict["power_test"] = self.power_test
+        # if self.test_mode:
+        #     save_dict["power_test"] = self.power_test
+        dir_part, filename_part = os.path.split(filename)
+        if not os.path.exists(dir_part):
+            os.makedirs(dir_part)
         joblib.dump(save_dict, filename)
 
     @classmethod
@@ -280,7 +292,6 @@ class FFTPower:
         self = FFTPower(
             load_dict["attrs"]["Nmesh"],
             load_dict["attrs"]["BoxSize"],
-            load_dict["attrs"]["shotnoise"],
         )
         self.power = load_dict["power"]
         self.attrs = load_dict["attrs"]
