@@ -2,7 +2,7 @@ import numpy as np
 from numba import njit
 import math
 
-from .base import Hz, DA, Hz_jit, DA_jit, cal_HI_factor
+from .base import Hz, DA, cal_HI_factor
 
 def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None):
     sbin = xismu.xis.shape[0]
@@ -36,7 +36,7 @@ def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_met
     else:
         raise ValueError("convert_method must be 'simple' or 'dense'")
 
-def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, device_id=-1, **kargs):
+def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, shotnoise=0.0, ps_rescale=False, device_id=-1, **kargs):
     """
     ps_3d: The 3d PS after removing the shot noise and including kernel
     boxsize: The boxsize of the simulation. float or ndarray is OK.
@@ -51,6 +51,7 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, devi
         nthreads: Default 1
         add_HI: Default False.
         device_id: If >= 0, use GPU. Default -1.
+        shotnoise: Only add to fftpower.attrs but not to deduct. 
     """
     from .fftpower import FFTPower
     z = redshift
@@ -61,27 +62,39 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, devi
     convert_array = np.array(
         [perp_convert_factor, perp_convert_factor, parallel_convert_factor]
     )
-    boxsize_array = boxsize * convert_array
+    boxsize_array = boxsize * np.ones(3)
+    boxsize_convert_array = boxsize * convert_array
 
     Nmesh = kargs.get("Nmesh", 1024)
+    Nmesh_array = Nmesh * np.ones(3)
     k_min = kargs.get("k_min", 0.01)
     k_max = kargs.get("k_max", 3.0)
     dk = kargs.get("dk", 0.01)
-    Nmu = kargs.get("Nmu", 100)
+    Nmu = kargs.get("Nmu", 30)
     mode = kargs.get("mode", "2d")
     nthreads = kargs.get("nthreads", 1)
     add_HI = kargs.get("add_HI", False)
 
-    fftpower_new = FFTPower(Nmesh=Nmesh, BoxSize=boxsize_array, shotnoise=0.0)
+    if ps_rescale:
+        from ._AP_core import rescale_ps
+        kx = np.fft.fftfreq(n=Nmesh, d=boxsize_array[0]/Nmesh_array[0]) * np.pi * 2 
+        ky = np.fft.fftfreq(n=Nmesh, d=boxsize_array[1]/Nmesh_array[1]) * np.pi * 2
+        kz = np.fft.rfftfreq(n=Nmesh, d=boxsize_array[2]/Nmesh_array[2]) * np.pi * 2
+        ps_3d_need = rescale_ps(ps_3d, kx, ky, kz, perp_convert_factor, parallel_convert_factor, nthreads)
+        fftpower_new = FFTPower(Nmesh=Nmesh_array, BoxSize=boxsize_array)
+    else:
+        ps_3d_need = ps_3d
+        fftpower_new = FFTPower(Nmesh=Nmesh_array, BoxSize=boxsize_convert_array)
     fftpower_new.is_run_ps_3d = True
     _ = fftpower_new.cal_ps_from_3d(
-            ps_3d,
+            ps_3d_need,
             k_min,
             k_max,
             dk,
             Nmu=Nmu,
             mode=mode,
             k_logarithmic=False,
+            shotnoise=shotnoise,
             nthreads=nthreads,
             device_id=device_id,
             c_api=True

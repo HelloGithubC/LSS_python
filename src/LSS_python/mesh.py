@@ -345,6 +345,12 @@ class Mesh:
                     self.attrs["Nmesh"] = None
                     self.Nmesh = None
                 warnings.warn("No attrs.pkl found. The attrs will only contrain the Nmesh, if exists real field.")
+            if only_complex:
+                self.attrs["modes"] = ("complex", )
+            elif only_real:
+                self.attrs["modes"] = ("real", )
+            else:
+                self.attrs["modes"] = ("real", "complex")
                 
         return self 
     

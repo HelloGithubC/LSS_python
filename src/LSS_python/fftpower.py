@@ -2,7 +2,15 @@ import numpy as np
 import os
 from .JIT.fftpower import deal_ps_3d_multithreads, deal_ps_3d_single, cal_ps_from_numba
 
-def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, inplace=True, nthreads=1, device_id=-1, c_api=False):
+def deal_ps_3d_from_mesh(mesh, mesh_kernel=None, inplace=True, nthreads=1, device_id=-1, c_api=False):
+    complex_field = mesh.complex_field if device_id < 0 else mesh.complex_field_gpu
+    if mesh_kernel is not None:
+        ps_3d_kernel = mesh_kernel.complex_field if device_id < 0 else mesh_kernel.complex_field_gpu
+    else:
+        ps_3d_kernel = None
+    return deal_ps_3d(complex_field, ps_3d_kernel, np.prod(mesh.attrs["BoxSize"]), mesh.attrs["shotnoise"], inplace, nthreads, device_id, c_api)
+
+def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, inplace=False, nthreads=1, device_id=-1, c_api=False):
     if not inplace:
         ps_3d = np.copy(complex_field)
     else:
@@ -57,21 +65,15 @@ class FFTPower:
             import cupy as cp
             if mesh.complex_field_gpu is None:
                 mesh.r2c(compensated=compensated, nthreads=nthreads, device_id=device_id, c_api=c_api)
-            if ps_3d_inplace:
-                ps_3d_gpu = mesh.complex_field_gpu
-            else:
-                ps_3d_gpu = cp.copy(mesh.complex_field_gpu)
+            ps_3d_gpu = mesh.complex_field_gpu
             ps_3d_need = ps_3d_gpu
-            boxsize_prod = cp.prod(self.BoxSize, dtype=cp.float32)
+            boxsize_prod = cp.prod(mesh.attrs["BoxSize"], dtype=cp.float32)
         else:
             if mesh.complex_field is None:
                 mesh.r2c(compensated=compensated, nthreads=nthreads, device_id=device_id, c_api=c_api)
-            if ps_3d_inplace:
-                ps_3d = mesh.complex_field
-            else:
-                ps_3d = np.copy(mesh.complex_field)
+            ps_3d = mesh.complex_field
             ps_3d_need = ps_3d
-            boxsize_prod = np.prod(self.BoxSize, dtype=np.float32)
+            boxsize_prod = np.prod(mesh.attrs["BoxSize"], dtype=np.float32)
         
         if ps_3d_need is None:
             raise ValueError("mesh.complex_field(_gpu) is None. Please check if you have run the r2c or converted it to correct device.")
@@ -81,11 +83,11 @@ class FFTPower:
         else:
             ps_3d_kernel_need = None
         
-        deal_ps_3d(ps_3d_need, ps_3d_kernel=ps_3d_kernel_need, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, nthreads=nthreads, c_api=c_api)
+        ps_3d_need = deal_ps_3d(ps_3d_need, ps_3d_kernel=ps_3d_kernel_need, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, inplace=ps_3d_inplace, nthreads=nthreads, c_api=c_api)
         self.removed_shotnoise = True # Avoid shotnoise being removed twice
         self.attrs["shotnoise"] = shotnoise
 
-        return self.cal_ps_from_3d(ps_3d, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
+        return self.cal_ps_from_3d(ps_3d_need, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
 
     def cal_ps_from_3d(
         self, ps_3d,
@@ -93,6 +95,7 @@ class FFTPower:
         mode="1d", k_logarithmic=False, shotnoise=0.0,
         nthreads=1, device_id=-1, c_api=False
     ):
+        self.removed_shotnoise = True
         if device_id >= 0:
             import cupy as cp
             from .cuda.fftpower import cal_ps_from_cuda
@@ -122,26 +125,17 @@ class FFTPower:
 
         if k_arrays is None:
             k_x_array = (
-                np.fft.fftfreq(self.Nmesh[0], d=1.0)
-                * 2.0
-                * np.pi
-                * self.Nmesh[0]
-                / self.BoxSize[0]
+                np.fft.fftfreq(self.Nmesh[0], d=self.Nmesh[0] / self.BoxSize[0])
+                * 2.0 * np.pi
             )
             k_y_array = (
-                np.fft.fftfreq(self.Nmesh[1], d=1.0)
-                * 2.0
-                * np.pi
-                * self.Nmesh[1]
-                / self.BoxSize[1]
+                np.fft.fftfreq(self.Nmesh[1], d=self.Nmesh[1] / self.BoxSize[1])
+                * 2.0 * np.pi
             )
             k_z_array = (
-                np.fft.fftfreq(self.Nmesh[2], d=1.0)
-                * 2.0
-                * np.pi
-                * self.Nmesh[2]
-                / self.BoxSize[2]
-            )[: ps_3d.shape[2]]
+                np.fft.rfftfreq(self.Nmesh[2], d=self.Nmesh[2] / self.BoxSize[2])
+                * 2.0 * np.pi
+            )
         else:
             k_x_array, k_y_array, k_z_array = k_arrays
 
@@ -183,17 +177,6 @@ class FFTPower:
                     nthreads=nthreads,
                 )
         
-        if not self.removed_shotnoise:
-            power -= self.attrs["shotnoise"]
-        # if test_mode:
-        #     self.test_mode = True
-        #     if mode == "2d":
-        #         self.power_test = {"k": np.copy(power_k), "mu": np.copy(power_mu), "Pkmu": np.copy(np.real(power)), "Pkmu_C": np.copy(power), "modes": np.copy(power_modes)}
-        #     else:
-        #         self.power_test = {"k": np.copy(power_k).ravel(), "Pk": np.copy(np.real(power)).ravel(), "Pk_C": np.copy(power).ravel(), "modes": np.copy(power_modes).ravel()}
-        # else:
-            # self.test_mode = False
-
         masked_index = power_modes == 0
         need_index = np.logical_not(masked_index)
         power_k[masked_index] = np.nan 
@@ -213,7 +196,13 @@ class FFTPower:
         self.attrs["dk"] = dk
         return self.power
     
-    def intergrate_fftpower(self, kmin=-1, kmax=-1, mu_min=-1, mu_max=-1, integrate="k", easy_mu_array=False, norm=False):
+    def intergrate_fftpower(self, kmin=-1, kmax=-1, mu_min=-1, mu_max=-1, integrate="k", easy_mu_array=False, norm=False, bin_pack=1):
+        if not isinstance(bin_pack, int):
+            bin_pack = int(bin_pack)
+        if bin_pack > 1:
+            do_pack = True 
+        else:
+            do_pack = False
         power = self.power 
         k_array = np.nanmean(power["k"], axis=1)
         if easy_mu_array:
@@ -257,16 +246,30 @@ class FFTPower:
                 mu_max_index = mu_max_index_source[0]
 
         Pkmu_select = np.real(power["Pkmu"][k_min_index:k_max_index, mu_min_index:mu_max_index])
+        mu_need = mu_array[mu_min_index: mu_max_index]
+        k_need = k_array[k_min_index:k_max_index]
         if integrate == "k":
-            Pkmu_integrate = np.nanmean(Pkmu_select, axis=0)
+            if do_pack:
+                new_bin_num = Pkmu_select.shape[1] // bin_pack
+                Pkmu_select_split = np.array_split(Pkmu_select, new_bin_num, axis=1)
+                Pkmu_select = np.stack([np.nanmean(Pkmu_select_split[i], axis=1) for i in range(new_bin_num)], axis=-1)
+                mu_need_split = np.array_split(mu_need, new_bin_num)
+                mu_need = np.array([np.nanmean(mu_need_split[i]) for i in range(new_bin_num)])
+            Pkmu_integrate = np.nansum((Pkmu_select[:-1] + Pkmu_select[1:]) * (k_need[1:] - k_need[:-1]).reshape(-1,1)/2.0, axis=0)
             if norm:
                 Pkmu_integrate = Pkmu_integrate / np.nanmean(Pkmu_integrate)
-            return mu_array[mu_min_index: mu_max_index], Pkmu_integrate
+            return mu_need, Pkmu_integrate
         elif integrate == "mu":
-            Pkmu_integrate = np.nanmean(Pkmu_select, axis=1)
+            if do_pack:
+                new_bin_num = Pkmu_select.shape[0] // bin_pack
+                Pkmu_select_split = np.array_split(Pkmu_select, new_bin_num, axis=0)
+                Pkmu_select = np.stack([np.nanmean(Pkmu_select_split[i], axis=0) for i in range(new_bin_num)], axis=-1)
+                k_need_split = np.array_split(k_need, new_bin_num)
+                k_need = np.array([np.nanmean(k_need_split[i]) for i in range(new_bin_num)])
+            Pkmu_integrate = np.nansum((Pkmu_select[:,:-1] + Pkmu_select[:,1:]) * (mu_need[1:] - mu_need[:-1]).reshape(1,-1)/2.0, axis=1)
             if norm:
                 Pkmu_integrate = Pkmu_integrate / np.nanmean(Pkmu_integrate)
-            return k_array[k_min_index: k_max_index], Pkmu_integrate
+            return k_need, Pkmu_integrate
         else:
             raise ValueError("integrate must be k or mu")
     

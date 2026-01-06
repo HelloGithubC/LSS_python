@@ -1083,3 +1083,103 @@ def convert_dense_core(i_smu_sparse, cosmos_tuple, smu_all_bound_tuple, smu_boun
     )
 
     return need_convert, (i_s_dense_bound_tuple[0], i_s_dense_bound_tuple[2]), rates_dense
+
+@njit(parallel=True, fastmath=True)
+def _trilinear_interp_extrap(
+    P, kx, ky, kz,
+    kx_new, ky_new, kz_new,
+    nthreads=1
+):
+    nx, ny, nz = len(kx), len(ky), len(kz)
+    out = np.empty((len(kx_new), len(ky_new), len(kz_new)), dtype=P.dtype)
+
+    set_num_threads(nthreads)
+    for i in prange(len(kx_new)):
+        x = kx_new[i]
+        ix = np.searchsorted(kx, x) - 1
+        ix = max(0, min(ix, nx - 2))
+        x0, x1 = kx[ix], kx[ix + 1]
+        tx = (x - x0) / (x1 - x0)
+
+        for j in range(len(ky_new)):
+            y = ky_new[j]
+            iy = np.searchsorted(ky, y) - 1
+            iy = max(0, min(iy, ny - 2))
+            y0, y1 = ky[iy], ky[iy + 1]
+            ty = (y - y0) / (y1 - y0)
+
+            for k in range(len(kz_new)):
+                z = kz_new[k]
+                iz = np.searchsorted(kz, z) - 1
+                iz = max(0, min(iz, nz - 2))
+                z0, z1 = kz[iz], kz[iz + 1]
+                tz = (z - z0) / (z1 - z0)
+
+                c000 = P[ix,   iy,   iz]
+                c100 = P[ix+1, iy,   iz]
+                c010 = P[ix,   iy+1, iz]
+                c110 = P[ix+1, iy+1, iz]
+                c001 = P[ix,   iy,   iz+1]
+                c101 = P[ix+1, iy,   iz+1]
+                c011 = P[ix,   iy+1, iz+1]
+                c111 = P[ix+1, iy+1, iz+1]
+
+                out[i, j, k] = (
+                    c000 * (1-tx)*(1-ty)*(1-tz) +
+                    c100 * tx*(1-ty)*(1-tz) +
+                    c010 * (1-tx)*ty*(1-tz) +
+                    c110 * tx*ty*(1-tz) +
+                    c001 * (1-tx)*(1-ty)*tz +
+                    c101 * tx*(1-ty)*tz +
+                    c011 * (1-tx)*ty*tz +
+                    c111 * tx*ty*tz
+                )
+    return out
+
+def rescale_ps(
+    P, kx, ky, kz,
+    alpha_perp, alpha_para,
+    nthreads=1
+):
+    """
+    P.shape = (Nx, Ny, Nz)
+    kx, ky from fftfreq
+    kz from rfftfreq
+    """
+
+    # ---- 排序 kx, ky（fftfreq 非单调）----
+    ix = np.argsort(kx)
+    iy = np.argsort(ky)
+
+    kx_s = kx[ix]
+    ky_s = ky[iy]
+    kz_s = kz  # rfftfreq 已单调
+
+    P_s = P[ix][:, iy]
+
+    # ---- 新网格（等距）----
+    kx_new =  kx_s
+    ky_new =  ky_s
+    kz_new =  kz_s
+
+    # ---- 反向映射 ----
+    kx_old = kx_new / alpha_perp
+    ky_old = ky_new / alpha_perp
+    kz_old = kz_new / alpha_para
+
+    # ---- 插值 + 外插 ----
+    P_new_sorted = _trilinear_interp_extrap(
+        P_s, kx_s, ky_s, kz_s,
+        kx_old, ky_old, kz_old,
+        nthreads=nthreads
+    )
+
+    # ---- 恢复原 fftfreq 顺序 ----
+    ix_inv = np.empty_like(ix)
+    iy_inv = np.empty_like(iy)
+    ix_inv[ix] = np.arange(len(ix))
+    iy_inv[iy] = np.arange(len(iy))
+
+    P_new = P_new_sorted[ix_inv][:, iy_inv]
+
+    return P_new
