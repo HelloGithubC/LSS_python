@@ -255,7 +255,7 @@ class FFTPower:
                 Pkmu_select = np.stack([np.nanmean(Pkmu_select_split[i], axis=1) for i in range(new_bin_num)], axis=-1)
                 mu_need_split = np.array_split(mu_need, new_bin_num)
                 mu_need = np.array([np.nanmean(mu_need_split[i]) for i in range(new_bin_num)])
-            Pkmu_integrate = np.nansum((Pkmu_select[:-1] + Pkmu_select[1:]) * (k_need[1:] - k_need[:-1]).reshape(-1,1)/2.0, axis=0)
+            Pkmu_integrate = np.nanmean(Pkmu_select, axis=0) * (k_need[-1] - k_need[0])
             if norm:
                 Pkmu_integrate = Pkmu_integrate / np.nanmean(Pkmu_integrate)
             return mu_need, Pkmu_integrate
@@ -266,7 +266,7 @@ class FFTPower:
                 Pkmu_select = np.stack([np.nanmean(Pkmu_select_split[i], axis=0) for i in range(new_bin_num)], axis=-1)
                 k_need_split = np.array_split(k_need, new_bin_num)
                 k_need = np.array([np.nanmean(k_need_split[i]) for i in range(new_bin_num)])
-            Pkmu_integrate = np.nansum((Pkmu_select[:,:-1] + Pkmu_select[:,1:]) * (mu_need[1:] - mu_need[:-1]).reshape(1,-1)/2.0, axis=1)
+            Pkmu_integrate = np.nanmean(Pkmu_select, axis=1) * (mu_need[-1] - mu_need[0])
             if norm:
                 Pkmu_integrate = Pkmu_integrate / np.nanmean(Pkmu_integrate)
             return k_need, Pkmu_integrate
