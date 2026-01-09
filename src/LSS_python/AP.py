@@ -42,6 +42,8 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, shot
     boxsize: The boxsize of the simulation. float or ndarray is OK.
 
     kargs:
+        use_new_kernel: Default False.
+        ps_3d_kernel: 
         Nmesh: Default 1024
         k_min: Default 0.01
         k_max: Default 3.0
@@ -66,6 +68,7 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, shot
     boxsize_convert_array = boxsize * convert_array
 
     Nmesh = kargs.get("Nmesh", 1024)
+
     Nmesh_array = Nmesh * np.ones(3)
     k_min = kargs.get("k_min", 0.01)
     k_max = kargs.get("k_max", 3.0)
@@ -103,10 +106,12 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, shot
     if add_HI:
         HI_factor = cal_HI_factor(redshift, omega_mm, boxsize_array, Nmesh)
         fftpower_new.attrs["HI_factor"] = HI_factor
-        if mode == "1d":
-            fftpower_new.power["Pk"] *= HI_factor ** 2 * np.prod(convert_array)
-        else:
-            fftpower_new.power["Pkmu"] *= HI_factor ** 2 * np.prod(convert_array)
+    else:
+        HI_factor = 1.0
+    if mode == "1d":
+        fftpower_new.power["Pk"] *= HI_factor ** 2 * np.prod(convert_array)
+    else:
+        fftpower_new.power["Pkmu"] *= HI_factor ** 2 * np.prod(convert_array)
 
     return fftpower_new
 
