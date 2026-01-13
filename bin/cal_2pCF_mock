@@ -6,9 +6,12 @@ import joblib
 
 from LSS_python.tpcf import run_tpCF_mock, cal_tpCF_from_pairs
 
-def read_data(filename): # 临时版本
-    data_temp = np.load(filename)
-    if data_temp.dtype == np.float64 or data_temp.dtype == np.float32:
+def read_data(filename, read_type="npy"): # 临时版本
+    if read_type == "npy":
+        data_temp = np.load(filename)
+    else:
+        data_temp = joblib.load(filename)
+    if read_type == "npy" and data_temp.dtype == np.float64 or data_temp.dtype == np.float32:
         return data_temp
     else:
         n_col = 4 
