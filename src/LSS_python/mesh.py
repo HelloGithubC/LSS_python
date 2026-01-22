@@ -211,8 +211,8 @@ class Mesh:
                 raise ValueError('No real field to convert to complex field.')
             else:
                 if self.attrs["interlaced"]:
-                    complex1 = rfftn(self.real1, norm="forward", workers=nthreads)
-                    complex2 = rfftn(self.real2, norm="forward", workers=nthreads)
+                    complex1 = rfftn(self.real1, workers=nthreads, norm="forward")
+                    complex2 = rfftn(self.real2, workers=nthreads, norm="forward") 
                     if c_api:
                         from .CPP.mesh import do_interlacing_c_api
                         do_interlacing_c_api(complex1, complex2, self.BoxSize, self.Nmesh, k_arrays_interlace, nthreads) 
@@ -223,7 +223,7 @@ class Mesh:
                     else:
                         self.complex_field = complex1
                 else:
-                    self.complex_field = rfftn(self.real_field, norm="forward", workers=nthreads)
+                    self.complex_field = rfftn(self.real_field, workers=nthreads, norm="forward")
         if compensated:
             self.do_compensation(device_id, nthreads, c_api)
 

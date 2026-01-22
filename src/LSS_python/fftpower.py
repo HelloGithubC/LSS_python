@@ -124,18 +124,9 @@ class FFTPower:
             self.attrs["shotnoise"] = shotnoise
 
         if k_arrays is None:
-            k_x_array = (
-                np.fft.fftfreq(self.Nmesh[0], d=self.Nmesh[0] / self.BoxSize[0])
-                * 2.0 * np.pi
-            )
-            k_y_array = (
-                np.fft.fftfreq(self.Nmesh[1], d=self.Nmesh[1] / self.BoxSize[1])
-                * 2.0 * np.pi
-            )
-            k_z_array = (
-                np.fft.rfftfreq(self.Nmesh[2], d=self.Nmesh[2] / self.BoxSize[2])
-                * 2.0 * np.pi
-            )
+            k_x_array = np.fft.fftfreq(self.Nmesh[0], d=self.BoxSize[0] / self.Nmesh[0]) * 2.0 * np.pi
+            k_y_array = np.fft.fftfreq(self.Nmesh[1], d=self.BoxSize[1] / self.Nmesh[1]) * 2.0 * np.pi
+            k_z_array = np.fft.rfftfreq(self.Nmesh[2], d=self.BoxSize[2] / self.Nmesh[2]) * 2.0 * np.pi
         else:
             k_x_array, k_y_array, k_z_array = k_arrays
 
