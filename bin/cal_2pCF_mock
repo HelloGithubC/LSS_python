@@ -6,25 +6,28 @@ import joblib
 
 from LSS_python.tpcf import run_tpCF_mock, cal_tpCF_from_pairs
 
-def read_data(filename, read_type="npy"): # 临时版本
-    if read_type == "npy":
+def read_data(filename): # 临时版本
+    read_type = os.path.splitext(filename)[1]
+    if read_type == ".npy":
         data_temp = np.load(filename)
+        key_list = data_temp.dtype.names
+        if data_temp.dtype == np.float64 or data_temp.dtype == np.float32:
+            return data_temp
     else:
         data_temp = joblib.load(filename)
-    if read_type == "npy" and data_temp.dtype == np.float64 or data_temp.dtype == np.float32:
-        return data_temp
-    else:
-        n_col = 4 
-        if "WEIGHT_RHO" in data_temp.dtype.names:
-            n_col += 1 
-        data_result = np.empty(shape=(data_temp.shape[0], n_col), dtype=data_temp["R"].dtype)
-        data_result[:, 0] = data_temp["RA"]
-        data_result[:, 1] = data_temp["DEC"]
-        data_result[:, 2] = data_temp["R"]
-        data_result[:, 3] = data_temp["WEIGHT"]
-        if n_col == 5:
-            data_result[:, 4] = data_temp["WEIGHT_RHO"]
-        return data_result
+        key_list = list(data_temp.keys())
+
+    n_col = 4 
+    if "WEIGHT_RHO" in key_list:
+        n_col += 1 
+    data_result = np.empty(shape=(len(data_temp["R"]), n_col), dtype=data_temp["R"].dtype)
+    data_result[:, 0] = data_temp["RA"]
+    data_result[:, 1] = data_temp["DEC"]
+    data_result[:, 2] = data_temp["R"]
+    data_result[:, 3] = data_temp["WEIGHT"]
+    if n_col == 5:
+        data_result[:, 4] = data_temp["WEIGHT_RHO"]
+    return data_result
 
 def split_filename(filename):
     file_dir, file_name = os.path.split(filename)
@@ -37,14 +40,14 @@ def split_filename(filename):
 
 parser = argparse.ArgumentParser(prog="run_mock_corr", usage="To run mock corr")
 
-parser.add_argument("mock_filename", help="data filename. Format: RA, DEC, Z(comving distance), Weight(optional, need wight_weight set)")
+parser.add_argument("mock_filename", help="data filename. Format: RA, DEC, Z(comving distance), Weight(not optional)")
 parser.add_argument("random_filename", help="random filename. Format: The same as mock_filename")
 
 parser.add_argument("--s_min", "-smin", type=float, default=0.0, help="The minimum separation. Default: 0.0")
 parser.add_argument("--s_max", "-smax", type=float, default=150.0, help="The maximum separation. Default: 150.0") 
 parser.add_argument("--s_bin", "-sbin", type=int, default=150, help="The s bin size. Default: 150")
 parser.add_argument("--mu_bin", "-mubin", type=int, default=120, help="The mu bin size. Default: 120")
-parser.add_argument("--with_weight", "-ww", action="store_true", help="Use weight. Note this is not the intrisic weight of survey, i.e. the forth column.")
+parser.add_argument("--with_weight", "-ww", action="store_true", help="Use addition weight. Note this is not the intrisic weight of survey, i.e. the forth column.")
 parser.add_argument("--weight_pow", "-wp", type=float, default=0.0, help="The weight power of the fifth column (rho). Default: 0.0 (default mean not weight, so with_weight will be ignored)")
 parser.add_argument("--weight_log", '-wlog', action="store_true")
 parser.add_argument("--xyz_refine_factors", "-xyz", type=int, nargs=3, default=[2, 2, 1], help="The refine factors for xyz. Default: [2, 2, 1]")
