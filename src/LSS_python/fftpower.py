@@ -53,7 +53,7 @@ class FFTPower:
         self.removed_shotnoise = False
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
-    mode="1d", k_logarithmic=False, ps_3d_inplace=True, mesh_kernel=None, compensated=True, nthreads=1, device_id=-1, c_api=False):
+    mode="1d", k_logarithmic=False, ps_3d_inplace=True, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=False):
         """
         Calculate power spectrum from a mesh.
             Args:
@@ -63,13 +63,13 @@ class FFTPower:
         shotnoise = mesh.attrs["shotnoise"]
         if device_id >= 0:
             import cupy as cp
-            if mesh.complex_field_gpu is None:
+            if mesh.complex_field_gpu is None or force_create_complex_field:
                 mesh.r2c(compensated=compensated, nthreads=nthreads, device_id=device_id, c_api=c_api)
             ps_3d_gpu = mesh.complex_field_gpu
             ps_3d_need = ps_3d_gpu
             boxsize_prod = cp.prod(mesh.attrs["BoxSize"], dtype=cp.float32)
         else:
-            if mesh.complex_field is None:
+            if mesh.complex_field is None or force_create_complex_field:
                 mesh.r2c(compensated=compensated, nthreads=nthreads, device_id=device_id, c_api=c_api)
             ps_3d = mesh.complex_field
             ps_3d_need = ps_3d

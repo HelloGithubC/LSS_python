@@ -102,7 +102,7 @@ class Mesh:
         
         N_total = 0 
         W_total = 0.0 
-        W2V2_total = 0.0 
+        W2_total = 0.0
 
         for i, pos_e in enumerate(pos_list):
             if pos_e.dtype != np.float32 and pos_e.dtype != np.float64:
@@ -118,14 +118,18 @@ class Mesh:
                     value_e = value_e.astype(pos_e.dtype)
             
             N_total += pos_e.shape[0]
-            W_total += np.sum(weight_e) if weight_e is not None else N_total
-            if weight_e is None and value_e is None:
-                W2V2_total = N_total 
+            if weight_e is not None or value_e is not None:
+                if weight_e is None:
+                    weight_temp = 1.0 
+                    value_temp = value_e
+                if value_e is None:
+                    value_temp = 1.0
+                    weight_temp = weight_e
+                W_total += np.sum(weight_temp * value_temp)
+                W2_total += np.suum(weight_temp**2 * value_temp**2)
             else:
-                w2_temp = weight_e**2 if weight_e is not None else 1.0 
-                v2_temp = value_e**2 if value_e is not None else 1.0
-                W2V2_total += np.sum(w2_temp * v2_temp)
-
+                W_total = N_total 
+                W2_total = N_total
 
             if use_gpu:
                 with cp.cuda.Device(device_id):
@@ -160,9 +164,9 @@ class Mesh:
 
         self.attrs["N"] = N_total 
         self.attrs["W"] = W_total
-        self.attrs["W2V2"] = W2V2_total
+        self.attrs["W2"] = W2_total
         self.attrs["num_per_cell"] = (W_total / np.prod(self.Nmesh)).astype(field_dtype)
-        self.attrs["shotnoise"] = (np.prod(self.BoxSize) * W2V2_total / W_total**2).astype(field_dtype)
+        self.attrs["shotnoise"] = (np.prod(self.BoxSize) * W2_total / W_total**2).astype(field_dtype)
         if is_norm:
             if use_gpu:
                 if interlaced:
