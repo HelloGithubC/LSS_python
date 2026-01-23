@@ -166,6 +166,8 @@ class Mesh:
         self.attrs["W"] = W_total
         self.attrs["W2"] = W2_total
         self.attrs["num_per_cell"] = (W_total / np.prod(self.Nmesh)).astype(field_dtype)
+        self.attrs["delta_V"] = (np.prod(self.BoxSize) / np.prod(self.Nmesh)).astype(field_dtype)
+        self.attrs["num_per_V"] = self.attrs["num_per_cell"] / self.attrs["delta_V"]
         self.attrs["shotnoise"] = (np.prod(self.BoxSize) * W2_total / W_total**2).astype(field_dtype)
         if is_norm:
             if use_gpu:
@@ -179,7 +181,8 @@ class Mesh:
                 else:
                     self.real_field /= self.attrs["num_per_cell"]
         else:
-            self.attrs["shotnoise"] *= self.attrs["num_per_cell"] ** 2
+            self.real_field /= self.attrs["delta_V"]
+            self.attrs["shotnoise"] *= self.attrs["num_per_V"]**2
             if use_gpu:
                 if interlaced:
                     self.real_field_gpu[...] = (self.real1_gpu + self.real2_gpu) / 2.0
