@@ -222,3 +222,6 @@ def get_need_index(x, y, X_mesh, Y_mesh):
     """
     index_source = np.argmin(np.abs(X_mesh - x) + np.abs(Y_mesh - y))
     return np.unravel_index(index_source, X_mesh.shape)
+
+def edges_to_array(edges):
+    return (edges[:-1] + edges[1:]) / 2.0

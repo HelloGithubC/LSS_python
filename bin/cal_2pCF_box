@@ -61,7 +61,7 @@ parser.add_argument("boxsize", type=float, help="If <=0, will be calculated from
 parser.add_argument("nthreads", type=int)
 
 parser.add_argument("--data_type", "-type", type=str, default="binary", help="Only support ascii and binary. Only support npy format in binary, whether is structed array or not.")
-parser.add_argument("--weight_key", "-wei", type=str, default="weight", help="Only support npy format in binary with structed array.")
+parser.add_argument("--weight_key", "-wei", type=str, default="Weight", help="Only support npy format in binary with structed array.")
 
 parser.add_argument("-smin", type=float, default=0.0, help="Default 0.0")
 parser.add_argument("-smax", type=float, default=150.0, help="Default 150.0")
@@ -202,12 +202,20 @@ output_dict = {
     "RR": None
 }
 
+
 if only_run_rr:
     run_parts = ["RR"]
     output_dict["RR"] = RR_result_filename
+    rr_dir, _ = os.path.split(RR_result_filename)
+    if not os.path.exists(rr_dir):
+        os.makedirs(rr_dir)
     _ = run_tpCF(None, random_catalog, sedges, mubin, with_weight, boxsize, run_parts, xyz_refine_factors, output_dict, nthreads, verbose=verbose)
 else:
     run_parts = []
+    for need_filename in DD_result_filename, DR_result_filename, RR_result_filename:
+        need_dir, _ = os.path.split(need_filename)
+        if not os.path.exists(need_dir):
+            os.makedirs(need_dir)
     if not os.path.exists(RR_result_filename) or force_rr:
         output_dict["RR"] = RR_result_filename
         run_parts.append("RR")

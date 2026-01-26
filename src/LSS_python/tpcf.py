@@ -3,7 +3,7 @@ import numpy as np
 from Corrfunc.theory import DDsmu
 from Corrfunc.mocks import DDsmu_mocks
 
-from .base import Hz, DA, comov_dist, traz
+from .base import Hz, DA, comov_dist, traz, edges_to_array
 
 def meannorm(X, axis=0):
     if len(X.shape) == 1:
@@ -169,7 +169,7 @@ class xismu(object):
             mu_array = (muedges[1:] + muedges[:-1]) / 2.0
         self.S, self.Mu = np.meshgrid(s_array, mu_array, indexing="ij")
     
-    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, mupack=1, is_norm=False, quick_return=False):
+    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=False):
         """ A powerful function to integrate the tpcf
 
         Parameters
@@ -185,6 +185,8 @@ class xismu(object):
             Whether to integrate over mu
         intximu : bool
             Whether to integrate over s
+        with_s2 : bool
+            Only be valid when intximu is True. Use s^2 xi(s, mu) to integrate
         is_norm: bool
             Whether to normalize
         re_calculate : bool
@@ -252,6 +254,8 @@ class xismu(object):
                 mu = packarray1d(mu, mupack)
             Xis_need = (DD_need - 2 * DR_need + RR_need) / RR_need
             delta_s = np.mean(s[1:] - s[:-1])
+            if with_s2:
+                Xis_need = Xis_need * s[:,np.newaxis]**2
             xis_mu = np.sum(Xis_need * delta_s, axis=0)
             if is_norm:
                 xis_mu = meannorm(xis_mu)
