@@ -37,10 +37,8 @@ def read_data(filename, data_type, weight_key=None, weight_set_one=False, delimi
             else:
                 result_array[:,:result_cols] = source[:, :result_cols]
         else:
-            result_array = np.empty(shape=(source.shape[0], result_cols), dtype=source["X"].dtype)
-            result_array[:,0] = source["X"]
-            result_array[:,1] = source["Y"]
-            result_array[:,2] = source["Z"]
+            result_array = np.empty(shape=(source.shape[0], result_cols), dtype=source["Pos"].dtype)
+            result_array[:,:3] = source["Pos"]
              
             if with_weight:
                 if weight_set_one:
@@ -57,7 +55,7 @@ parser = argparse.ArgumentParser(
     prog="cal_tpCF_box", usage="To cal tpCF with Corrfunc for simulation box"
 )
 
-parser.add_argument("data_filename", help="Need suffix to support the automatic naming rules. Or use --output_filename and --rr_filename to specify the relevant files.", type=str)
+parser.add_argument("data_filename", help="Need suffix to support the automatic naming rules. Or use --tpcf_filename and --rr_filename to specify the relevant files.", type=str)
 parser.add_argument("random_filename", help="Need suffix to ... (the same as data_filename)", type=str)
 parser.add_argument("boxsize", type=float, help="If <=0, will be calculated from data or random (only when --only-run-rr set)")
 parser.add_argument("nthreads", type=int)
@@ -76,7 +74,7 @@ parser.add_argument("--weight_power", "-weipow", type=str, help="Only be valid w
 parser.add_argument("--set_weight_to_one", "-weightone", action="store_true", help="Only be valid when --with_weight set. The weight will be forced to be 1.")
 parser.add_argument("--xyz_refine_factors", "-refine", nargs=3, type=int, default=[2, 2, 1])
 
-parser.add_argument("--output_filename", "-o", help="Only support specifying the filename of tpCF or RR (when --only_run_rr set). The dir is needed.", default=None)
+parser.add_argument("--tpcf_filename", "-tpcf", help="Only support specifying the filename of tpCF or RR (when --only_run_rr set). The dir is needed.", default=None)
 parser.add_argument("--rr_filename", "-rr", help="Force to specify the rr file.", default=None)
 
 parser.add_argument("--only_run_rr", "-only_rr", action="store_true")
@@ -113,8 +111,8 @@ weight_power = argv.weight_power
 weight_set_one = argv.set_weight_to_one
 xyz_refine_factors = argv.xyz_refine_factors
 
-output_filename = argv.output_filename
-force_rr_filename = argv.rr_filename
+tpcf_filename = argv.tpcf_filename
+rr_filename = argv.rr_filename
 
 only_run_rr = argv.only_run_rr
 save_dd_dr = argv.save_dd_dr 
@@ -148,11 +146,10 @@ if with_random_weight:
 else:
     random_weight_str = ""
 
-RR_result_filename = random_dir + "RR-" + random_filename + f"{random_weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
-if only_run_rr and output_filename is not None:
-    RR_result_filename = output_filename
-if not only_run_rr and force_rr_filename is not None:
-    RR_result_filename = force_rr_filename
+if rr_filename is not None:
+    RR_result_filename = rr_filename
+else:
+    RR_result_filename = random_dir + "RR-" + random_filename + f"{random_weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
 if only_run_rr and not force_rr and os.path.exists(RR_result_filename):
     print(f"RR file {RR_result_filename} exists, skipping")
     exit(0)
@@ -160,9 +157,10 @@ if only_run_rr and not force_rr and os.path.exists(RR_result_filename):
 if not only_run_rr:
     DD_result_filename = data_dir + "DD-" + data_filename + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
     DR_result_filename = data_dir + "DR-" + data_filename + "-" + random_filename + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
-    tpCF_result_filename = data_dir + "tpCF-" + data_filename + "-" + random_filename + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
-    if output_filename is not None:
-        tpCF_result_filename = output_filename
+    if tpcf_filename is not None:
+        tpCF_result_filename = tpcf_filename
+    else:
+        tpCF_result_filename = data_dir + "tpCF-" + data_filename + "-" + random_filename + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
     if os.path.exists(tpCF_result_filename) and not force:
         print("tpCF result exists, skip")
         exit(0)
