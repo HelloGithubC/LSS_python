@@ -212,7 +212,7 @@ if only_run_rr:
     _ = run_tpCF(None, random_catalog, sedges, mubin, with_weight, boxsize, run_parts, xyz_refine_factors, output_dict, nthreads, verbose=verbose)
 else:
     run_parts = []
-    for need_filename in DD_result_filename, DR_result_filename, RR_result_filename:
+    for need_filename in (RR_result_filename, tpCF_result_filename):
         need_dir, _ = os.path.split(need_filename)
         if not os.path.exists(need_dir):
             os.makedirs(need_dir)
