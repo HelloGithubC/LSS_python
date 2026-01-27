@@ -83,7 +83,7 @@ class xismu(object):
             raise ValueError("S and Mu must be included in the data when using load")
         return self
 
-    def save(self, filename, with_weight=True, has_converted=False):
+    def save(self, filename, with_weight=True):
         result_dict = {}
         result_dict["with_weight"] = with_weight
         if with_weight:
@@ -99,12 +99,8 @@ class xismu(object):
         result_dict["norm_d1r2"] = self.DRnorm
         result_dict["norm_r1r2"] = self.RRnorm
         
-        if has_converted:
-            result_dict["s_array"] = self.s_array
-            result_dict["mu_array"] = self.mu_array
-        else:
-            result_dict["s_array"] = self.S[:,0]
-            result_dict["mu_array"] = self.Mu[0]
+        result_dict["s_array"] = self.S[:,0] if self.S is not None else self.s_array
+        result_dict["mu_array"] = self.Mu[0] if self.Mu is not None else self.mu_array
         joblib.dump(result_dict, filename)
 
 
@@ -169,7 +165,7 @@ class xismu(object):
             mu_array = (muedges[1:] + muedges[:-1]) / 2.0
         self.S, self.Mu = np.meshgrid(s_array, mu_array, indexing="ij")
     
-    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=False):
+    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=True):
         """ A powerful function to integrate the tpcf
 
         Parameters
