@@ -126,7 +126,7 @@ class Mesh:
                     value_temp = 1.0
                     weight_temp = weight_e
                 W_total += np.sum(weight_temp * value_temp)
-                W2_total += np.suum(weight_temp**2 * value_temp**2)
+                W2_total += np.sum(weight_temp**2 * value_temp**2)
             else:
                 W_total = N_total 
                 W2_total = N_total

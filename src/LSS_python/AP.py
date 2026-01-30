@@ -20,8 +20,8 @@ def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_met
             wwrong = w_m, 
             redshift = redshift, 
         )
-        xismu_new.s_array = assis_xismu.S[:,0]
-        xismu_new.mu_array = assis_xismu.Mu[0]
+        xismu_new.s_array = np.nanmean(assis_xismu.S, axis=1)
+        xismu_new.mu_array = np.nanmean(assis_xismu.Mu, axis=0)
         return xismu_new
     elif convert_method == "simple":
         if sbin > 300 and mubin > 240:

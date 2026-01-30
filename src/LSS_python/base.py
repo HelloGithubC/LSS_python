@@ -48,18 +48,11 @@ def comov_dist(z, omega_m, w=-1.0, z_start=0.0, z_point=1000):
         H_inv_array[i] = 1.0 / Hz(z[i], omega_m, w)
     return 0.5 * CONST_C * np.sum(dz * (H_inv_array[1:] + H_inv_array[:-1]))
 
-def cal_HI_factor(redshift, omega_m, BoxSize, Nmesh, h=0.677, omega_b=0.049):
+def cal_HI_factor(redshift, omega_m, V_cell, h=0.677, omega_b=0.049):
     rho_c = (2.7752e11) * h**2
     rho_b = rho_c * omega_b
-    if isinstance(BoxSize, float):
-        BoxSize = np.array([BoxSize] * 3)
-    if isinstance(Nmesh, int):
-        Nmesh = np.array([Nmesh] * 3) 
-    if len(BoxSize) != 3 and len(Nmesh) != 3:
-        raise ValueError("BoxSize and Nmesh must be 3-dimension")
-    Vcell = np.prod(BoxSize / Nmesh)
     HI_factor = (
-        (1.0 / Vcell)
+        (1.0 / V_cell)
         / (rho_b * 0.76)
         * 23
         * ((0.15 / (omega_m - omega_b)) * (1 + redshift) / 10.0) ** (0.5)

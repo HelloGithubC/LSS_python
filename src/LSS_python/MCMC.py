@@ -4,6 +4,19 @@ import emcee
 from emcee.backends import HDFBackend
 from multiprocessing import Pool
 
+def ln_prior(X, X_range):
+    for x, x_range in zip(X, X_range):
+        if x < x_range[0] or x > x_range[1]:
+            return -np.inf
+    return 0.0
+
+def ln_prob(X, X_range, chi2_core):
+    ln_prior_value = ln_prior(X, X_range)
+    if np.isinf(ln_prior_value):
+        return ln_prior_value
+    else:
+        return ln_prior_value - 0.5 * chi2_core(X)
+
 def get_xismus_convert(source_xismu_dict, asistant_xismus_dict, snaps_pair, weipows_str_list, parameters, redshift_dict, fiducial_parameters=(0.3071, -1.0), mapping_s=(3, 70), **args):
     snap1, snap2 = snaps_pair
     omega_mm, w_m = parameters
@@ -50,16 +63,18 @@ def cal_chi2_core(P, cov_matrix_inv):
 
 def get_chain(
     backend_filename, is_CPL=False, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True
-):
+,no_discard=False):
     dim = 3 if is_CPL else 2
     exception_factor = 2
     if not os.path.exists(backend_filename):
         raise FileNotFoundError(f"{backend_filename} not exists")
     backend = HDFBackend(backend_filename, read_only=True)
     autocorr_time = int(np.max(backend.get_autocorr_time(tol=0)))
+
+    discard = max(discard_min, autocorr_time) if not no_discard else 0
     if remove_exception:
         chains = backend.get_chain(
-            thin=thin, discard=max(discard_min, autocorr_time), flat=False
+            thin=thin, discard=discard, flat=False
         )
         except_index = []
         for i in range(chains.shape[1]):
@@ -75,7 +90,7 @@ def get_chain(
 
     else:
         chain = backend.get_chain(
-            thin=thin, discard=max(discard_min, autocorr_time), flat=False
+            thin=thin, discard=discard, flat=False
         )
     if flatten:
         chain = chain.reshape(-1, dim)
@@ -135,20 +150,19 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
                 break
             else:
                 old_tau = tau
-        else:
-            if sampler.iteration >= max_iterator:
-                print(f"Finished at {max_iterator:d}", file=output)
-                print(
-                    f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
-                    file=output,
-                )
-                print(
-                    f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
-                    file=output,
-                )
-                autocorr = 0.0
-                converged = True
-                break 
+
+    if not use_converge_factor:
+        print(f"Finished at {max_iterator:d}", file=output)
+        print(
+            f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
+            file=output,
+        )
+        print(
+            f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
+            file=output,
+        )
+        autocorr = 0.0
+        converged = True
     
     if not converged:
         print(f"Not Converged at {max_iterator:d}", file=output)
