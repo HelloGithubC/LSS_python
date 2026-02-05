@@ -36,7 +36,7 @@ def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_met
     else:
         raise ValueError("convert_method must be 'simple' or 'dense'")
 
-def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, shotnoise=0.0, ps_rescale=False, device_id=-1, **kargs):
+def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, shotnoise=0.0, ps_rescale=False, mesh_done_norm=True, device_id=-1, **kargs):
     """
     ps_3d: The 3d PS after removing the shot noise and including kernel
     boxsize: The boxsize of the simulation. float or ndarray is OK.
@@ -103,15 +103,25 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, shot
             c_api=True
     )
 
+    if mode == "1d":
+        key_str = "Pk"
+    else:
+        key_str = "Pkmu"
+    
+    if mesh_done_norm:
+        fftpower_new.attrs["mesh_done_norm"] = True
+        fftpower_new.power[key_str] *= np.prod(convert_array)
+    else:
+        fftpower_new.attrs["mesh_done_norm"] = False
+        fftpower_new.power[key_str] *= 1.0 / np.prod(convert_array)
+
     if add_HI:
-        HI_factor = cal_HI_factor(redshift, omega_mm, boxsize_array, Nmesh)
+        HI_factor = cal_HI_factor(redshift, omega_mf, V_cell=1.0) # The relation of convertion should not be changed in AP test
         fftpower_new.attrs["HI_factor"] = HI_factor
     else:
         HI_factor = 1.0
-    if mode == "1d":
-        fftpower_new.power["Pk"] *= HI_factor ** 2 * np.prod(convert_array)
-    else:
-        fftpower_new.power["Pkmu"] *= HI_factor ** 2 * np.prod(convert_array)
+
+    fftpower_new.power[key_str] *= HI_factor**2
 
     return fftpower_new
 

@@ -249,10 +249,9 @@ class xismu(object):
             if mupack > 1:
                 mu = packarray1d(mu, mupack)
             Xis_need = (DD_need - 2 * DR_need + RR_need) / RR_need
-            delta_s = np.mean(s[1:] - s[:-1])
             if with_s2:
                 Xis_need = Xis_need * s[:,np.newaxis]**2
-            xis_mu = np.sum(Xis_need * delta_s, axis=0)
+            xis_mu = np.mean(Xis_need, axis=0)
             if is_norm:
                 xis_mu = meannorm(xis_mu)
             result_dict["mu"] = mu
@@ -272,14 +271,14 @@ class xismu(object):
             mu_array = self.mu_array
         else:
             mu_array = np.mean(self.Mu, axis=0)
-        norm_smax_index_source = np.where(self.s_array >= norm_smax)[0]
+        norm_smax_index_source = np.where(s_array >= norm_smax)[0]
         if len(norm_smax_index_source) == 0:
             norm_smax_index = len(s_array)
         else:
             norm_smax_index = norm_smax_index_source[0]
         
         S_mesh, Mu_mesh = np.meshgrid(s_array, mu_array, indexing="ij")
-        if self.xis is None:
+        if not hasattr(self, "xis") or self.xis is None:
             self.xis = (self.DD - 2 * self.DR + self.RR) / self.RR
         if mupack > 1:
             S_mesh = packarray2d(S_mesh, mupack, axis=1)
