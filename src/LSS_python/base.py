@@ -49,16 +49,16 @@ def comov_dist(z, omega_m, w=-1.0, z_start=0.0, z_point=1000):
     return 0.5 * CONST_C * np.sum(dz * (H_inv_array[1:] + H_inv_array[:-1]))
 
 def cal_HI_factor(redshift, omega_m, V_cell, h=0.677, omega_b=0.049):
-    rho_c = (2.7752e11) * h**2
+    rho_c = 27.752 # in h^2 (1e+10 Msun) Mpc^-3
     rho_b = rho_c * omega_b
     HI_factor = (
         (1.0 / V_cell)
         / (rho_b * 0.76)
-        * 23
-        * ((0.15 / (omega_m - omega_b)) * (1 + redshift) / 10.0) ** (0.5)
-        * (omega_b * h / 0.02)
+        * 27
+        * ((0.15 / (omega_m * h ** 2)) * (1 + redshift) / 10.0) ** (0.5)
+        * (omega_b * h**2 / 0.023)
     )
-    return HI_factor * 1e10
+    return HI_factor
 
 def traz(V_array, x_array, y_array=None):
     """ A simple function to calculate the trapezoidal integration. Only support mesh when y_array is set.
