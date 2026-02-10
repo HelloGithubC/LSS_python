@@ -11,16 +11,18 @@ def deal_ps_3d_from_mesh(mesh, mesh_kernel=None, inplace=True, nthreads=1, devic
     return deal_ps_3d(complex_field, ps_3d_kernel, np.prod(mesh.attrs["BoxSize"]), mesh.attrs["shotnoise"], inplace, nthreads, device_id, c_api)
 
 def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, inplace=False, nthreads=1, device_id=-1, c_api=False):
-    if not inplace:
-        ps_3d = np.copy(complex_field)
-    else:
+    if inplace:
         ps_3d = complex_field
     if device_id >= 0:
         import cupy as cp
         from .cuda.fftpower import deal_ps_3d_from_cuda
+        if not inplace:
+            ps_3d = cp.copy(complex_field)
         with cp.cuda.Device(device_id):
             deal_ps_3d_from_cuda(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise)
     else:
+        if not inplace:
+            ps_3d = np.copy(complex_field)
         if c_api:
             from .CPP.fftpower import deal_ps_3d_c_api
             deal_ps_3d_c_api(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
