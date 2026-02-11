@@ -101,7 +101,7 @@ def get_chain(
     else:
         return chain
     
-def is_converage_GR(chains, converge_factor=1.05, parameters=None, return_W_B_R=False): # shape = (n_chain, n_length, n_paramters)
+def is_converged_GR(chains, converge_factor=1.05, parameters=None, return_W_B_R=False): # shape = (n_chain, n_length, n_paramters)
     n_length, n_chain, n_paramters = chains.shape
     if parameters is None:
         parameters = [f"param{i+1:d}" for i in range(n_paramters)]
@@ -133,10 +133,10 @@ def is_converage_GR(chains, converge_factor=1.05, parameters=None, return_W_B_R=
     else:
         return np.max(list(R_dict.values())) < converge_factor
     
-def is_converage(backend, converge_factor=None, method="GR", verbose=False): # method: GR, tau
+def is_converged(backend, converge_factor=None, method="GR", verbose=False): # method: GR, tau
     if method == "GR":
         chains = backend.get_chain()
-        R_dict, W_dict, B_dict = is_converage_GR(chains, converge_factor, return_W_B_R=True)
+        R_dict, W_dict, B_dict = is_converged_GR(chains, converge_factor, return_W_B_R=True)
         converage = (np.max(list(R_dict.values())) < converge_factor)
         if verbose:
             result_dict = {
@@ -185,7 +185,7 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
                 continue
             
             old_tau = np.inf
-            result_dict = is_converage(sampler, converge_factor=converge_factor, method=converge_method, verbose=True)
+            result_dict = is_converged(sampler, converge_factor=converge_factor, method=converge_method, verbose=True)
             if detail and not sampler.iteration % 1000:
                 if converge_method == "tau":
                     tau = result_dict["tau"]
@@ -216,7 +216,7 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
                 break
 
     if not use_converge_factor:
-        result_dict = is_converage(sampler, converge_factor=converge_factor, method=converge_method, verbose=True)
+        result_dict = is_converged(sampler, converge_factor=converge_factor, method=converge_method, verbose=True)
         print(f"Finished at {max_iterator:d}", file=output)
         if converge_method == "tau":
             tau = result_dict["tau"]
