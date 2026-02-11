@@ -58,9 +58,6 @@ def get_xismus_diff_concatenate_mcmc(xismus_diff_weipows_dict, weipows_str_list)
     return np.concatenate(xismus_diff_weipows_list)
 
 
-def cal_chi2_core(P, cov_matrix_inv):
-    return (P.T @ cov_matrix_inv @ P)[0,0]
-
 def get_chain(
     backend_filename, is_CPL=False, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True
 ,no_discard=False):
@@ -103,9 +100,70 @@ def get_chain(
         return chain, loglikes
     else:
         return chain
-
     
-def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, detail, progress_kwargs, output):
+def is_converage_GR(chains, converge_factor=1.05, parameters=None, return_W_B_R=False): # shape = (n_chain, n_length, n_paramters)
+    n_length, n_chain, n_paramters = chains.shape
+    if parameters is None:
+        parameters = [f"param{i+1:d}" for i in range(n_paramters)]
+    R_dict = {
+        parameter: None 
+        for parameter in parameters
+    }
+    if return_W_B_R:
+        B_dict = {
+            parameter: None 
+            for parameter in parameters
+        }
+        W_dict = {
+            parameter: None 
+            for parameter in parameters
+        }
+    for i in range(n_paramters):
+        parameter = parameters[i]
+        mean_chains = [np.mean(chains[:, j, i]) for j in range(n_chain)]
+        mean_all = np.mean(mean_chains)
+        B = n_length / (n_chain - 1) * np.sum((mean_chains - mean_all)**2)
+        W = np.mean([np.var(chains[:,j, i], ddof=1) for j in range(n_chain)])
+        if return_W_B_R:
+            W_dict[parameter] = (n_length - 1) / n_length * W
+            B_dict[parameter] = 1 / n_length * B
+        R_dict[parameter] = ((n_length - 1) / n_length * W + 1 / n_length * B) / W
+    if return_W_B_R:
+        return R_dict, W_dict, B_dict
+    else:
+        return np.max(list(R_dict.values())) < converge_factor
+    
+def is_converage(backend, converge_factor=None, method="GR", verbose=False): # method: GR, tau
+    if method == "GR":
+        chains = backend.get_chain()
+        R_dict, W_dict, B_dict = is_converage_GR(chains, converge_factor, return_W_B_R=True)
+        is_converage = np.max(list(R_dict.values())) < converge_factor
+        if verbose:
+            result_dict = {
+                "converged": is_converage,
+                "R": list(R_dict.values()),
+                "W": list(W_dict.values()),
+                "B": list(B_dict.values())
+            }
+            return result_dict
+        else:
+            is_converage
+    elif method == "tau":
+        tau = backend.get_autocorr_time(tol=0)
+        converged = np.all(tau * converge_factor < backend.iteration)
+        if verbose:
+            result_dict = {
+                "converged": converged,
+                "tau": tau,
+                "converge_factor": backend.iteration / converge_factor
+            }
+            return result_dict
+        else:
+            return converged
+    else:
+        raise NotImplementedError
+
+def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, converge_method, detail, progress_kwargs, output):
     sampler = emcee.EnsembleSampler(
             nwalkers,
             ndim,
@@ -115,9 +173,6 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
             backend=backend,
             pool=pool,
         )
-    autocorr = np.empty((max_iterator))
-    indent = 0
-    i = 1
     old_tau = np.inf
     for sample in sampler.sample(
         init_state,
@@ -128,53 +183,69 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
         if use_converge_factor:
             if sampler.iteration % 100:
                 continue
-            tau = sampler.get_autocorr_time(tol=0)
-            autocorr[indent] = np.mean(tau)
-            indent += 1
-
+            
+            old_tau = np.inf
+            result_dict = is_converage(sampler, converge_factor=converge_factor, method=converge_method, verbose=True)
             if detail and not sampler.iteration % 1000:
-                print(f"{i:d}: tau, {tau:.5f}", file=output)
-                i += 1
-            converged = np.all(tau * converge_factor < sampler.iteration)
-            converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
+                if converge_method == "tau":
+                    tau = result_dict["tau"]
+                    print(f"{sampler.iteration:d}: tau, {tau:.5f}", file=output)
+                elif converge_method == "GR":
+                    print(f"{sampler.iteration:d}: R, {result_dict['R']}", file=output)
+                else:
+                    pass
+            converged = result_dict["converged"]
+            if converge_method == "tau":
+                converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
+                old_tau = tau
             if converged:
                 print(f"Converged at {sampler.iteration:d}", file=output)
-                print(
-                    f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(sampler.iteration / tau):.1f}",
-                    file=output,
-                )
-                print(
-                    f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
-                    file=output,
-                )
+                if converge_method == "tau":
+                    print(
+                        f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(sampler.iteration / tau):.1f}",
+                        file=output,
+                    )
+                    print(
+                        f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
+                        file=output,
+                    )
+                elif converge_method == "GR":
+                    print(f"R: {result_dict['R']}", file=output)
+                else:
+                    pass
                 break
-            else:
-                old_tau = tau
 
     if not use_converge_factor:
+        result_dict = is_converage(sampler, converge_factor=converge_factor, method=converge_method, verbose=True)
         print(f"Finished at {max_iterator:d}", file=output)
-        print(
-            f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
-            file=output,
-        )
-        print(
-            f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
-            file=output,
-        )
-        autocorr = 0.0
+        if converge_method == "tau":
+            tau = result_dict["tau"]
+            print(
+                f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
+                file=output,
+            )
+        elif converge_method == "GR":
+            print(f"R: {result_dict['R']}", file=output)
+        else:
+            pass
         converged = True
     
     if not converged:
         print(f"Not Converged at {max_iterator:d}", file=output)
-        print(
-            f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
-            file=output,
-        )
-        print(
-            f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
-            file=output,
-        )
-    return autocorr, converged
+        if converge_method == "tau":
+            print(
+                f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
+                file=output,
+            )
+            print(
+                f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
+                file=output,
+            )
+        elif converge_method == "GR":
+            print(f"R: {result_dict['R']}", file=output)
+        else:
+            pass
+    return converged
 
 def run_mcmc_main_emcee(
     init_state,
@@ -183,6 +254,7 @@ def run_mcmc_main_emcee(
     ndim,
     lnprob,
     args,
+    converge_method="tau",
     converge_factor=50,
     moves=None,
     backend=None,
@@ -217,7 +289,7 @@ def run_mcmc_main_emcee(
 
     converged = True
     if force_no_pool:
-        autocorr, converged = run_mcmc_core_emcee(
+        converged = run_mcmc_core_emcee(
             nwalkers = nwalkers,
             ndim = ndim,
             init_state = init_state,
@@ -228,6 +300,7 @@ def run_mcmc_main_emcee(
             pool = None,
             max_iterator = max_iterator,
             use_converge_factor = use_converge_factor,
+            converge_method=converge_method,
             converge_factor = converge_factor,
             detail = detail,
             progress_kwargs = progress_kwargs,
@@ -235,7 +308,7 @@ def run_mcmc_main_emcee(
         )
     else:
         with Pool(processes=int(nwalkers / 2)) as pool:
-            autocorr, converged = run_mcmc_core_emcee(
+            converged = run_mcmc_core_emcee(
                 nwalkers = nwalkers,
                 ndim = ndim,
                 init_state = init_state,
@@ -246,9 +319,10 @@ def run_mcmc_main_emcee(
                 pool = pool,
                 max_iterator = max_iterator,
                 use_converge_factor = use_converge_factor,
+                converge_method=converge_method,
                 converge_factor = converge_factor,
                 detail = detail,
                 progress_kwargs = progress_kwargs,
                 output = output,
             )
-    return autocorr, converged
+    return converged
