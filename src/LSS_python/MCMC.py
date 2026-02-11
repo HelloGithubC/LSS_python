@@ -137,17 +137,17 @@ def is_converage(backend, converge_factor=None, method="GR", verbose=False): # m
     if method == "GR":
         chains = backend.get_chain()
         R_dict, W_dict, B_dict = is_converage_GR(chains, converge_factor, return_W_B_R=True)
-        is_converage = np.max(list(R_dict.values())) < converge_factor
+        converage = (np.max(list(R_dict.values())) < converge_factor)
         if verbose:
             result_dict = {
-                "converged": is_converage,
+                "converged": converage,
                 "R": list(R_dict.values()),
                 "W": list(W_dict.values()),
                 "B": list(B_dict.values())
             }
             return result_dict
         else:
-            is_converage
+            return converage
     elif method == "tau":
         tau = backend.get_autocorr_time(tol=0)
         converged = np.all(tau * converge_factor < backend.iteration)
