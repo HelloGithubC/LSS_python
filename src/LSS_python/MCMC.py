@@ -184,12 +184,11 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
             if sampler.iteration % 100:
                 continue
             
-            old_tau = np.inf
             result_dict = is_converged(sampler, converge_factor=converge_factor, method=converge_method, verbose=True)
             if detail and not sampler.iteration % 1000:
                 if converge_method == "tau":
                     tau = result_dict["tau"]
-                    print(f"{sampler.iteration:d}: tau, {tau:.5f}", file=output)
+                    print(f"{sampler.iteration:d}: tau, {tau}; old tau: {old_tau}", file=output)
                 elif converge_method == "GR":
                     print(f"{sampler.iteration:d}: R, {result_dict['R']}", file=output)
                 else:
@@ -203,11 +202,11 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
                 print(f"Converged at {sampler.iteration:d}", file=output)
                 if converge_method == "tau":
                     print(
-                        f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(sampler.iteration / tau):.1f}",
+                        f"Tau: {np.max(tau):.5f}; converge_factor_now: {np.min(sampler.iteration / tau):.1f}",
                         file=output,
                     )
                     print(
-                        f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
+                        f"Tau difference: {np.max(np.abs(old_tau - tau) / tau):.5f}",
                         file=output,
                     )
                 elif converge_method == "GR":
@@ -222,7 +221,7 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
         if converge_method == "tau":
             tau = result_dict["tau"]
             print(
-                f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
+                f"Tau: {np.max(tau):.5f}; converge_factor_now: {np.min(max_iterator / tau):.1f}",
                 file=output,
             )
         elif converge_method == "GR":
@@ -235,11 +234,11 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
         print(f"Not Converged at {max_iterator:d}", file=output)
         if converge_method == "tau":
             print(
-                f"Tau: {np.mean(tau):.5f}; converge_factor_now: {np.max(max_iterator / tau):.1f}",
+                f"Tau: {np.max(tau):.5f}; converge_factor_now: {np.min(max_iterator / tau):.1f}",
                 file=output,
             )
             print(
-                f"Tau difference: {np.min(np.abs(old_tau - tau) / tau):.5f}",
+                f"Tau difference: {np.max(np.abs(old_tau - tau) / tau):.5f}",
                 file=output,
             )
         elif converge_method == "GR":
