@@ -155,7 +155,7 @@ def is_converged(backend, converge_factor=None, method="GR", verbose=False): # m
             result_dict = {
                 "converged": converged,
                 "tau": tau,
-                "converge_factor": backend.iteration / converge_factor
+                "converge_factor": backend.iteration / tau
             }
             return result_dict
         else:
@@ -196,6 +196,7 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
                     pass
             converged = result_dict["converged"]
             if converge_method == "tau":
+                tau = result_dict["tau"]
                 converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
                 old_tau = tau
             if converged:
