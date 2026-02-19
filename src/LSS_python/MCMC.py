@@ -197,7 +197,6 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
             if converge_method == "tau":
                 tau = result_dict["tau"]
                 converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
-                old_tau = tau
             if converged:
                 print(f"Converged at {sampler.iteration:d}", file=output)
                 if converge_method == "tau":
@@ -214,6 +213,9 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
                 else:
                     pass
                 break
+            else:
+                if converge_method == "tau":
+                    old_tau = tau
 
     if not use_converge_factor:
         result_dict = is_converged(sampler, converge_factor=converge_factor, method=converge_method, verbose=True)
