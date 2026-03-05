@@ -59,10 +59,9 @@ def get_xismus_diff_concatenate_mcmc(xismus_diff_weipows_dict, weipows_str_list)
 
 
 def get_chain(
-    backend_filename, is_CPL=False, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True
+    backend_filename, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True
 ,no_discard=False):
-    dim = 3 if is_CPL else 2
-    exception_factor = 2
+    exception_factor = 3
     if not os.path.exists(backend_filename):
         raise FileNotFoundError(f"{backend_filename} not exists")
     backend = HDFBackend(backend_filename, read_only=True)
@@ -73,11 +72,12 @@ def get_chain(
         chains = backend.get_chain(
             thin=thin, discard=discard, flat=False
         )
+        ndim = chains.shape[-1]
         except_index = []
         for i in range(chains.shape[1]):
             chain_temp = np.delete(chains, i, axis=1)
-            mean_values = np.mean(chain_temp.reshape(-1,2), axis=0)
-            std_values = np.std(chain_temp.reshape(-1,2), axis=0)
+            mean_values = np.mean(chain_temp.reshape(-1,ndim), axis=0)
+            std_values = np.std(chain_temp.reshape(-1,ndim), axis=0)
             mean = np.mean(chains[:, i], axis=0)
             if (mean > (mean_values + exception_factor * std_values)).any() or (
                 mean < (mean_values - exception_factor * std_values)
@@ -89,8 +89,9 @@ def get_chain(
         chain = backend.get_chain(
             thin=thin, discard=discard, flat=False
         )
+        ndim = chain.shape[-1]
     if flatten:
-        chain = chain.reshape(-1, dim)
+        chain = chain.reshape(-1, ndim)
     if return_loglikes:
         loglikes = backend.get_log_prob(thin=thin, discard=max(discard_min, autocorr_time), flat=False)
         if remove_exception:
@@ -100,6 +101,21 @@ def get_chain(
         return chain, loglikes
     else:
         return chain
+    
+def get_MCSample(
+    backend_filename, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True
+):
+    from getdist import MCSamples
+    if return_loglikes:
+        chain, loglikes = get_chain(
+            backend_filename, remove_exception=remove_exception, thin=thin, discard_min=discard_min, return_loglikes=return_loglikes, flatten=flatten
+        )
+        return MCSamples(samples=chain, loglikes=loglikes)
+    else:
+        chain = get_chain(
+            backend_filename, remove_exception=remove_exception, thin=thin, discard_min=discard_min, return_loglikes=return_loglikes, flatten=flatten
+        )
+        return MCSamples(samples=chain)
     
 def is_converged_GR(chains, converge_factor=1.05, parameters=None, return_W_B_R=False): # shape = (n_chain, n_length, n_paramters)
     n_length, n_chain, n_paramters = chains.shape
@@ -162,6 +178,28 @@ def is_converged(backend, converge_factor=None, method="GR", verbose=False): # m
             return converged
     else:
         raise NotImplementedError
+    
+def get_params(sampler, names, bestfit=False):
+    means = sampler.getMeans()
+    stds = np.sqrt(sampler.getVars())
+    cov = sampler.getCov()
+    output_dict = {
+        "mean":{}, 
+        "cov": None, 
+        "std": {}, 
+    }
+    if bestfit:
+        bestfit_index = np.argmax(sampler.loglikes)
+        bestfit_values = sampler.samples[bestfit_index]
+        output_dict["bestfit"] = {}
+    for i, name in enumerate(names):
+        output_dict["mean"][name] = means[i]
+        output_dict["cov"] = cov 
+        output_dict["std"][name] = stds[i]
+        if bestfit:
+            output_dict["bestfit"][name] = bestfit_values[i]
+    return output_dict 
+
 
 def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, converge_method, detail, progress_kwargs, output):
     sampler = emcee.EnsembleSampler(
