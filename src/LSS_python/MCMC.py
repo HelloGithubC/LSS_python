@@ -103,19 +103,19 @@ def get_chain(
         return chain
     
 def get_MCSample(
-    backend_filename, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True
+    backend_filename, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True, names=["x1", "x2"], labels=[r"\Omega_m", r"w"]
 ):
     from getdist import MCSamples
     if return_loglikes:
         chain, loglikes = get_chain(
             backend_filename, remove_exception=remove_exception, thin=thin, discard_min=discard_min, return_loglikes=return_loglikes, flatten=flatten
         )
-        return MCSamples(samples=chain, loglikes=loglikes)
+        return MCSamples(samples=chain, names=names, labels=labels, loglikes=loglikes)
     else:
         chain = get_chain(
             backend_filename, remove_exception=remove_exception, thin=thin, discard_min=discard_min, return_loglikes=return_loglikes, flatten=flatten
         )
-        return MCSamples(samples=chain)
+        return MCSamples(samples=chain, names=names, labels=labels)
     
 def is_converged_GR(chains, converge_factor=1.05, parameters=None, return_W_B_R=False): # shape = (n_chain, n_length, n_paramters)
     n_length, n_chain, n_paramters = chains.shape
@@ -179,7 +179,8 @@ def is_converged(backend, converge_factor=None, method="GR", verbose=False): # m
     else:
         raise NotImplementedError
     
-def get_params(sampler, names, bestfit=False):
+def get_params(sampler, bestfit=False):
+    names = sampler.getNames()
     means = sampler.getMeans()
     stds = np.sqrt(sampler.getVars())
     cov = sampler.getCov()
