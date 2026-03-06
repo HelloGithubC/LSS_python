@@ -180,7 +180,8 @@ def is_converged(backend, converge_factor=None, method="GR", verbose=False): # m
         raise NotImplementedError
     
 def get_params(sampler, bestfit=False):
-    names = sampler.getNames()
+    names_source = sampler.getParamNames().names
+    names = [name.name for name in names_source]
     means = sampler.getMeans()
     stds = np.sqrt(sampler.getVars())
     cov = sampler.getCov()
