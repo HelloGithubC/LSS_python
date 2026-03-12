@@ -641,9 +641,11 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
     result_dict["DRnpairs"] = DR_result["npairs"].reshape(sbin, mubin)
     result_dict["RRnpairs"] = RR_result["npairs"].reshape(sbin, mubin)
     if with_weight:
-        result_dict["DDwpairs"] = (DD_result["npairs"] * DD_result["weightavg"]).reshape(sbin, mubin)
-        result_dict["DRwpairs"] = (DR_result["npairs"] * DR_result["weightavg"]).reshape(sbin, mubin)
-        result_dict["RRwpairs"] = (RR_result["npairs"] * RR_result["weightavg"]).reshape(sbin, mubin)
+        for key_str, result_temp in zip(["DDwpairs", "DRwpairs", "RRwpairs"], [DD_result, DR_result, RR_result]):
+            if np.all(result_temp["weightavg"] == 0):
+                result_dict[key_str] = result_temp["npairs"].reshape(sbin, mubin)
+            else:
+                result_dict[key_str] = (result_temp["npairs"] * result_temp["weightavg"]).reshape(sbin, mubin)
         result_dict["with_weight"] = True 
     else:
         result_dict["with_weight"] = False
