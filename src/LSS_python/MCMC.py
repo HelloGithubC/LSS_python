@@ -202,6 +202,16 @@ def get_params(sampler, bestfit=False):
             output_dict["bestfit"][name] = bestfit_values[i]
     return output_dict 
 
+def get_area(sampler, params=["x1", "x2"], level=0.68):
+    density_2d = sampler.get2DDensity(params[0], params[1])
+
+    dx = density_2d.x[1] - density_2d.x[0]
+    dy = density_2d.y[1] - density_2d.y[0]
+    pixel_area = dx * dy
+
+    level = density_2d.getContourLevels([level,])[0]
+    return np.sum(density_2d.P > level) * pixel_area
+
 
 def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, converge_method, detail, progress_kwargs, output):
     sampler = emcee.EnsembleSampler(
