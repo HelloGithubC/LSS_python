@@ -6,7 +6,7 @@ import ctypes
 from .base import c_double_complex, c_float_complex
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-fftpower_lib = ctypes.CDLL(os.path.join(script_dir + "/lib", "fftpower.so"))
+fftpower_lib = ctypes.CDLL(os.path.join(script_dir + "/lib", "fftpower_ctype.so"))
 
 def deal_ps_3d_c_api(complex_field, kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
     if complex_field.dtype != np.complex128 and complex_field.dtype != np.complex64:

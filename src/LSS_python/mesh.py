@@ -1,5 +1,6 @@
 import os, joblib 
 import warnings
+import copy as _copy
 
 import numpy as np 
 
@@ -31,13 +32,81 @@ class Mesh:
         self.complex_field = None
         self.complex_field_gpu = None
 
-    def to_mesh(self, pos, resampler="CIC", interlaced=False, weights=None, values=None, nthreads=1, device_id=-1, is_norm=False, field_extern=None, c_api=False) -> None:
+    @classmethod
+    def copy(cls, source):
+        """Create a deep copy of a Mesh instance, including all data fields.
+        
+        Copies all CPU (numpy) and GPU (cupy) arrays, preserves None members,
+        and keeps attrs["Nmesh"]/attrs["BoxSize"] referencing the new instance's attributes.
+        
+        Parameters
+        ----------
+        source : Mesh
+            The Mesh instance to copy from.
+        
+        Returns
+        -------
+        Mesh
+            A new Mesh instance with all data copied.
+        """
+        new = cls.__new__(cls)
+
+        # Copy basic numpy arrays
+        new.BoxSize = np.copy(source.BoxSize)
+        new.Nmesh = np.copy(source.Nmesh)
+
+        # Deep copy attrs, then fix Nmesh/BoxSize references to point to new instance
+        new.attrs = _copy.deepcopy(source.attrs)
+        new.attrs["Nmesh"] = new.Nmesh
+        new.attrs["BoxSize"] = new.BoxSize
+
+        # Copy CPU fields (numpy)
+        new.real_field = np.copy(source.real_field) if source.real_field is not None else None
+        new.real_field_inverse = np.copy(source.real_field_inverse) if source.real_field_inverse is not None else None
+        new.complex_field = np.copy(source.complex_field) if source.complex_field is not None else None
+
+        # Copy GPU fields (cupy) — only import cupy when GPU data exists
+        new.real_field_gpu = None
+        new.complex_field_gpu = None
+        new.real_field_inverse_gpu = None
+        new.real1_gpu = None
+        new.real2_gpu = None
+
+        _has_gpu_data = (
+            source.real_field_gpu is not None
+            or source.complex_field_gpu is not None
+            or source.real_field_inverse_gpu is not None
+            or getattr(source, 'real1_gpu', None) is not None
+            or getattr(source, 'real2_gpu', None) is not None
+        )
+        if _has_gpu_data:
+            import cupy as cp
+            if source.real_field_gpu is not None:
+                new.real_field_gpu = cp.array(source.real_field_gpu)
+            if source.complex_field_gpu is not None:
+                new.complex_field_gpu = cp.array(source.complex_field_gpu)
+            if source.real_field_inverse_gpu is not None:
+                new.real_field_inverse_gpu = cp.array(source.real_field_inverse_gpu)
+            if getattr(source, 'real1_gpu', None) is not None:
+                new.real1_gpu = cp.array(source.real1_gpu)
+            if getattr(source, 'real2_gpu', None) is not None:
+                new.real2_gpu = cp.array(source.real2_gpu)
+
+        # Copy interlaced fields (only exist after to_mesh with interlaced=True)
+        new.real1 = np.copy(source.real1) if getattr(source, 'real1', None) is not None else None
+        new.real2 = np.copy(source.real2) if getattr(source, 'real2', None) is not None else None
+
+        return new
+
+    def to_mesh(self, pos, resampler="CIC", interlaced=False, weights=None, values=None, nthreads=1, device_id=-1, is_norm=True, field_extern=None, c_api=False, pybind=False) -> None:
         """ The function to run CIC
         pos: ndarray, shape=(nparticle, 3); or list of ndarray
         resampler: str, the resampler to use, can be "NGP", "CIC", "TSC , "PCS"
         interlaced: bool. If True, will do shift and set field as self.real_field_shift default.
         weight: ndarray, shape=(nparticle,); or list of ndarray
         values: ndarray, shape=(nparticle,); or list of ndarray
+
+        is_norm: bool, whether to normalize(need when using delta field)
 
         nthreads: int, the number of threads to use. Only be valid when using C/C++ API
         device_id: int, the id of GPU device(if >= 0). Advice to set pos, weights and values as float32 type, because only the float32 array will be copied to GPU. (float64 will be converted to float32)
@@ -156,11 +225,19 @@ class Mesh:
                         to_mesh_numba(pos_e, weight_e, value_e, self.real_field, self.BoxSize, self.Nmesh, resampler=resampler, shift=0.0)
                 else:
                     from .CPP.mesh import to_mesh_c_api
-                    if interlaced:
-                        to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real1, weight_e, value_e, resampler=resampler, shift=0.0, nthreads=nthreads)
-                        to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real2, weight_e, value_e, resampler=resampler, shift=0.5, nthreads=nthreads)
+                    if not pybind:
+                        if interlaced:
+                            to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real1, weight_e, value_e, resampler=resampler, shift=0.0, nthreads=nthreads)
+                            to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real2, weight_e, value_e, resampler=resampler, shift=0.5, nthreads=nthreads)
+                        else:
+                            to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real_field, weight_e, value_e, resampler=resampler, shift=0.0, nthreads=nthreads)
                     else:
-                          to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real_field, weight_e, value_e, resampler=resampler, shift=0.0, nthreads=nthreads)
+                        from .CPP.mesh_pybind import to_mesh_pybind
+                        if interlaced:
+                            to_mesh_pybind(pos_e, self.BoxSize, self.Nmesh, self.real1, weight_e, value_e, resampler=resampler, shift=0.0, nthreads=nthreads)
+                            to_mesh_pybind(pos_e, self.BoxSize, self.Nmesh, self.real2, weight_e, value_e, resampler=resampler, shift=0.5, nthreads=nthreads)
+                        else:
+                            to_mesh_pybind(pos_e, self.BoxSize, self.Nmesh, self.real_field, weight_e, value_e, resampler=resampler, shift=0.0, nthreads=nthreads)
 
         self.attrs["N"] = N_total 
         self.attrs["W"] = W_total
@@ -190,7 +267,7 @@ class Mesh:
                 if interlaced:
                     self.real_field[...] = (self.real1 + self.real2) / 2.0
 
-    def r2c(self, compensated=False, k_arrays_interlace=None, device_id=-1, nthreads=1, c_api=False) -> None:
+    def r2c(self, compensated=False, k_arrays_interlace=None, device_id=-1, nthreads=1, c_api=False, pybind=False) -> None:
         self.attrs["compensated"] = compensated
         if device_id >= 0:
             from cupyx.scipy.fft import rfftn
@@ -221,8 +298,12 @@ class Mesh:
                     complex1 = rfftn(self.real1, workers=nthreads, norm="forward")
                     complex2 = rfftn(self.real2, workers=nthreads, norm="forward") 
                     if c_api:
-                        from .CPP.mesh import do_interlacing_c_api
-                        do_interlacing_c_api(complex1, complex2, self.BoxSize, self.Nmesh, k_arrays_interlace, nthreads) 
+                        if not pybind:
+                            from .CPP.mesh import do_interlacing_c_api
+                            do_interlacing_c_api(complex1, complex2, self.BoxSize, self.Nmesh, k_arrays_interlace, nthreads) 
+                        else:
+                            from .CPP.mesh_pybind import do_interlace_pybind
+                            do_interlace_pybind(complex1, complex2, self.BoxSize, self.Nmesh, k_arrays_interlace, nthreads)
                     else:
                         do_interlacing_from_numba(complex1, complex2, self.BoxSize, self.Nmesh, k_arrays_interlace)
                     if self.attrs["is_norm"]:
@@ -247,7 +328,7 @@ class Mesh:
             from scipy.fft import irfftn 
             self.real_field_inverse = irfftn(self.complex_field, norm="forward")
 
-    def do_compensation(self, device_id=-1, nthreads=1, c_api=False):
+    def do_compensation(self, device_id=-1, nthreads=1, c_api=False, pybind=False):
         if device_id >= 0:
             import cupy as cp 
             from .cuda.mesh import do_compensation_from_cuda
@@ -280,8 +361,12 @@ class Mesh:
             if self.complex_field is None:
                 raise ValueError('No complex field to do compensated summation.')
             if c_api:
-                from .CPP.mesh import do_compensation_c_api
-                do_compensation_c_api(self.complex_field, k_arrays, resampler=self.attrs["resampler"], interlaced=self.attrs["interlaced"], nthreads=nthreads)
+                if not pybind:
+                    from .CPP.mesh import do_compensation_c_api
+                    do_compensation_c_api(self.complex_field, k_arrays, resampler=self.attrs["resampler"], interlaced=self.attrs["interlaced"], nthreads=nthreads)
+                else:
+                    from .CPP.mesh_pybind import do_compensation_pybind
+                    do_compensation_pybind(self.complex_field, self.Nmesh, k_arrays, self.attrs["resampler"], interlaced=self.attrs["interlaced"], nthreads=nthreads)
             else:
                 do_compensation_from_numba(self.complex_field, k_arrays, resampler=self.attrs["resampler"], interlace=self.attrs["interlaced"], nthreads=nthreads)
 

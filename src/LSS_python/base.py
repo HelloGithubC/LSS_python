@@ -1,4 +1,5 @@
 import numpy as np 
+from scipy.integrate import quad
 from numba import njit, set_num_threads, prange
 
 CONST_C = 299792.458
@@ -9,19 +10,36 @@ def Hz_jit(z, omega_m, w=-1.0):
     return 100 * np.sqrt(omega_m*(1+z)**3 + (1-omega_m)*(1+z)**(3*(1+w)))
 
 @njit
-def DA_jit(z, omega_m, w=-1.0):
-    return comov_dist_jit(z, omega_m, w) / (1.0 + z)
+def Hz_w0wa_jit(z, omega_m, w0=-1.0, wa=0.0):
+    """w0waCDM 哈勃参数 (h=1)
+    
+    w(a) = w0 + wa*(1 - a), a = 1/(1+z)
+    """
+    omega_de = 1.0 - omega_m
+    # 解析积分: 3∫_0^z (1+w(z'))/(1+z') dz'
+    #         = 3[(1+w0+wa)*ln(1+z) - wa*z/(1+z)]
+    integral = (1.0 + w0 + wa) * np.log(1.0 + z) - wa * z / (1.0 + z)
+    
+    de_factor = np.exp(3.0 * integral)
+    return 100.0 * np.sqrt(omega_m * (1.0 + z)**3 + omega_de * de_factor)
 
 @njit
-def comov_dist_jit(z, omega_m, w=-1.0, z_start=0.0, z_point=1000):
+def DA_jit(z, omega_m, w=-1.0, wa=0.0):
+    return comov_dist_jit(z, omega_m, w, wa=wa) / (1.0 + z)
+
+@njit
+def comov_dist_jit(z, omega_m, w=-1.0, z_start=0.0, z_point=1000, wa=0.0):
     z = np.linspace(z_start,z,z_point)
     dz = np.diff(z)
     H_inv_array = np.empty(len(z), dtype=np.float64)
     for i in range(z_point):
-        H_inv_array[i] = 1.0 / Hz_jit(z[i], omega_m, w)
+        if wa != 0.0:
+            H_inv_array[i] = 1.0 / Hz_w0wa_jit(z[i], omega_m, w, wa)
+        else:
+            H_inv_array[i] = 1.0 / Hz_jit(z[i], omega_m, w)
     return 0.5 * CONST_C * np.sum(dz * (H_inv_array[1:] + H_inv_array[:-1]))
 @njit(parallel=True)
-def comov_dist_array_jit(z_array, omega_m, w=-1.0, z_start=0.0, z_point=1000, nthreads=1):
+def comov_dist_array_jit(z_array, omega_m, w=-1.0, z_start=0.0, z_point=1000, nthreads=1, wa=0.0):
     comov_dist_array = np.empty(len(z_array), dtype=z_array.dtype)
     set_num_threads(nthreads)
     for j in prange(len(z_array)):
@@ -30,22 +48,39 @@ def comov_dist_array_jit(z_array, omega_m, w=-1.0, z_start=0.0, z_point=1000, nt
         dz = np.diff(z_temp)
         H_inv_array = np.empty(len(z_temp), dtype=np.float64)
         for i in range(z_point):
-            H_inv_array[i] = 1.0 / Hz_jit(z_temp[i], omega_m, w)
+            if wa != 0.0:
+                H_inv_array[i] = 1.0 / Hz_w0wa_jit(z_temp[i], omega_m, w, wa)
+            else:
+                H_inv_array[i] = 1.0 / Hz_jit(z_temp[i], omega_m, w)
         comov_dist_array[j] = 0.5 * CONST_C * np.sum(dz * (H_inv_array[1:] + H_inv_array[:-1]))
     return comov_dist_array
 
 def Hz(z, omega_m, w=-1.0):
     return 100 * np.sqrt(omega_m*(1+z)**3 + (1-omega_m)*(1+z)**(3*(1+w)))
 
-def DA(z, omega_m, w=-1.0):
+def Hz_w0wa(z, omega_m, w0=-1.0, wa=0.0):
+    """w0waCDM 哈勃参数 (h=1), 解析形式
+    w(a) = w0 + wa*(1 - a), a = 1/(1+z)
+    """
+    omega_de = 1.0 - omega_m
+    integral = (1.0 + w0 + wa) * np.log(1.0 + z) - wa * z / (1.0 + z)
+    de_factor = np.exp(3.0 * integral)
+    return 100.0 * np.sqrt(omega_m * (1.0 + z)**3 + omega_de * de_factor)
+
+def DA(z, omega_m, w=-1.0, wa=0.0):
+    if wa != 0.0:
+        return comov_dist(z, omega_m, w, wa=wa) / (1.0 + z)
     return comov_dist(z, omega_m, w) / (1.0 + z)
 
-def comov_dist(z, omega_m, w=-1.0, z_start=0.0, z_point=1000):
+def comov_dist(z, omega_m, w=-1.0, z_start=0.0, z_point=1000, wa=0.0):
     z = np.linspace(z_start,z,z_point)
     dz = np.diff(z)
     H_inv_array = np.empty(len(z), dtype=np.float64)
     for i in range(len(z)):
-        H_inv_array[i] = 1.0 / Hz(z[i], omega_m, w)
+        if wa != 0.0:
+            H_inv_array[i] = 1.0 / Hz_w0wa(z[i], omega_m, w, wa)
+        else:
+            H_inv_array[i] = 1.0 / Hz(z[i], omega_m, w)
     return 0.5 * CONST_C * np.sum(dz * (H_inv_array[1:] + H_inv_array[:-1]))
 
 def cal_HI_factor(redshift, omega_m, V_cell, h=0.677, omega_b=0.049):
@@ -218,3 +253,40 @@ def get_need_index(x, y, X_mesh, Y_mesh):
 
 def edges_to_array(edges):
     return (edges[:-1] + edges[1:]) / 2.0
+
+class CosmologyExact:
+    """高精度宇宙学距离计算，使用 scipy.integrate.quad 替代梯形积分，用于验证"""
+    
+    def __init__(self, omega_m, w0=-1.0, wa=0.0):
+        self.omega_m = omega_m
+        self.omega_de = 1.0 - omega_m
+        self.w0 = w0
+        self.wa = wa
+    
+    def Hz(self, z):
+        """哈勃参数 H(z)，h=1，单位 km/s/Mpc"""
+        omega_m = self.omega_m
+        if self.wa != 0.0:
+            w0, wa = self.w0, self.wa
+            # 数值积分: ∫_0^z (1+w(z'))/(1+z') dz', 其中 w(z') = w0 + wa * z'/(1+z')
+            def integrand(zp):
+                return (1.0 + w0 + wa * zp / (1.0 + zp)) / (1.0 + zp)
+            integral, _ = quad(integrand, 0, z)
+            de_factor = np.exp(3.0 * integral)
+            return 100.0 * np.sqrt(omega_m * (1.0 + z)**3 + self.omega_de * de_factor)
+        else:
+            w = self.w0
+            return 100.0 * np.sqrt(omega_m * (1.0 + z)**3 + self.omega_de * (1.0 + z)**(3.0 * (1.0 + w)))
+    
+    def _H_inv(self, zp):
+        """1/H(z')，供 quad 积分使用"""
+        return 1.0 / self.Hz(zp)
+    
+    def comov_dist(self, z, z_start=0.0):
+        """共动距离 D_c(z) = c * ∫_{z_start}^z dz'/H(z')，单位 Mpc/h"""
+        result, _ = quad(self._H_inv, z_start, z)
+        return CONST_C * result
+    
+    def DA(self, z, z_start=0.0):
+        """角直径距离 D_A(z) = D_c(z) / (1+z)，单位 Mpc/h"""
+        return self.comov_dist(z, z_start=z_start) / (1.0 + z)

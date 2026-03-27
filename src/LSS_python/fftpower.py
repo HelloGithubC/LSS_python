@@ -2,15 +2,15 @@ import numpy as np
 import os
 from .JIT.fftpower import deal_ps_3d_multithreads, deal_ps_3d_single, cal_ps_from_numba
 
-def deal_ps_3d_from_mesh(mesh, mesh_kernel=None, inplace=True, nthreads=1, device_id=-1, c_api=False):
+def deal_ps_3d_from_mesh(mesh, mesh_kernel=None, inplace=True, nthreads=1, device_id=-1, c_api=False, pybind=False):
     complex_field = mesh.complex_field if device_id < 0 else mesh.complex_field_gpu
     if mesh_kernel is not None:
         ps_3d_kernel = mesh_kernel.complex_field if device_id < 0 else mesh_kernel.complex_field_gpu
     else:
         ps_3d_kernel = None
-    return deal_ps_3d(complex_field, ps_3d_kernel, np.prod(mesh.attrs["BoxSize"]), mesh.attrs["shotnoise"], inplace, nthreads, device_id, c_api)
+    return deal_ps_3d(complex_field, ps_3d_kernel, np.prod(mesh.attrs["BoxSize"]), mesh.attrs["shotnoise"], inplace, nthreads, device_id, c_api, pybind)
 
-def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, inplace=False, nthreads=1, device_id=-1, c_api=False):
+def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, inplace=False, nthreads=1, device_id=-1, c_api=False, pybind=False):
     if inplace:
         ps_3d = complex_field
     if device_id >= 0:
@@ -24,8 +24,12 @@ def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0
         if not inplace:
             ps_3d = np.copy(complex_field)
         if c_api:
-            from .CPP.fftpower import deal_ps_3d_c_api
-            deal_ps_3d_c_api(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+            if not pybind:
+                from .CPP.fftpower import deal_ps_3d_c_api
+                deal_ps_3d_c_api(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+            else:
+                from .CPP.fftpower_pybind import deal_ps_3d_pybind
+                deal_ps_3d_pybind(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
         else:
             if nthreads > 1:
                 deal_ps_3d_multithreads(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
@@ -35,6 +39,16 @@ def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0
         return ps_3d
     else:
         return complex_field
+
+def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, return_modes=False, nthreads=1, c_api=False):
+    ps_factor = np.prod(mesh.attrs["BoxSize"])
+    shotnoise = mesh.attrs["shotnoise"]
+    if c_api:
+        from .CPP.fftpower_pybind import cal_ps_2d_from_mesh as cal_ps_2d_from_mesh_cpp
+        return cal_ps_2d_from_mesh_cpp(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthreads, return_modes)
+    else:
+        from .JIT.fftpower import cal_ps_2d_from_mesh as cal_ps_2d_from_mesh_numba
+        return cal_ps_2d_from_mesh_numba(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthreads, return_modes)
 
 class FFTPower:
     def __init__(self, Nmesh, BoxSize):
@@ -55,7 +69,7 @@ class FFTPower:
         self.removed_shotnoise = False
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
-    mode="1d", k_logarithmic=False, ps_3d_inplace=True, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=False):
+    mode="1d", k_logarithmic=False, ps_3d_inplace=True, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=False, pybind=False, cal_ps_2d=False):
         """
         Calculate power spectrum from a mesh.
             Args:
@@ -76,7 +90,7 @@ class FFTPower:
             ps_3d = mesh.complex_field
             ps_3d_need = ps_3d
             boxsize_prod = np.prod(mesh.attrs["BoxSize"], dtype=np.float32)
-        
+                      
         if ps_3d_need is None:
             raise ValueError("mesh.complex_field(_gpu) is None. Please check if you have run the r2c or converted it to correct device.")
         
@@ -84,18 +98,24 @@ class FFTPower:
             ps_3d_kernel_need = mesh_kernel.complex_field_gpu if device_id >= 0 else mesh_kernel.complex_field
         else:
             ps_3d_kernel_need = None
-        
-        ps_3d_need = deal_ps_3d(ps_3d_need, ps_3d_kernel=ps_3d_kernel_need, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, inplace=ps_3d_inplace, nthreads=nthreads, c_api=c_api)
-        self.removed_shotnoise = True # Avoid shotnoise being removed twice
-        self.attrs["shotnoise"] = shotnoise
+            
+        if cal_ps_2d and device_id < 0:
+            self.k_2d, self.ps_2d = cal_ps_2d_from_mesh(mesh, mesh_kernel=mesh_kernel, k_arrays=k_arrays, return_modes=False, nthreads=nthreads, c_api=c_api)
+            self.removed_shotnoise = True
+            self.attrs["shotnoise"] = shotnoise
+            return self.cal_pkmu_from_ps_2d(self.ps_2d, self.k_2d, kmin, kmax, dk, Nmu=Nmu, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
+        else:
+            ps_3d_need = deal_ps_3d(ps_3d_need, ps_3d_kernel=ps_3d_kernel_need, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, inplace=ps_3d_inplace, nthreads=nthreads, c_api=c_api, pybind=pybind)
+            self.removed_shotnoise = True # Avoid shotnoise being removed twice
+            self.attrs["shotnoise"] = shotnoise
 
-        return self.cal_ps_from_3d(ps_3d_need, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
+            return self.cal_ps_from_3d(ps_3d_need, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
 
     def cal_ps_from_3d(
         self, ps_3d,
         kmin, kmax, dk, Nmu=None, k_arrays=None,
         mode="1d", k_logarithmic=False, shotnoise=0.0,
-        nthreads=1, device_id=-1, c_api=False
+        nthreads=1, device_id=-1, c_api=False, pybind=False
     ):
         self.removed_shotnoise = True
         if device_id >= 0:
@@ -151,15 +171,26 @@ class FFTPower:
                 power_modes = cp.asnumpy(power_modes)
         else:
             if c_api:
-                from .CPP.fftpower import cal_ps_c_api
-                power_k, power_mu, power, power_modes = cal_ps_c_api(
-                ps_3d,
-                [k_x_array, k_y_array, k_z_array],
-                k_array,
-                mu_array,
-                k_logarithmic=k_logarithmic,
-                nthreads=nthreads,
-            )
+                if not pybind:
+                    from .CPP.fftpower import cal_ps_c_api
+                    power_k, power_mu, power, power_modes = cal_ps_c_api(
+                        ps_3d,
+                        [k_x_array, k_y_array, k_z_array],
+                        k_array,
+                        mu_array,
+                        k_logarithmic=k_logarithmic,
+                        nthreads=nthreads,
+                    )
+                else:
+                    from .CPP.fftpower_pybind import cal_ps_pybind
+                    power_k, power_mu, power, power_modes = cal_ps_pybind(
+                        ps_3d,
+                        [k_x_array, k_y_array, k_z_array],
+                        k_array,
+                        mu_array,
+                        k_logarithmic=k_logarithmic,
+                        nthreads=nthreads,
+                    )
             else:
                 power_k, power_mu, power, power_modes = cal_ps_from_numba(
                     ps_3d,
@@ -187,6 +218,79 @@ class FFTPower:
         self.attrs["kmin"] = kmin
         self.attrs["kmax"] = kmax
         self.attrs["dk"] = dk
+        return self.power
+    
+    def cal_pkmu_from_ps_2d(
+        self, ps_2d, k_2d,
+        kmin, kmax, dk, Nmu=None,
+        mode="2d", k_logarithmic=False,
+        nthreads=1, c_api=False
+    ):
+        """
+        Calculate power spectrum from pre-computed 2D power spectrum.
+        
+        Args:
+            ps_2d: 2D power spectrum array
+            k_2d: 2D k-space coordinates array with shape (k_perp_bin, k_parallel_bin, 2)
+            kmin: Minimum k value
+            kmax: Maximum k value
+            dk: k bin width
+            Nmu: Number of mu bins
+            mode: Power spectrum mode ("2d" or "1d")
+            k_logarithmic: Whether k bins are logarithmic
+            nthreads: Number of threads to use
+            c_api: If True, use C++ backend; if False, use JIT backend
+            
+        Returns:
+            Power spectrum in 2D (k-mu) format
+        """
+        self.attrs["kmin"] = kmin
+        self.attrs["kmax"] = kmax
+        if dk < 0:
+            dk = 2 * np.pi / self.attrs["BoxSize"]
+        self.attrs["dk"] = dk
+        
+        k_array = np.arange(kmin, kmax, dk)
+        self.attrs["Nk"] = len(k_array) - 1
+        self.attrs["mode"] = mode
+        
+        if mode == "2d":
+            if not isinstance(Nmu, int):
+                raise ValueError("Nmu must be an integer")
+            else:
+                self.attrs["Nmu"] = Nmu
+                mu_array = np.linspace(0, 1, Nmu + 1, endpoint=True)
+        else:
+            self.attrs["Nmu"] = 1
+            mu_array = np.array([0.0, 1.0])
+
+        if c_api:
+            from .CPP.fftpower_pybind import cal_pkmu_from_ps_2d as cal_pkmu_from_ps_2d_cpp
+            power_k, power_mu, power, power_modes = cal_pkmu_from_ps_2d_cpp(
+                ps_2d, k_2d, k_array, mu_array, k_logarithmic, nthreads
+            )
+        else:
+            from .JIT.fftpower import cal_pkmu_from_ps_2d as cal_pkmu_from_ps_2d_jit
+            power_k, power_mu, power, power_modes = cal_pkmu_from_ps_2d_jit(
+                ps_2d, k_2d, k_array, mu_array, k_logarithmic, nthreads
+            )
+        
+        # Handle NaN values and averaging
+        masked_index = power_modes == 0
+        need_index = np.logical_not(masked_index)
+        
+        power_k[masked_index] = np.nan
+        power[masked_index] = np.nan
+        power_k[need_index] = power_k[need_index] / power_modes[need_index]
+        power[need_index] = power[need_index] / power_modes[need_index]
+        
+        if mode == "2d":
+            power_mu[masked_index] = np.nan
+            power_mu[need_index] = power_mu[need_index] / power_modes[need_index]
+            self.power = {"k": power_k, "mu": power_mu, "Pkmu": power, "modes": power_modes}
+        else:
+            self.power = {"k": power_k.ravel(), "Pk": power.ravel(), "modes": power_modes.ravel()}
+        
         return self.power
     
     def intergrate_fftpower(self, kmin=-1, kmax=-1, mu_min=-1, mu_max=-1, integrate="k", easy_mu_array=False, norm=False, bin_pack=1):

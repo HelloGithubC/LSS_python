@@ -5,7 +5,7 @@ import ctypes
 from .base import c_double_complex, c_float_complex
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-mesh_lib = ctypes.CDLL(os.path.join(script_dir + "/lib", "mesh.so"))
+mesh_lib = ctypes.CDLL(os.path.join(script_dir + "/lib", "mesh_ctype.so"))
 def to_mesh_c_api(pos, boxsize, ngrids, field, weights=None, values=None, resampler = "CIC", shift=0.0, nthreads=1):
     global mesh_lib
     dtype = pos.dtype 
