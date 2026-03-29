@@ -1,4 +1,5 @@
 import numpy as np
+import os 
 from astropy.cosmology import Planck13
 import colibri.cosmology as cc 
 
