@@ -67,6 +67,8 @@ class FFTPower:
         }
         self.power = None
         self.removed_shotnoise = False
+        self.k_2d = None
+        self.ps_2d = None
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
     mode="1d", k_logarithmic=False, ps_3d_inplace=True, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=False, pybind=False, cal_ps_2d=False):
@@ -370,15 +372,17 @@ class FFTPower:
         else:
             raise ValueError("integrate must be k or mu")
     
-    def save(self, filename):
+    def save(self, filename, include_k_ps_2d=False):
         import joblib
 
         save_dict = {
             "power": self.power,
             "attrs": self.attrs,
         }
-        # if self.test_mode:
-        #     save_dict["power_test"] = self.power_test
+        if include_k_ps_2d:
+            save_dict["k_2d"] = self.k_2d
+            save_dict["ps_2d"] = self.ps_2d
+        
         dir_part, filename_part = os.path.split(filename)
         if not os.path.exists(dir_part):
             os.makedirs(dir_part)
@@ -395,5 +399,7 @@ class FFTPower:
         )
         self.power = load_dict["power"]
         self.attrs = load_dict["attrs"]
+        self.k_2d = load_dict.get("k_2d", None)
+        self.ps_2d = load_dict.get("ps_2d", None)
         return self
 

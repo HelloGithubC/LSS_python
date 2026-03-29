@@ -146,8 +146,13 @@ def ps_2d_convert_main(ps_2d, k_2d, omega_mf, w_f, omega_mm, w_m, redshift, boxs
     """
     from .fftpower import FFTPower
     z = redshift
-    Hz_f, Hz_m = Hz(z, omega_mf, w_f), Hz(z, omega_mm, w_m)
-    DA_f, DA_m = DA(z, omega_mf, w_f), DA(z, omega_mm, w_m)
+    if w_af is None and w_am is None:
+        Hz_f, Hz_m = Hz(z, omega_mf, w_f), Hz(z, omega_mm, w_m)
+        DA_f, DA_m = DA(z, omega_mf, w_f), DA(z, omega_mm, w_m)
+    else:
+        from .base import Hz_w0wa
+        Hz_f, Hz_m = Hz_w0wa(z, omega_mf, w_f, w_af), Hz_w0wa(z, omega_mm, w_m, w_am)
+        DA_f, DA_m = DA(z, omega_mf, w_f, w_af), DA(z, omega_mm, w_m, w_am)
     perp_convert_factor = DA_m / DA_f
     parallel_convert_factor = Hz_f / Hz_m
 
@@ -243,7 +248,7 @@ def get_convert_array(omega_mf, w_f, omega_mm, w_m, redshift, los_axis=2):
         convert_array[2] = perp_convert_factor
     return convert_array
 
-def degree_AP(parameters_f, parameters_m, redshift_pair):
+def degree_AP(parameters_f, parameters_m, redshift_pair, return_ratio_list=False):
     if len(parameters_f) != len(parameters_m):
         raise ValueError("The number of parameters_f and parameters_m must be the same.")
     if len(parameters_f) == 3:
@@ -263,7 +268,7 @@ def degree_AP(parameters_f, parameters_m, redshift_pair):
         for redshift in redshift_pair:
             Hz_f, Hz_m = Hz_w0wa(redshift, omega_mf, w_f, wa_f), Hz_w0wa(redshift, omega_mm, w_m, wa_m)
             DA_f, DA_m = DA(redshift, omega_mf, w_f, wa_f), DA(redshift, omega_mm, w_m, wa_m)
-            ratio_list.append(DA_m * Hz_m / DA_f * Hz_f)
+            ratio_list.append(DA_m * Hz_m / DA_f / Hz_f)
     else:
         omega_mf, w_f = parameters_f
         omega_mm, w_m = parameters_m
@@ -271,6 +276,8 @@ def degree_AP(parameters_f, parameters_m, redshift_pair):
         for redshift in redshift_pair:
             Hz_f, Hz_m = Hz(redshift, omega_mf, w_f), Hz(redshift, omega_mm, w_m)
             DA_f, DA_m = DA(redshift, omega_mf, w_f), DA(redshift, omega_mm, w_m)
-            ratio_list.append(DA_m * Hz_m / DA_f * Hz_f)
-    return ratio_list[0] / ratio_list[1]
-    
+            ratio_list.append(DA_m * Hz_m / DA_f / Hz_f)
+    if return_ratio_list:
+        return ratio_list[0]/ratio_list[1], ratio_list 
+    else:
+        return ratio_list[0]/ratio_list[1]
