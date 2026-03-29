@@ -1,12 +1,8 @@
-import os 
-
 import numpy as np
 from astropy.cosmology import Planck13
-import camb 
-from camb import CAMBparams
 import colibri.cosmology as cc 
 
-def create_PS(omega_m0, w0, kmax, sigma8_kmax=10.0, verbose=False, params=None, method="CAMB", kmin=1e-3, k_point=1500):
+def create_PS(omega_m0, w0, kmax, verbose=False, params=None, method="CAMB", kmin=1e-3, k_point=1500):
     """ A simple function to create linear PS in z=0.0 for simulation
     Args:
         params: dict, cosmology parameters
