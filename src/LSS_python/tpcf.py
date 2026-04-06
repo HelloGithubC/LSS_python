@@ -325,20 +325,20 @@ class xismu(object):
     def cosmo_conv_simple(
         self, omstd=0.3071, wstd=-1, omwrong=0.5, wwrong=-1,
         redshift=0.0001,
-        smin_mapping=3.0, smax_mapping=60.0
+        smin_mapping=3.0, smax_mapping=60.0, wastd=0.0, wawrong=0.0,
     ):
         from ._AP_core import mapping_smudata_to_another_cosmology_simple
-        from .base import Hz_jit, DA_jit
+        from .base import Hz_w0wa_jit, DA_jit
         if int(self.sbin) == 750 and int(self.mubin) == 600:
             raise ValueError(
                 "Check your sbin and mubin of xismu. You are using simple convertor!"
             )
         redshift = max(redshift, 0.0001)
         
-        Hstd = Hz_jit(redshift, omstd, wstd)
-        Hnew = Hz_jit(redshift, omwrong, wwrong)
-        DAstd = DA_jit(redshift, omstd, wstd)
-        DAnew = DA_jit(redshift, omwrong, wwrong)
+        Hstd = Hz_w0wa_jit(redshift, omstd, wstd, wastd)
+        Hnew = Hz_w0wa_jit(redshift, omwrong, wwrong, wawrong)
+        DAstd = DA_jit(redshift, omstd, wstd, wastd)
+        DAnew = DA_jit(redshift, omwrong, wwrong, wawrong)
 
         data = np.concatenate(
             [
@@ -391,19 +391,21 @@ class xismu(object):
         smin_mapping=3.0,
         smax_mapping=60.0,
         assistant_xismu=None, 
+        wastd=0.0,
+        wawrong=0.0,
     ):
         from ._AP_core import mapping_smudata_to_another_cosmology_DenseToSparse, mapping_smudata_dense
-        from .base import Hz_jit, DA_jit
+        from .base import Hz_w0wa_jit, DA_jit
 
         if int(self.sbin) == 150 and int(self.mubin) == 120:
             raise ValueError(
                 "Check your sbin and mubin of xismu. You are using dense convertor!"
             )
         redshift = max(redshift, 0.0001)
-        Hstd = Hz_jit(redshift, omstd, wstd)
-        Hnew = Hz_jit(redshift, omwrong, wwrong)
-        DAstd = DA_jit(redshift, omstd, wstd)
-        DAnew = DA_jit(redshift, omwrong, wwrong)
+        Hstd = Hz_w0wa_jit(redshift, omstd, wstd, wastd)
+        Hnew = Hz_w0wa_jit(redshift, omwrong, wwrong, wawrong)
+        DAstd = DA_jit(redshift, omstd, wstd, wawrong)
+        DAnew = DA_jit(redshift, omwrong, wwrong, wawrong)
 
         data = np.concatenate(
             [

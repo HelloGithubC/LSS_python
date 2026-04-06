@@ -1,12 +1,18 @@
 import numpy as np 
 from numba import njit
 
-def get_sub_box_shift(position, boxsize, ngrids, max_points_default=None, perodic=False):
+def get_sub_box_shift(data, boxsize, ngrids, max_points_default=None, perodic=False):
     if isinstance(boxsize, float) or isinstance(boxsize, int):
         boxsize = np.array([boxsize, boxsize, boxsize])
     if isinstance(ngrids, float) or isinstance(ngrids, int):
         ngrids = np.array([ngrids, ngrids, ngrids], dtype=np.int32)
-    return get_sub_box_shift_core(position, boxsize, ngrids, max_points_default, perodic)
+    data_new_array, counts_array = get_sub_box_shift_core(data, boxsize, ngrids, max_points_default, perodic)
+    data_out_array = np.empty(shape=ngrids, dtype=object)
+    for i in range(ngrids[0]):
+        for j in range(ngrids[1]):
+            for k in range(ngrids[2]):
+                data_out_array[i, j, k] = data_new_array[i, j, k, :counts_array[i, j, k]]
+    return data_out_array
 
 @njit
 def get_sub_box_shift_core(data, boxsize, ngrids, max_points_default=None, perodic=False):

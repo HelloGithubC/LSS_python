@@ -4,11 +4,11 @@ from numba import njit, prange, set_num_threads
 from .base import comov_dist_jit, CONST_C
 
 @njit(parallel=True)
-def add_rsd(pos, vel, redshift, boxsize, omega_m, w=-1.0, axis=2, nthreads=1) -> None:
+def add_rsd(pos, vel, redshift, boxsize, omega_m, w=-1.0, axis=2, nthreads=1, wa=0.0, z_point=20) -> None:
     set_num_threads(nthreads)
     for i in prange(len(pos)):
         delta_z =  vel[i,axis] * (1.0 + redshift) / CONST_C
-        delta_r = comov_dist_jit(redshift + delta_z, omega_m, w, redshift, 20)
+        delta_r = comov_dist_jit(redshift + delta_z, omega_m, w, z_start = redshift, z_point = z_point, wa=wa)
         pos[i,axis] += delta_r
         if pos[i,axis] > boxsize:
             pos[i,axis] -= boxsize

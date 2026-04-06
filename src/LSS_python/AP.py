@@ -4,7 +4,7 @@ import math
 
 from .base import Hz, DA, cal_HI_factor
 
-def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0):
+def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0,smin_mapping=3.0, smax_mapping=60.0):
     sbin = xismu.xis.shape[0]
     mubin = xismu.xis.shape[1]
 
@@ -19,6 +19,10 @@ def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_met
             omwrong = omega_mm, 
             wwrong = w_m, 
             redshift = redshift, 
+            wastd = wa_f, 
+            wawrong = wa_m,
+            smin_mapping=smin_mapping, 
+            smax_mapping=smax_mapping,
         )
         xismu_new.s_array = np.nanmean(assis_xismu.S, axis=1)
         xismu_new.mu_array = np.nanmean(assis_xismu.Mu, axis=0)
@@ -32,6 +36,10 @@ def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_met
             omwrong = omega_mm, 
             wwrong = w_m, 
             redshift = redshift,
+            wastd = wa_f, 
+            wawrong = wa_m,
+            smin_mapping=smin_mapping, 
+            smax_mapping=smax_mapping,
         )
     else:
         raise ValueError("convert_method must be 'simple' or 'dense'")

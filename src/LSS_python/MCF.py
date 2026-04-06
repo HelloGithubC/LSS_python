@@ -80,18 +80,18 @@ def cal_rho(distance_array, h, use_max_distance_as_h=False):
         h = np.max(distance_array) / 2.0
     return np.sum(w_kernel(distance_array, h))
 
-def create_rho(data, boxsize, k=30, nthreads=1, only_return_rho=True):
+def create_rho(pos, boxsize, k=30, nthreads=1, only_return_rho=True):
     """ The main function to create rho
     Note:
-        data: [n_galaxy, 3]
+        pos: [n_galaxy, 3]
     """
     if boxsize is not None:
         boxsize += 1e-5
-    kdtree = KDTree(data, boxsize=boxsize)
-    distance_array, _ = kdtree.query(data, k=k, workers=nthreads)
+    kdtree = KDTree(pos, boxsize=boxsize)
+    distance_array, _ = kdtree.query(pos, k=k, workers=nthreads)
     rho_array = cal_rho_array(distance_array, h=None, use_max_distance_as_h=True)
     if only_return_rho:
         return rho_array
     else:
-        data_new = np.concatenate([data, rho_array[:, None]], axis=1)
-        return data_new
+        pos_new = np.concatenate([pos, rho_array[:, None]], axis=1)
+        return pos_new
