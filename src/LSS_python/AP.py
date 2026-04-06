@@ -4,7 +4,7 @@ import math
 
 from .base import Hz, DA, cal_HI_factor
 
-def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None):
+def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0):
     sbin = xismu.xis.shape[0]
     mubin = xismu.xis.shape[1]
 
