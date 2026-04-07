@@ -15,7 +15,7 @@ INCLUDES := $(PYTHON_INCLUDES) $(PYBIND11_INCLUDES)
 EXT_SUFFIX := $(shell python3 -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
 # 目标文件设置
-TARGETS := $(LIB_DIR)/fftpower.so $(LIB_DIR)/mesh.so
+TARGETS := $(LIB_DIR)/fftpower.so $(LIB_DIR)/mesh.so mesh_pybind fftpower_pybind
 
 # 默认目标
 all: $(TARGETS)
