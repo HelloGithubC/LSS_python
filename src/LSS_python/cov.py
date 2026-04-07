@@ -3,6 +3,7 @@ from numba import njit
 from Corrfunc.theory import DDsmu
 from .tpcf import xismu
 from tqdm import tqdm
+import time
 
 def get_sub_box_shift(data, boxsize, ngrids, max_points_default=None, perodic=False, shift=False):
     """
@@ -298,10 +299,14 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
     if RR_result is None:
         if verbose:
             print("Computing RR...")
+            start_time = time.time()
         RR_result = _call_DDsmu(
             random, None, sedges, mubin, with_weight, sub_boxsize[0],
             refine_factors, nthreads, autocorr=True
         )
+        if verbose:
+            end_time = time.time()
+            print(f"Done! Time elapsed: {end_time - start_time:.2f} seconds")
     else:
         if verbose:
             print("Using provided RR result...")
@@ -328,7 +333,7 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
         RR_corrected[0, 0] -= nr
     
     # Process each subvolume
-    iterator = tqdm(enumerate(data_list), total=n_cubes, desc="Processing subvolumes", disable=not verbose)
+    iterator = tqdm(enumerate(data_list), total=n_cubes, desc="Processing subvolumes (DD+DR)", disable=not verbose)
     for idx, data_sub in iterator:
         if data_sub is None or len(data_sub) < 2:
             DD_sub[idx] = None
