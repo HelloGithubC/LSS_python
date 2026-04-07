@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <omp.h>
+#include <limits>
 
 template <typename T>
 inline size_t GetBin(const T value, const T *array, const T array_diff, bool is_logarithmic)
