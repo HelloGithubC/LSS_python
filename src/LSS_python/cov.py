@@ -497,7 +497,7 @@ def get_neighbors(idx, n):
 
 
 def _call_DDsmu(data1, data2, sedges, mubin, with_weight, boxsize, 
-                refine_factors, nthreads, autocorr):
+                refine_factors, nthreads, autocorr, verbose=False):
     """
     Wrapper for DDsmu call.
     """
@@ -510,7 +510,7 @@ def _call_DDsmu(data1, data2, sedges, mubin, with_weight, boxsize,
                 mu_max=1.0, nmu_bins=mubin,
                 X1=data1[:, 0], Y1=data1[:, 1], Z1=data1[:, 2],
                 weights1=data1[:, 3], weight_type="pair_product",
-                verbose=False, periodic=False, boxsize=boxsize,
+                verbose=verbose, periodic=False, boxsize=boxsize,
                 xbin_refine_factor=x_refine_factor,
                 ybin_refine_factor=y_refine_factor,
                 zbin_refine_factor=z_refine_factor
@@ -523,7 +523,7 @@ def _call_DDsmu(data1, data2, sedges, mubin, with_weight, boxsize,
                 weights1=data1[:, 3], weight_type="pair_product",
                 X2=data2[:, 0], Y2=data2[:, 1], Z2=data2[:, 2],
                 weights2=data2[:, 3],
-                verbose=False, periodic=False, boxsize=boxsize,
+                verbose=verbose, periodic=False, boxsize=boxsize,
                 xbin_refine_factor=x_refine_factor,
                 ybin_refine_factor=y_refine_factor,
                 zbin_refine_factor=z_refine_factor
@@ -534,7 +534,7 @@ def _call_DDsmu(data1, data2, sedges, mubin, with_weight, boxsize,
                 autocorr, nthreads=nthreads, binfile=sedges,
                 mu_max=1.0, nmu_bins=mubin,
                 X1=data1[:, 0], Y1=data1[:, 1], Z1=data1[:, 2],
-                verbose=False, periodic=False, boxsize=boxsize,
+                verbose=verbose, periodic=False, boxsize=boxsize,
                 xbin_refine_factor=x_refine_factor,
                 ybin_refine_factor=y_refine_factor,
                 zbin_refine_factor=z_refine_factor
@@ -545,7 +545,7 @@ def _call_DDsmu(data1, data2, sedges, mubin, with_weight, boxsize,
                 mu_max=1.0, nmu_bins=mubin,
                 X1=data1[:, 0], Y1=data1[:, 1], Z1=data1[:, 2],
                 X2=data2[:, 0], Y2=data2[:, 1], Z2=data2[:, 2],
-                verbose=False, periodic=False, boxsize=boxsize,
+                verbose=verbose, periodic=False, boxsize=boxsize,
                 xbin_refine_factor=x_refine_factor,
                 ybin_refine_factor=y_refine_factor,
                 zbin_refine_factor=z_refine_factor
