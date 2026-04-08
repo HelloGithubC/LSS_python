@@ -165,25 +165,19 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
     if verbose:
         print(f"Number of subvolumes: {n_cubes} = {ngrids[0]}x{ngrids[1]}x{ngrids[2]}")
     
-    # Step 1: Compute DD internal for each subvolume
-    DD_internal = compute_DD_internal(
+    # Step 1: Compute DD (internal + cross between neighboring subvolumes)
+    DD_internal, DD_cross = compute_DD(
         data_list, sedges, mubin, with_weight, boxsize,
-        refine_factors, nthreads, verbose
+        refine_factors, nthreads, verbose, ngrids
     )
     
-    # Step 2: Compute DD cross between neighboring subvolumes
-    DD_cross = compute_DD_cross(
-        data_list, sedges, mubin, with_weight, boxsize,
-        refine_factors, nthreads, verbose
-    )
-    
-    # Step 3: Compute DR (internal + cross between neighboring subvolumes)
-    DR_internal, DR_cross = compute_DR_subsample(
+    # Step 2: Compute DR (internal + cross between neighboring subvolumes)
+    DR_internal, DR_cross = compute_DR(
         data_list, random_list, sedges, mubin, with_weight, boxsize,
         refine_factors, nthreads, verbose, ngrids
     )
     
-    # Step 4: Compute RR (internal + cross between neighboring subvolumes)
+    # Step 3: Compute RR (internal + cross between neighboring subvolumes)
     if RR_result is None:
         RR_result = compute_RR(
             random_list, sedges, mubin, with_weight, boxsize,
@@ -196,7 +190,7 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
     if verbose:
         print("Computing Jackknife correlation functions...")
     
-    # Step 5: Compute Jackknife correlation functions
+    # Step 4: Compute Jackknife correlation functions
     xi_results = compute_jackknife_xi(
         DD_internal, DD_cross, DR_internal, DR_cross, RR_result,
         data_list, random_list, sedges, mubin, with_weight
@@ -560,10 +554,12 @@ def _call_DDsmu(data1, data2, sedges, mubin, with_weight, boxsize,
     return result
 
 
-def compute_DD_internal(data_list, sedges, mubin, with_weight, boxsize,
-                        refine_factors, nthreads, verbose):
+def compute_DD(data_list, sedges, mubin, with_weight, boxsize,
+               refine_factors, nthreads, verbose, ngrids):
     """
-    Compute DD for each subvolume (internal pairs only).
+    Compute DD for data catalog.
+    Computes internal pairs for each subvolume + cross-pairs between neighboring subvolumes.
+    This ensures the same geometric structure as RR.
     
     Parameters
     ----------
@@ -583,17 +579,25 @@ def compute_DD_internal(data_list, sedges, mubin, with_weight, boxsize,
         Number of threads.
     verbose : bool
         Whether to print progress.
+    ngrids : array-like
+        Number of divisions along each axis.
     
     Returns
     -------
     DD_internal : dict
-        Dictionary mapping subvolume index to DD result.
+        Dictionary mapping subvolume index to DD result (internal pairs).
+    DD_cross : dict
+        Dictionary mapping (idx1, idx2) tuple to DD result (cross pairs).
+        Only includes pairs where idx1 < idx2.
     """
     n_cubes = len(data_list)
-    n = round(n_cubes ** (1/3))
+    n = ngrids[0]  # Assume cubic grid for neighbor calculation
     
+    if verbose:
+        print("Computing DD internal...")
+    
+    # Step 1: Compute DD internal for each subvolume
     DD_internal = {}
-    
     iterator = tqdm(enumerate(data_list), total=n_cubes, desc="DD internal", disable=not verbose)
     for idx, data in iterator:
         if data is None or len(data) < 2:
@@ -606,48 +610,14 @@ def compute_DD_internal(data_list, sedges, mubin, with_weight, boxsize,
         )
         DD_internal[idx] = result
     
-    return DD_internal
-
-
-def compute_DD_cross(data_list, sedges, mubin, with_weight, boxsize,
-                     refine_factors, nthreads, verbose):
-    """
-    Compute DD for cross-pairs between neighboring subvolumes.
-    Each pair is computed only once (idx1 < idx2).
+    if verbose:
+        print("Computing DD cross...")
     
-    Parameters
-    ----------
-    data_list : list of ndarray
-        List of n^3 subvolume data arrays.
-    sedges : array-like
-        Separation bin edges.
-    mubin : int
-        Number of mu bins.
-    with_weight : bool
-        Whether to use weights.
-    boxsize : float
-        Box size.
-    refine_factors : tuple
-        (x_refine, y_refine, z_refine) factors.
-    nthreads : int
-        Number of threads.
-    verbose : bool
-        Whether to print progress.
-    
-    Returns
-    -------
-    DD_cross : dict
-        Dictionary mapping (idx1, idx2) tuple to DD result.
-        Only includes pairs where idx1 < idx2.
-    """
-    n_cubes = len(data_list)
-    n = round(n_cubes ** (1/3))
-    
+    # Step 2: Compute DD cross between neighboring subvolumes
     DD_cross = {}
     computed_pairs = set()
     pairs_to_compute = []
     
-    # First collect all pairs to compute
     for idx in range(n_cubes):
         data1 = data_list[idx]
         if data1 is None or len(data1) == 0:
@@ -667,20 +637,19 @@ def compute_DD_cross(data_list, sedges, mubin, with_weight, boxsize,
             
             pairs_to_compute.append((pair, data1, data2))
     
-    # Compute with progress bar
     iterator = tqdm(pairs_to_compute, desc="DD cross", disable=not verbose)
     for pair, data1, data2 in iterator:
         result = _call_DDsmu(
             data1, data2, sedges, mubin, with_weight, boxsize,
             refine_factors, nthreads, autocorr=False
         )
-        result["npairs"] *= 2 # To be consistent with the number of pairs in the full catalog
+        result["npairs"] *= 2  # To be consistent with the number of pairs in the full catalog
         DD_cross[pair] = result
     
-    return DD_cross
+    return DD_internal, DD_cross
 
 
-def compute_DR_subsample(data_list, random_list, sedges, mubin, with_weight, boxsize,
+def compute_DR(data_list, random_list, sedges, mubin, with_weight, boxsize,
                          refine_factors, nthreads, verbose, ngrids):
     """
     Compute DR for data-random cross-correlation.
@@ -769,7 +738,6 @@ def compute_DR_subsample(data_list, random_list, sedges, mubin, with_weight, box
             data, random_sub, sedges, mubin, with_weight, boxsize,
             refine_factors, nthreads, autocorr=False
         )
-        result["npairs"] *= 2  # To be consistent with the number of pairs in the full catalog
         DR_cross[pair] = result
     
     return DR_internal, DR_cross
