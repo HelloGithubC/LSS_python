@@ -296,6 +296,7 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
     if full_output:
         # Return only simplified arrays (weighted npairs) to reduce storage size
         # Keep xismu objects and edges, convert pair counts to simple arrays
+        # The arrays about RR have been stored in the cache file, so we can skip them here
         xi_results_filtered = {
             'xismu_jk': xi_results['xismu_jk'],
             'xismu_full': xi_results['xismu_full'],
@@ -305,9 +306,6 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
             'DD_cross': extract_npairs(DD_cross, with_weight),
             'DR_internal': extract_npairs(DR_internal, with_weight),
             'DR_cross': extract_npairs(DR_cross, with_weight),
-            'RR_internal': extract_npairs(RR_internal, with_weight),
-            'RR_cross': extract_npairs(RR_cross, with_weight),
-            'RR_full': extract_npairs(RR_full, with_weight),
         }
         return xi_results_filtered
     else:
@@ -317,7 +315,8 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
         }
 
 def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
-                           boxsize, ngrids, refine_factors=(2, 2, 1), RR_full=None, nthreads=1, verbose=False, full_output=False):
+                           boxsize, ngrids, refine_factors=(2, 2, 1), 
+                           rr_filename=None, force_rr=False, nthreads=1, verbose=False, full_output=False):
     """
     Compute two-point correlation function for each subvolume as independent samples.
     Each subvolume is treated as an independent sample with the same random catalog.
@@ -343,8 +342,13 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
         If int, assumes same number for all axes (ngrids^3 total subvolumes).
     refine_factors : tuple of 3 ints
         (x_refine_factor, y_refine_factor, z_refine_factor) for DDsmu.
-    RR_full : structured array, optional
-        Pre-computed RR full result (combined internal + cross pairs). If provided, skip RR computation.
+    rr_filename : str or None
+        Path to save/load RR computation results via joblib.
+        If None, compute RR every time.
+        If file exists and force_rr=False, load from file.
+        If file doesn't exist or force_rr=True, compute and save to file.
+    force_rr : bool
+        If True, force recompute RR even if file exists.
     nthreads : int
         Number of threads for parallel computation.
     verbose : bool
@@ -357,11 +361,10 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
     result : dict
         Dictionary containing:
         - 'xismu_sub': ndarray of xismu objects (n_cubes,) - xismu for each subvolume
-        - 'sedges': separation bin edges
-        - 'muedges': mu bin edges
+        - 'sedges': separation bin edges (if full_output)
+        - 'muedges': mu bin edges (if full_output)
         - 'DD_sub': dict of DD results for each subvolume (if full_output)
         - 'DR_sub': dict of DR results for each subvolume (if full_output)
-        - 'RR_full': RR full result (computed once or provided)
     """
     # Normalize ngrids to array
     if isinstance(ngrids, int):
@@ -397,29 +400,6 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
     
     sbin = len(sedges) - 1
     
-    # Compute RR once (or use provided)
-    if RR_full is None:
-        if verbose:
-            print("Computing RR...")
-            start_time = time.time()
-        RR_full = _call_DDsmu(
-            random, None, sedges, mubin, with_weight, sub_boxsize[0],
-            refine_factors, nthreads, autocorr=True
-        )
-        if verbose:
-            end_time = time.time()
-            print(f"Done! Time elapsed: {end_time - start_time:.2f} seconds")
-    else:
-        if verbose:
-            print("Using provided RR result...")
-
-    # Extract RR pair counts (same for all subvolumes)
-    RR = extract_npairs(RR_full, with_weight).reshape(sbin, mubin)
-
-    # Get mu edges
-    mumax_str = "mumax" if "mumax" in RR_full.dtype.names else "mu_max"
-    muedges = np.append([0], RR_full[mumax_str].reshape(sbin, mubin)[0])
-    
     # Compute normalization for RR (same for all subvolumes)
     if with_weight:
         nr = np.sum(random[:, 3])
@@ -429,9 +409,117 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
         sum_wr2 = nr
     norm_RR = nr * nr - sum_wr2
     
+    # Initialize muedges (will be extracted from RR_result or use default)
+    computed_muedges = None
+    RR_result = None
+    rr_from_cache = False
+
+    # Try to load RR from cache
+    if rr_filename is not None and os.path.exists(rr_filename) and not force_rr:
+        if verbose:
+            print(f"Loading RR results from {rr_filename}...")
+        RR_cache_dict = joblib.load(rr_filename)
+        RR_result = RR_cache_dict['RR_result']
+        
+        # Load sedges and muedges from saved file
+        saved_sedges = RR_cache_dict.get('sedges', None)
+        saved_muedges = RR_cache_dict.get('muedges', None)
+        saved_with_weight = RR_cache_dict.get('with_weight', with_weight)
+        saved_sub_boxsize = RR_cache_dict.get('sub_boxsize', None)
+        
+        # Check if parameters match
+        if saved_sedges is None or saved_muedges is None:
+            raise ValueError("Cached RR file is corrupted: missing sedges or muedges.")
+            
+        if not (len(saved_sedges) == len(sedges) and np.allclose(saved_sedges, sedges)):
+            raise ValueError(f"Cached RR sedges do not match current sedges. "
+                           f"Cache file may be from different configuration.")
+            
+        # Check muedges consistency
+        expected_muedges = np.linspace(0, 1, mubin + 1)
+        if not np.allclose(saved_muedges, expected_muedges):
+            raise ValueError(f"Cached RR muedges do not match expected muedges for mubin={mubin}. "
+                           f"Cache file may be from different configuration.")
+        
+        # Check sub_boxsize consistency
+        if saved_sub_boxsize is not None and not np.allclose(saved_sub_boxsize, sub_boxsize):
+            raise ValueError(f"Cached RR sub_boxsize does not match current sub_boxsize. "
+                           f"Cache file may be from different configuration.")
+        
+        # Only give warning for with_weight difference
+        if saved_with_weight != with_weight:
+            if verbose:
+                print(f"Warning: loaded RR was computed with with_weight={saved_with_weight}, "
+                      f"but current with_weight={with_weight}. Proceeding with cached result.")
+        
+        computed_muedges = saved_muedges
+        sedges = saved_sedges
+        rr_from_cache = True
+        
+    elif rr_filename is not None and os.path.exists(rr_filename) and force_rr:
+        # Force recompute - will overwrite existing cache
+        if verbose:
+            print(f"Force flag set, recomputing RR and overwriting {rr_filename}...")
+        computed_muedges = None
+    else:
+        # No cache file or force_rr=False but file doesn't exist
+        computed_muedges = None
+    
+    # Only recompute if forced or no valid cache
+    if force_rr or not rr_from_cache:
+        if verbose:
+            if rr_filename is not None and os.path.exists(rr_filename) and force_rr:
+                print(f"Force flag set, recomputing RR and saving to {rr_filename}...")
+            elif rr_filename is not None:
+                print(f"RR file not found, computing RR and saving to {rr_filename}...")
+            else:
+                print("Computing RR...")
+            start_time = time.time()
+        
+        RR_result = _call_DDsmu(
+            random, None, sedges, mubin, with_weight, sub_boxsize[0],
+            refine_factors, nthreads, autocorr=True
+        )
+        
+        # Generate muedges based on mubin
+        computed_muedges = np.linspace(0, 1, mubin + 1)
+        
+        if verbose:
+            end_time = time.time()
+            print(f"Done! Time elapsed: {end_time - start_time:.2f} seconds")
+
+        if rr_filename is not None:
+            if verbose:
+                print(f"Saving RR results to {rr_filename}...")
+            # Save complete RR_result (structured array) with self-pair correction applied
+            RR_result_corrected = RR_result.copy()
+            if sedges[0] == 0.0:
+                # Apply self-pair correction before saving
+                npairs = RR_result_corrected['npairs'].copy()
+                npairs[0] -= nr
+                RR_result_corrected['npairs'] = npairs
+            
+            RR_cache_dict = {
+                'RR_result': RR_result_corrected,
+                'sedges': sedges,
+                'muedges': computed_muedges,
+                'with_weight': with_weight,
+                'sub_boxsize': sub_boxsize,
+            }
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(rr_filename), exist_ok=True)
+            joblib.dump(RR_cache_dict, rr_filename)
+
+    # Extract RR pair counts (same for all subvolumes)
+    RR = extract_npairs(RR_result, with_weight).reshape(sbin, mubin)
+
+    # Get mu edges
+    mumax_str = "mumax" if "mumax" in RR_result.dtype.names else "mu_max"
+    muedges = np.append([0], RR_result[mumax_str].reshape(sbin, mubin)[0])
+    
     # RR self-pair correction
     RR_corrected = RR.copy()
-    if sedges[0] == 0.0 and RR_full is None: # When RR_full is not None, it has been corrected
+    if sedges[0] == 0.0:
         RR_corrected[0, 0] -= nr
     
     # Process each subvolume
@@ -492,12 +580,10 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
             'muedges': muedges,
             'DD_sub': DD_sub,
             'DR_sub': DR_sub,
-            'RR_full': RR_full,
         }
     else:
         return {
             'xismu_sub': xismu_sub,
-            'RR_full': RR_full,
         }
 
 
@@ -1053,6 +1139,307 @@ def create_xismu_from_pairs(DD, DR, RR, norm_DD, norm_DR, norm_RR, sedges, muedg
     return xismu_obj
 
 
+def compute_total_pairs_and_norm(DD_internal=None, DD_cross=None, DR_internal=None, DR_cross=None, 
+                                 RR_internal=None, RR_cross=None, sbin=None, mubin=None):
+    """
+    Compute total pair counts and normalization factors for full sample.
+    Inputs should be already weighted logs from extract_npairs.
+    
+    Parameters
+    ----------
+    DD_internal : dict or ndarray, optional
+        DD results for internal pairs (already processed by extract_npairs).
+        If dict: mapping subvolume index to weighted pair counts.
+        If ndarray: weighted pair counts array (sbin, mubin).
+    DD_cross : dict or ndarray, optional  
+        DD results for cross-pairs (already processed by extract_npairs).
+    DR_internal : dict or ndarray, optional
+        DR results for same-position pairs (already processed by extract_npairs).
+    DR_cross : dict or ndarray, optional
+        DR results for cross-pairs (already processed by extract_npairs).
+    RR_internal : dict or ndarray, optional
+        RR results for internal pairs (already processed by extract_npairs).
+    RR_cross : dict or ndarray, optional
+        RR results for cross-pairs (already processed by extract_npairs).
+    sbin : int
+        Number of separation bins.
+    mubin : int
+        Number of mu bins.
+    
+    Returns
+    -------
+    result : dict
+        Dictionary with keys:
+        - 'DD_total': ndarray - total DD pair counts (sbin, mubin)
+        - 'DR_total': ndarray - total DR pair counts (sbin, mubin) 
+        - 'RR_total': ndarray - total RR pair counts (sbin, mubin)
+        - 'norm_DD': float - DD normalization factor
+        - 'norm_DR': float - DR normalization factor  
+        - 'norm_RR': float - RR normalization factor
+        
+    Raises
+    ------
+    ValueError
+        If none of DD_internal/DD_cross, DR_internal/DR_cross, RR_internal/RR_cross are provided.
+    """
+    import warnings
+    
+    if sbin is None or mubin is None:
+        raise ValueError("sbin and mubin must be provided")
+    
+    # Check input availability and issue warnings
+    dd_inputs_provided = DD_internal is not None and DD_cross is not None
+    dr_inputs_provided = DR_internal is not None and DR_cross is not None
+    rr_inputs_provided = RR_internal is not None and RR_cross is not None
+    
+    if not (dd_inputs_provided or dr_inputs_provided or rr_inputs_provided):
+        raise ValueError("At least one pair of inputs (DD_internal/DD_cross, DR_internal/DR_cross, RR_internal/RR_cross) must be provided")
+    
+    if dd_inputs_provided and not (dr_inputs_provided and rr_inputs_provided):
+        warnings.warn("Only DD_internal and DD_cross provided. DR and RR inputs are missing.")
+    elif dr_inputs_provided and not (dd_inputs_provided and rr_inputs_provided):
+        warnings.warn("Only DR_internal and DR_cross provided. DD and RR inputs are missing.")
+    elif rr_inputs_provided and not (dd_inputs_provided and dr_inputs_provided):
+        warnings.warn("Only RR_internal and RR_cross provided. DD and DR inputs are missing.")
+    elif (dd_inputs_provided ^ dr_inputs_provided) or (dd_inputs_provided ^ rr_inputs_provided) or (dr_inputs_provided ^ rr_inputs_provided):
+        # XOR condition - partial inputs
+        warnings.warn("Partial inputs detected. Some pair types are missing.")
+    
+    result = {
+        'DD_total': None,
+        'DR_total': None, 
+        'RR_total': None,
+        'norm_DD': None,
+        'norm_DR': None,
+        'norm_RR': None
+    }
+    
+    # Helper function to sum contributions
+    def _sum_contributions(internal, cross, sbin, mubin):
+        total = np.zeros((sbin, mubin))
+        
+        if internal is not None:
+            if isinstance(internal, dict):
+                for idx, val in internal.items():
+                    if val is not None:
+                        if isinstance(val, np.ndarray) and val.ndim == 1:
+                            total += val.reshape(sbin, mubin)
+                        else:
+                            total += val
+            else:  # ndarray
+                if internal.ndim == 1:
+                    total += internal.reshape(sbin, mubin)
+                else:
+                    total += internal
+        
+        if cross is not None:
+            if isinstance(cross, dict):
+                for pair, val in cross.items():
+                    if val is not None:
+                        if isinstance(val, np.ndarray) and val.ndim == 1:
+                            total += val.reshape(sbin, mubin)
+                        else:
+                            total += val
+            else:  # ndarray
+                if cross.ndim == 1:
+                    total += cross.reshape(sbin, mubin)
+                else:
+                    total += cross
+        
+        return total
+    
+    # Compute DD_total if both internal and cross are provided
+    if DD_internal is not None and DD_cross is not None:
+        result['DD_total'] = _sum_contributions(DD_internal, DD_cross, sbin, mubin).astype(np.uint64)
+    
+    # Compute DR_total if both internal and cross are provided
+    if DR_internal is not None and DR_cross is not None:
+        result['DR_total'] = _sum_contributions(DR_internal, DR_cross, sbin, mubin).astype(np.uint64)
+    
+    # Compute RR if both internal and cross are provided
+    if RR_internal is not None and RR_cross is not None:
+        result['RR_total'] = _sum_contributions(RR_internal, RR_cross, sbin, mubin).astype(np.uint64)
+    
+    return result
+
+
+def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_internal=None, DR_cross=None,
+                                RR_internal=None, RR_cross=None, data_list=None, random_list=None,
+                                sedges=None, mubin=None, with_weight=False, ngrids_1d=None):
+    """
+    Compute deductions (pairs and normalization) for excluding a subvolume.
+    Returns what needs to be subtracted from totals.
+    
+    Parameters
+    ----------
+    jk_idx : int
+        Index of subvolume to exclude.
+    DD_internal : dict, optional
+        DD results for internal pairs.
+    DD_cross : dict, optional
+        DD results for cross pairs.
+    DR_internal : dict, optional
+        DR results for internal pairs.
+    DR_cross : dict, optional
+        DR results for cross pairs.
+    RR_internal : dict, optional
+        RR results for internal pairs.
+    RR_cross : dict, optional
+        RR results for cross pairs.
+    data_list : list of ndarray, optional
+        Data subvolume lists.
+    random_list : list of ndarray, optional
+        Random subvolume lists.
+    sedges : array-like, optional
+        Separation bin edges.
+    mubin : int, optional
+        Number of mu bins.
+    with_weight : bool
+        Whether to use weights.
+    ngrids_1d : int, optional
+        Number of divisions along one axis.
+    
+    Returns
+    -------
+    result : dict
+        Dictionary with keys (values are None if insufficient data):
+        - 'DD_deduct': ndarray - DD pairs to deduct (sbin, mubin)
+        - 'DR_deduct': ndarray - DR pairs to deduct (sbin, mubin)
+        - 'RR_deduct': ndarray - RR pairs to deduct (sbin, mubin)
+        - 'norm_DD_deduct': float - DD normalization to deduct
+        - 'norm_DR_deduct': float - DR normalization to deduct
+        - 'norm_RR_deduct': float - RR normalization to deduct
+        - 'excluded_data_weight': float - excluded data weight/count
+        - 'excluded_random_weight': float - excluded random weight/count
+    """
+    sbin = len(sedges) - 1 if sedges is not None else None
+    
+    result = {
+        'DD_deduct': None,
+        'DR_deduct': None,
+        'RR_deduct': None,
+        'norm_DD_deduct': None,
+        'norm_DR_deduct': None,
+        'norm_RR_deduct': None,
+        'excluded_data_weight': None,
+        'excluded_random_weight': None
+    }
+    
+    if sbin is None or mubin is None or ngrids_1d is None:
+        return result
+        
+    # Compute DD deduction
+    if DD_internal is not None or DD_cross is not None:
+        DD_deduct = np.zeros((sbin, mubin))
+        
+        # Internal DD of excluded subvolume
+        if DD_internal is not None and jk_idx in DD_internal:
+            if DD_internal[jk_idx] is not None:
+                DD_deduct += extract_npairs(DD_internal[jk_idx], with_weight).reshape(sbin, mubin)
+        
+        # Cross DD with neighbors
+        if DD_cross is not None and ngrids_1d is not None:
+            neighbors = get_neighbors(jk_idx, ngrids_1d)
+            for neighbor_idx in neighbors:
+                pair = (min(jk_idx, neighbor_idx), max(jk_idx, neighbor_idx))
+                if pair in DD_cross and DD_cross[pair] is not None:
+                    DD_deduct += extract_npairs(DD_cross[pair], with_weight).reshape(sbin, mubin)
+                    
+        result['DD_deduct'] = DD_deduct
+    
+    # Compute DR deduction
+    if DR_internal is not None or DR_cross is not None:
+        DR_deduct = np.zeros((sbin, mubin))
+        
+        # Internal DR of excluded subvolume
+        if DR_internal is not None and jk_idx in DR_internal:
+            if DR_internal[jk_idx] is not None:
+                DR_deduct += extract_npairs(DR_internal[jk_idx], with_weight).reshape(sbin, mubin)
+        
+        # Cross DR with neighbors (both directions)
+        if DR_cross is not None and ngrids_1d is not None:
+            neighbors = get_neighbors(jk_idx, ngrids_1d)
+            for neighbor_idx in neighbors:
+                # Direction 1: (jk_idx, neighbor_idx)
+                pair_ij = (jk_idx, neighbor_idx)
+                if pair_ij in DR_cross and DR_cross[pair_ij] is not None:
+                    DR_deduct += extract_npairs(DR_cross[pair_ij], with_weight).reshape(sbin, mubin)
+                
+                # Direction 2: (neighbor_idx, jk_idx)
+                pair_ji = (neighbor_idx, jk_idx)
+                if pair_ji in DR_cross and DR_cross[pair_ji] is not None:
+                    DR_deduct += extract_npairs(DR_cross[pair_ji], with_weight).reshape(sbin, mubin)
+                    
+        result['DR_deduct'] = DR_deduct
+    
+    # Compute RR deduction
+    if RR_internal is not None or RR_cross is not None:
+        RR_deduct = np.zeros((sbin, mubin))
+        
+        # Internal RR of excluded subvolume
+        if RR_internal is not None and jk_idx in RR_internal:
+            if RR_internal[jk_idx] is not None:
+                RR_deduct += extract_npairs(RR_internal[jk_idx], with_weight).reshape(sbin, mubin)
+        
+        # Cross RR with neighbors
+        if RR_cross is not None and ngrids_1d is not None:
+            neighbors = get_neighbors(jk_idx, ngrids_1d)
+            for neighbor_idx in neighbors:
+                pair = (min(jk_idx, neighbor_idx), max(jk_idx, neighbor_idx))
+                if pair in RR_cross and RR_cross[pair] is not None:
+                    RR_deduct += extract_npairs(RR_cross[pair], with_weight).reshape(sbin, mubin)
+                    
+        result['RR_deduct'] = RR_deduct
+    
+    # Compute normalization deductions and excluded weights
+    if data_list is not None and random_list is not None and jk_idx < len(data_list):
+        # Excluded weights/counts
+        if data_list[jk_idx] is not None and len(data_list[jk_idx]) > 0:
+            if with_weight:
+                result['excluded_data_weight'] = np.sum(data_list[jk_idx][:, 3])
+            else:
+                result['excluded_data_weight'] = len(data_list[jk_idx])
+        else:
+            result['excluded_data_weight'] = 0
+            
+        if random_list[jk_idx] is not None and len(random_list[jk_idx]) > 0:
+            if with_weight:
+                result['excluded_random_weight'] = np.sum(random_list[jk_idx][:, 3])
+            else:
+                result['excluded_random_weight'] = len(random_list[jk_idx])
+        else:
+            result['excluded_random_weight'] = 0
+        
+        # Total weights/counts for normalization computation
+        if with_weight:
+            total_data_weight = sum(np.sum(d[:, 3]) for d in data_list if d is not None and len(d) > 0)
+            total_random_weight = sum(np.sum(r[:, 3]) for r in random_list if r is not None and len(r) > 0)
+            sum_wd2 = sum(np.sum(d[:, 3]**2) for d in data_list if d is not None and len(d) > 0)
+            sum_wr2 = sum(np.sum(r[:, 3]**2) for r in random_list if r is not None and len(r) > 0)
+        else:
+            total_data_weight = sum(len(d) for d in data_list if d is not None)
+            total_random_weight = sum(len(r) for r in random_list if r is not None)
+            sum_wd2 = total_data_weight
+            sum_wr2 = total_random_weight
+        
+        # Compute normalization deductions
+        excluded_data_weight = result['excluded_data_weight']
+        excluded_random_weight = result['excluded_random_weight']
+        
+        if excluded_data_weight is not None:
+            jk_data_weight = total_data_weight - excluded_data_weight
+            jk_sum_wd2 = sum_wd2 - (np.sum(data_list[jk_idx][:, 3]**2) if with_weight and data_list[jk_idx] is not None and len(data_list[jk_idx]) > 0 else excluded_data_weight)
+            result['norm_DD_deduct'] = (total_data_weight * total_data_weight - sum_wd2) - (jk_data_weight * jk_data_weight - jk_sum_wd2)
+            result['norm_DR_deduct'] = (total_data_weight * total_random_weight) - (jk_data_weight * (total_random_weight - excluded_random_weight))
+        
+        if excluded_random_weight is not None:
+            jk_random_weight = total_random_weight - excluded_random_weight
+            jk_sum_wr2 = sum_wr2 - (np.sum(random_list[jk_idx][:, 3]**2) if with_weight and random_list[jk_idx] is not None and len(random_list[jk_idx]) > 0 else excluded_random_weight)
+            result['norm_RR_deduct'] = (total_random_weight * total_random_weight - sum_wr2) - (jk_random_weight * jk_random_weight - jk_sum_wr2)
+    
+    return result
+
+
 def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_internal, RR_cross, RR_full,
                          data_list, random_list, sedges, mubin, with_weight, muedges=None):
     """
@@ -1111,160 +1498,100 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
     """
     n_cubes = len(data_list)
     ngrids_1d = round(n_cubes ** (1/3))
-    sbin = len(sedges) - 1
     
-    # Extract RR - handle both structured array and simplified array
-    RR = extract_npairs(RR_full, with_weight).reshape(sbin, mubin)
-    # Get mu edges from result (if structured array) or use provided muedges
-    if isinstance(RR_full, np.ndarray) and RR_full.dtype.names is not None:
-        # RR_full is a structured array
-        mumax_str = "mumax" if "mumax" in RR_full.dtype.names else "mu_max"
-        muedges = np.append([0], RR_full[mumax_str].reshape(sbin, mubin)[0])
-    elif muedges is None:
-        # RR_full is simplified and muedges not provided, use default
-        muedges = np.linspace(0, 1, mubin + 1)
+    # Compute total pairs and normalization factors
+    total_result = compute_total_pairs_and_norm(
+        DD_internal, DD_cross, DR_internal, DR_cross, RR_internal, RR_cross, RR_full,
+        data_list, random_list, sedges, mubin, with_weight, muedges
+    )
     
-    # Compute total DD, DR
-    DD_total = np.zeros((sbin, mubin))
-    DR_total = np.zeros((sbin, mubin))
-    
-    # Sum all internal DD
-    for idx, result in DD_internal.items():
-        if result is not None:
-            DD_total += extract_npairs(result, with_weight).reshape(sbin, mubin)
-    
-    # Sum all cross DD
-    for pair, result in DD_cross.items():
-        if result is not None:
-            DD_total += extract_npairs(result, with_weight).reshape(sbin, mubin)
-    
-    # Sum all internal DR
-    for idx, result in DR_internal.items():
-        if result is not None:
-            DR_total += extract_npairs(result, with_weight).reshape(sbin, mubin)
-    
-    # Sum all cross DR
-    for pair, result in DR_cross.items():
-        if result is not None:
-            DR_total += extract_npairs(result, with_weight).reshape(sbin, mubin)
-    
-    # Compute normalization factors for full sample
-    if with_weight:
-        total_data_weight = sum(np.sum(d[:, 3]) for d in data_list if d is not None and len(d) > 0)
-        total_random_weight = sum(np.sum(r[:, 3]) for r in random_list if r is not None and len(r) > 0)
-        sum_wd2 = sum(np.sum(d[:, 3]**2) for d in data_list if d is not None and len(d) > 0)
-        sum_wr2 = sum(np.sum(r[:, 3]**2) for r in random_list if r is not None and len(r) > 0)
-    else:
-        total_data_weight = sum(len(d) for d in data_list if d is not None)
-        total_random_weight = sum(len(r) for r in random_list if r is not None)
-        sum_wd2 = total_data_weight
-        sum_wr2 = total_random_weight
-    
-    norm_DD = total_data_weight * total_data_weight - sum_wd2
-    norm_DR = total_data_weight * total_random_weight
-    norm_RR = total_random_weight * total_random_weight - sum_wr2
-    
-    # Remove self-pairs from s=0, mu=0 bin (Corrfunc autocorr=True includes them)
-    # This is consistent with cal_tpCF_from_pairs in LSS_python
-    if sedges[0] == 0.0:
-        DD_total[0, 0] -= total_data_weight
-        RR[0, 0] -= total_random_weight
+    # Check if we have sufficient data
+    if any(v is None for v in [total_result['DD_total'], total_result['DR_total'], total_result['RR'], 
+                             total_result['norm_DD'], total_result['norm_DR'], total_result['norm_RR']]):
+        # Return empty results
+        xismu_jk = np.empty(n_cubes, dtype=object)
+        for i in range(n_cubes):
+            xismu_jk[i] = None
+        xismu_full = None
+        return {
+            'xismu_jk': xismu_jk,
+            'xismu_full': xismu_full,
+            'sedges': sedges,
+            'muedges': total_result['muedges'],
+            'DD_internal': DD_internal,
+            'DD_cross': DD_cross,
+            'DR_internal': DR_internal,
+            'DR_cross': DR_cross,
+            'RR_internal': RR_internal,
+            'RR_cross': RR_cross,
+            'RR_full': RR_full,
+        }
     
     # Create xismu for full sample
     xismu_full = create_xismu_from_pairs(
-        DD_total, DR_total, RR, norm_DD, norm_DR, norm_RR, sedges, muedges
+        total_result['DD_total'], total_result['DR_total'], total_result['RR'],
+        total_result['norm_DD'], total_result['norm_DR'], total_result['norm_RR'],
+        sedges, total_result['muedges']
     )
     
     # Jackknife samples
     xismu_jk = np.empty(n_cubes, dtype=object)
     
     for jk_idx in range(n_cubes):
-        # DD for this JK sample (exclude subvolume jk_idx)
-        DD_jk = DD_total.copy()
-        
-        # Subtract internal DD of excluded subvolume
-        if DD_internal.get(jk_idx) is not None:
-            DD_jk -= extract_npairs(DD_internal[jk_idx], with_weight).reshape(sbin, mubin)
-        
-        # Subtract cross DD with neighbors
-        neighbors = get_neighbors(jk_idx, ngrids_1d)
-        for neighbor_idx in neighbors:
-            pair = (min(jk_idx, neighbor_idx), max(jk_idx, neighbor_idx))
-            if DD_cross.get(pair) is not None:
-                DD_jk -= extract_npairs(DD_cross[pair], with_weight).reshape(sbin, mubin)
-        
-        # DR for this JK sample (exclude subvolume jk_idx from data)
-        DR_jk = DR_total.copy()
-        
-        # Subtract internal DR of excluded subvolume
-        if DR_internal.get(jk_idx) is not None:
-            DR_jk -= extract_npairs(DR_internal[jk_idx], with_weight).reshape(sbin, mubin)
-        
-        # Subtract cross DR with neighbors
-        # DR cross includes both (jk_idx, neighbor) and (neighbor, jk_idx) directions
-        for neighbor_idx in neighbors:
-            # Direction 1: (jk_idx, neighbor_idx) - data from jk_idx paired with random from neighbor
-            pair_ij = (jk_idx, neighbor_idx)
-            if DR_cross.get(pair_ij) is not None:
-                DR_jk -= extract_npairs(DR_cross[pair_ij], with_weight).reshape(sbin, mubin)
-            
-            # Direction 2: (neighbor_idx, jk_idx) - data from neighbor paired with random from jk_idx
-            pair_ji = (neighbor_idx, jk_idx)
-            if DR_cross.get(pair_ji) is not None:
-                DR_jk -= extract_npairs(DR_cross[pair_ji], with_weight).reshape(sbin, mubin)
-        
-        # RR for this JK sample (exclude subvolume jk_idx from random)
-        RR_jk = RR.copy()
-        
-        # Subtract internal RR of excluded subvolume
-        if RR_internal.get(jk_idx) is not None:
-            RR_jk -= extract_npairs(RR_internal[jk_idx], with_weight).reshape(sbin, mubin)
-        
-        # Subtract cross RR with neighbors
-        for neighbor_idx in neighbors:
-            pair = (min(jk_idx, neighbor_idx), max(jk_idx, neighbor_idx))
-            if RR_cross.get(pair) is not None:
-                RR_jk -= extract_npairs(RR_cross[pair], with_weight).reshape(sbin, mubin)
-        
-        # Recompute normalization for JK sample
-        if with_weight:
-            excluded_data_weight = np.sum(data_list[jk_idx][:, 3]) if data_list[jk_idx] is not None and len(data_list[jk_idx]) > 0 else 0
-            excluded_random_weight = np.sum(random_list[jk_idx][:, 3]) if random_list[jk_idx] is not None and len(random_list[jk_idx]) > 0 else 0
-            jk_data_weight = total_data_weight - excluded_data_weight
-            jk_random_weight = total_random_weight - excluded_random_weight
-            jk_sum_wd2 = sum_wd2 - (np.sum(data_list[jk_idx][:, 3]**2) if data_list[jk_idx] is not None and len(data_list[jk_idx]) > 0 else 0)
-            jk_sum_wr2 = sum_wr2 - (np.sum(random_list[jk_idx][:, 3]**2) if random_list[jk_idx] is not None and len(random_list[jk_idx]) > 0 else 0)
-        else:
-            excluded_data_count = len(data_list[jk_idx]) if data_list[jk_idx] is not None else 0
-            excluded_random_count = len(random_list[jk_idx]) if random_list[jk_idx] is not None else 0
-            jk_data_weight = total_data_weight - excluded_data_count
-            jk_random_weight = total_random_weight - excluded_random_count
-            jk_sum_wd2 = sum_wd2 - excluded_data_count
-            jk_sum_wr2 = sum_wr2 - excluded_random_count
-        
-        norm_DD_jk = jk_data_weight * jk_data_weight - jk_sum_wd2
-        norm_DR_jk = jk_data_weight * jk_random_weight
-        norm_RR_jk = jk_random_weight * jk_random_weight - jk_sum_wr2
-        
-        # Correct s=0, mu=0 bin for Jackknife sample
-        # DD_jk already has total_data_weight subtracted (from DD_total)
-        # but should have jk_data_weight subtracted
-        if sedges[0] == 0.0:
-            DD_jk[0, 0] += (total_data_weight - jk_data_weight)
-            # RR_jk already has total_random_weight subtracted (from RR)
-            # but should have jk_random_weight subtracted
-            RR_jk[0, 0] += (total_random_weight - jk_random_weight)
-        
-        # Create xismu for this JK sample
-        xismu_jk[jk_idx] = create_xismu_from_pairs(
-            DD_jk, DR_jk, RR_jk, norm_DD_jk, norm_DR_jk, norm_RR_jk, sedges, muedges
+        # Compute deductions for this Jackknife sample
+        deductions = compute_jackknife_deductions(
+            jk_idx, DD_internal, DD_cross, DR_internal, DR_cross,
+            RR_internal, RR_cross, data_list, random_list,
+            sedges, mubin, with_weight, ngrids_1d
         )
+        
+        # Compute Jackknife sample pairs and norms by applying deductions
+        DD_jk = None
+        if total_result['DD_total'] is not None and deductions['DD_deduct'] is not None:
+            DD_jk = total_result['DD_total'].copy() - deductions['DD_deduct']
+        
+        DR_jk = None
+        if total_result['DR_total'] is not None and deductions['DR_deduct'] is not None:
+            DR_jk = total_result['DR_total'].copy() - deductions['DR_deduct']
+            
+        RR_jk = None
+        if total_result['RR'] is not None and deductions['RR_deduct'] is not None:
+            RR_jk = total_result['RR'].copy() - deductions['RR_deduct']
+        
+        # Compute Jackknife sample normalizations
+        norm_DD_jk = None
+        if total_result['norm_DD'] is not None and deductions['norm_DD_deduct'] is not None:
+            norm_DD_jk = total_result['norm_DD'] - deductions['norm_DD_deduct']
+            
+        norm_DR_jk = None
+        if total_result['norm_DR'] is not None and deductions['norm_DR_deduct'] is not None:
+            norm_DR_jk = total_result['norm_DR'] - deductions['norm_DR_deduct']
+            
+        norm_RR_jk = None
+        if total_result['norm_RR'] is not None and deductions['norm_RR_deduct'] is not None:
+            norm_RR_jk = total_result['norm_RR'] - deductions['norm_RR_deduct']
+        
+        # Apply self-pair correction for s=0, mu=0 bin
+        if sedges is not None and sedges[0] == 0.0:
+            if DD_jk is not None and deductions['excluded_data_weight'] is not None:
+                DD_jk[0, 0] += deductions['excluded_data_weight']
+            if RR_jk is not None and deductions['excluded_random_weight'] is not None:
+                RR_jk[0, 0] += deductions['excluded_random_weight']
+        
+        # Create xismu for this JK sample if we have valid results
+        if all(v is not None for v in [DD_jk, DR_jk, RR_jk, norm_DD_jk, norm_DR_jk, norm_RR_jk]):
+            xismu_jk[jk_idx] = create_xismu_from_pairs(
+                DD_jk, DR_jk, RR_jk, norm_DD_jk, norm_DR_jk, norm_RR_jk,
+                sedges, total_result['muedges']
+            )
+        else:
+            xismu_jk[jk_idx] = None
     
     return {
         'xismu_jk': xismu_jk,
         'xismu_full': xismu_full,
         'sedges': sedges,
-        'muedges': muedges,
+        'muedges': total_result['muedges'],
         'DD_internal': DD_internal,
         'DD_cross': DD_cross,
         'DR_internal': DR_internal,

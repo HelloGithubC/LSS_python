@@ -56,6 +56,7 @@ class xismu(object):
             self.DR = self.DR / self.DRnorm
             self.RR = self.RR / self.RRnorm
             self.RR[self.RR == 0] = 1e-15
+        self.xis = None
         
     @classmethod
     def load(cls, filename, data_type="BINARY", smax=150, sbin=150, mubin=120, deal_with_0s0mu=True):
@@ -164,6 +165,11 @@ class xismu(object):
             muedges = source["muedges"]
             mu_array = (muedges[1:] + muedges[:-1]) / 2.0
         self.S, self.Mu = np.meshgrid(s_array, mu_array, indexing="ij")
+
+    def get_xis(self):
+        if self.xis is None:
+            self.xis = (self.DD - 2.0 * self.DR + self.RR) / self.RR 
+        return self.xis
     
     def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=True):
         """ A powerful function to integrate the tpcf
