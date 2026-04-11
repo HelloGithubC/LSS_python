@@ -1,6 +1,6 @@
 import numpy as np 
 from numba import njit
-from Corrfunc.theory import DDsmu
+from .corrfunc import call_DDsmu
 from .tpcf import xismu
 from tqdm import tqdm
 import time
@@ -133,12 +133,12 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
     
     Returns
     -------
-    result : dict
+    result : dict or ndarray (xismu_jk)
         Dictionary containing (when full_output=False):
         - 'xismu_jk': ndarray of xismu objects (n_cubes,) - xismu for each JK sample
-        - 'xismu_full': xismu object for full sample
         
         Additional fields (when full_output=True):
+        - 'xismu_full': xismu object for full sample
         - 'sedges': separation bin edges
         - 'muedges': mu bin edges
         - 'DD_internal': dict of internal DD results
@@ -149,6 +149,38 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
         - 'RR_cross': dict of cross RR results
         - 'RR_full': RR full result
     """
+    # Robustness: ensure data and random have consistent dtypes
+    # Use the higher precision dtype
+    if data.dtype != random.dtype:
+        # Determine higher precision dtype
+        if data.dtype.itemsize > random.dtype.itemsize:
+            higher_dtype = data.dtype
+            lower_name = 'random'
+        else:
+            higher_dtype = random.dtype
+            lower_name = 'data'
+        
+        if verbose:
+            print(f"Warning: data dtype ({data.dtype}) and random dtype ({random.dtype}) differ. "
+                  f"Converting both to higher precision dtype: {higher_dtype}")
+        
+        data = data.astype(higher_dtype)
+        random = random.astype(higher_dtype)
+    
+    # Robustness: add weight column if with_weight=True but data/random have < 4 columns
+    # Preserve original dtype to avoid implicit type promotion
+    if with_weight:
+        if data.shape[1] < 4:
+            if verbose:
+                print(f"Warning: with_weight=True but data has {data.shape[1]} columns. "
+                      f"Adding weight column with value 1.0 (dtype: {data.dtype})")
+            data = np.column_stack([data, np.ones(len(data), dtype=data.dtype)])
+        if random.shape[1] < 4:
+            if verbose:
+                print(f"Warning: with_weight=True but random has {random.shape[1]} columns. "
+                      f"Adding weight column with value 1.0 (dtype: {random.dtype})")
+            random = np.column_stack([random, np.ones(len(random), dtype=random.dtype)])
+    
     # Normalize ngrids to array
     if isinstance(ngrids, int):
         ngrids = np.array([ngrids, ngrids, ngrids], dtype=np.int32)
@@ -241,7 +273,7 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
             else:
                 print("Computing RR...")
         
-        RR_internal, RR_cross, RR_full = compute_RR(
+        RR_internal, RR_cross, RR_full = compute_RR_JK(
             random_list, sedges, mubin, with_weight, boxsize,
             refine_factors, nthreads, verbose, ngrids
         )
@@ -268,7 +300,7 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
     # Step 2: Compute DD (internal + cross between neighboring subvolumes)
     if verbose:
         print("Computing DD...")
-    DD_internal, DD_cross = compute_DD(
+    DD_internal, DD_cross = compute_DD_JK(
         data_list, sedges, mubin, with_weight, boxsize,
         refine_factors, nthreads, verbose, ngrids
     )
@@ -276,7 +308,7 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
     # Step 3: Compute DR (internal + cross between neighboring subvolumes)
     if verbose:
         print("Computing DR...")
-    DR_internal, DR_cross = compute_DR(
+    DR_internal, DR_cross = compute_DR_JK(
         data_list, random_list, sedges, mubin, with_weight, boxsize,
         refine_factors, nthreads, verbose, ngrids
     )
@@ -286,7 +318,7 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
     
     # Step 4: Compute Jackknife correlation functions
     xi_results = compute_jackknife_xi(
-        DD_internal, DD_cross, DR_internal, DR_cross, RR_internal, RR_cross, RR_full,
+        DD_internal, DD_cross, DR_internal, DR_cross, RR_internal, RR_cross,
         data_list, random_list, sedges, mubin, with_weight, muedges=computed_muedges
     )
     
@@ -309,10 +341,7 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
         }
         return xi_results_filtered
     else:
-        return {
-            'xismu_jk': xi_results['xismu_jk'],
-            'xismu_full': xi_results['xismu_full']
-        }
+        return xi_results['xismu_jk']
 
 def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
                            boxsize, ngrids, refine_factors=(2, 2, 1), 
@@ -358,7 +387,7 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
     
     Returns
     -------
-    result : dict
+    result : dict or ndarray (xismu_sub)
         Dictionary containing:
         - 'xismu_sub': ndarray of xismu objects (n_cubes,) - xismu for each subvolume
         - 'sedges': separation bin edges (if full_output)
@@ -366,6 +395,38 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
         - 'DD_sub': dict of DD results for each subvolume (if full_output)
         - 'DR_sub': dict of DR results for each subvolume (if full_output)
     """
+    # Robustness: ensure data and random have consistent dtypes
+    # Use the higher precision dtype
+    if data.dtype != random.dtype:
+        # Determine higher precision dtype
+        if data.dtype.itemsize > random.dtype.itemsize:
+            higher_dtype = data.dtype
+            lower_name = 'random'
+        else:
+            higher_dtype = random.dtype
+            lower_name = 'data'
+        
+        if verbose:
+            print(f"Warning: data dtype ({data.dtype}) and random dtype ({random.dtype}) differ. "
+                  f"Converting both to higher precision dtype: {higher_dtype}")
+        
+        data = data.astype(higher_dtype)
+        random = random.astype(higher_dtype)
+    
+    # Robustness: add weight column if with_weight=True but data/random have < 4 columns
+    # Preserve original dtype to avoid implicit type promotion
+    if with_weight:
+        if data.shape[1] < 4:
+            if verbose:
+                print(f"Warning: with_weight=True but data has {data.shape[1]} columns. "
+                      f"Adding weight column with value 1.0 (dtype: {data.dtype})")
+            data = np.column_stack([data, np.ones(len(data), dtype=data.dtype)])
+        if random.shape[1] < 4:
+            if verbose:
+                print(f"Warning: with_weight=True but random has {random.shape[1]} columns. "
+                      f"Adding weight column with value 1.0 (dtype: {random.dtype})")
+            random = np.column_stack([random, np.ones(len(random), dtype=random.dtype)])
+    
     # Normalize ngrids to array
     if isinstance(ngrids, int):
         ngrids = np.array([ngrids, ngrids, ngrids], dtype=np.int32)
@@ -476,7 +537,7 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
                 print("Computing RR...")
             start_time = time.time()
         
-        RR_result = _call_DDsmu(
+        RR_result = call_DDsmu(
             random, None, sedges, mubin, with_weight, sub_boxsize[0],
             refine_factors, nthreads, autocorr=True
         )
@@ -532,14 +593,14 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
             continue
         
         # Compute DD (autocorrelation within subvolume)
-        DD_result = _call_DDsmu(
+        DD_result = call_DDsmu(
             data_sub, None, sedges, mubin, with_weight, sub_boxsize[0],
             refine_factors, nthreads, autocorr=True
         )
         DD_sub[idx] = DD_result
         
         # Compute DR (data vs random, using sub_boxsize)
-        DR_result = _call_DDsmu(
+        DR_result = call_DDsmu(
             data_sub, random, sedges, mubin, with_weight, sub_boxsize[0],
             refine_factors, nthreads, autocorr=False
         )
@@ -582,9 +643,7 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
             'DR_sub': DR_sub,
         }
     else:
-        return {
-            'xismu_sub': xismu_sub,
-        }
+        xismu_sub
 
 
 def check_and_shift_data(data_list, boxsize, n, index_list=None):
@@ -690,65 +749,7 @@ def get_neighbors(idx, n):
     return neighbors
 
 
-def _call_DDsmu(data1, data2, sedges, mubin, with_weight, boxsize, 
-                refine_factors, nthreads, autocorr, verbose=False):
-    """
-    Wrapper for DDsmu call.
-    """
-    x_refine_factor, y_refine_factor, z_refine_factor = refine_factors
-    
-    if with_weight:
-        if autocorr:
-            result = DDsmu(
-                autocorr, nthreads=nthreads, binfile=sedges, 
-                mu_max=1.0, nmu_bins=mubin,
-                X1=data1[:, 0], Y1=data1[:, 1], Z1=data1[:, 2],
-                weights1=data1[:, 3], weight_type="pair_product",
-                verbose=verbose, periodic=False, boxsize=boxsize,
-                xbin_refine_factor=x_refine_factor,
-                ybin_refine_factor=y_refine_factor,
-                zbin_refine_factor=z_refine_factor
-            )
-        else:
-            result = DDsmu(
-                autocorr, nthreads=nthreads, binfile=sedges,
-                mu_max=1.0, nmu_bins=mubin,
-                X1=data1[:, 0], Y1=data1[:, 1], Z1=data1[:, 2],
-                weights1=data1[:, 3], weight_type="pair_product",
-                X2=data2[:, 0], Y2=data2[:, 1], Z2=data2[:, 2],
-                weights2=data2[:, 3],
-                verbose=verbose, periodic=False, boxsize=boxsize,
-                xbin_refine_factor=x_refine_factor,
-                ybin_refine_factor=y_refine_factor,
-                zbin_refine_factor=z_refine_factor
-            )
-    else:
-        if autocorr:
-            result = DDsmu(
-                autocorr, nthreads=nthreads, binfile=sedges,
-                mu_max=1.0, nmu_bins=mubin,
-                X1=data1[:, 0], Y1=data1[:, 1], Z1=data1[:, 2],
-                verbose=verbose, periodic=False, boxsize=boxsize,
-                xbin_refine_factor=x_refine_factor,
-                ybin_refine_factor=y_refine_factor,
-                zbin_refine_factor=z_refine_factor
-            )
-        else:
-            result = DDsmu(
-                autocorr, nthreads=nthreads, binfile=sedges,
-                mu_max=1.0, nmu_bins=mubin,
-                X1=data1[:, 0], Y1=data1[:, 1], Z1=data1[:, 2],
-                X2=data2[:, 0], Y2=data2[:, 1], Z2=data2[:, 2],
-                verbose=verbose, periodic=False, boxsize=boxsize,
-                xbin_refine_factor=x_refine_factor,
-                ybin_refine_factor=y_refine_factor,
-                zbin_refine_factor=z_refine_factor
-            )
-    
-    return result
-
-
-def compute_DD(data_list, sedges, mubin, with_weight, boxsize,
+def compute_DD_JK(data_list, sedges, mubin, with_weight, boxsize,
                refine_factors, nthreads, verbose, ngrids):
     """
     Compute DD for data catalog.
@@ -798,7 +799,7 @@ def compute_DD(data_list, sedges, mubin, with_weight, boxsize,
             DD_internal[idx] = None
             continue
         
-        result = _call_DDsmu(
+        result = call_DDsmu(
             data, None, sedges, mubin, with_weight, boxsize,
             refine_factors, nthreads, autocorr=True
         )
@@ -833,7 +834,7 @@ def compute_DD(data_list, sedges, mubin, with_weight, boxsize,
     
     iterator = tqdm(pairs_to_compute, desc="DD cross", disable=not verbose)
     for pair, data1, data2 in iterator:
-        result = _call_DDsmu(
+        result = call_DDsmu(
             data1, data2, sedges, mubin, with_weight, boxsize,
             refine_factors, nthreads, autocorr=False
         )
@@ -843,7 +844,7 @@ def compute_DD(data_list, sedges, mubin, with_weight, boxsize,
     return DD_internal, DD_cross
 
 
-def compute_DR(data_list, random_list, sedges, mubin, with_weight, boxsize,
+def compute_DR_JK(data_list, random_list, sedges, mubin, with_weight, boxsize,
                          refine_factors, nthreads, verbose, ngrids):
     """
     Compute DR for data-random cross-correlation.
@@ -895,7 +896,7 @@ def compute_DR(data_list, random_list, sedges, mubin, with_weight, boxsize,
             DR_internal[idx] = None
             continue
         
-        result = _call_DDsmu(
+        result = call_DDsmu(
             data, random_sub, sedges, mubin, with_weight, boxsize,
             refine_factors, nthreads, autocorr=False
         )
@@ -925,7 +926,7 @@ def compute_DR(data_list, random_list, sedges, mubin, with_weight, boxsize,
     
     iterator = tqdm(pairs_to_compute, desc="DR cross", disable=not verbose)
     for pair, data, random_sub in iterator:
-        result = _call_DDsmu(
+        result = call_DDsmu(
             data, random_sub, sedges, mubin, with_weight, boxsize,
             refine_factors, nthreads, autocorr=False
         )
@@ -934,7 +935,7 @@ def compute_DR(data_list, random_list, sedges, mubin, with_weight, boxsize,
     return DR_internal, DR_cross
 
 
-def compute_RR(random_list, sedges, mubin, with_weight, boxsize,
+def compute_RR_JK(random_list, sedges, mubin, with_weight, boxsize,
                 refine_factors, nthreads, verbose, ngrids):
     """
     Compute RR for random catalog.
@@ -987,7 +988,7 @@ def compute_RR(random_list, sedges, mubin, with_weight, boxsize,
             RR_internal[idx] = None
             continue
         
-        result = _call_DDsmu(
+        result = call_DDsmu(
             random_sub, None, sedges, mubin, with_weight, boxsize,
             refine_factors, nthreads, autocorr=True
         )
@@ -1022,7 +1023,7 @@ def compute_RR(random_list, sedges, mubin, with_weight, boxsize,
     
     iterator = tqdm(pairs_to_compute, desc="RR cross", disable=not verbose)
     for pair, random1, random2 in iterator:
-        result = _call_DDsmu(
+        result = call_DDsmu(
             random1, random2, sedges, mubin, with_weight, boxsize,
             refine_factors, nthreads, autocorr=False
         )
@@ -1044,10 +1045,6 @@ def compute_RR(random_list, sedges, mubin, with_weight, boxsize,
     RR_full = RR_full.flatten()
     
     return RR_internal, RR_cross, RR_full
-
-
-
-
 
 def extract_npairs(result, with_weight):
     """
@@ -1140,7 +1137,9 @@ def create_xismu_from_pairs(DD, DR, RR, norm_DD, norm_DR, norm_RR, sedges, muedg
 
 
 def compute_total_pairs_and_norm(DD_internal=None, DD_cross=None, DR_internal=None, DR_cross=None, 
-                                 RR_internal=None, RR_cross=None, sbin=None, mubin=None):
+                                 RR_internal=None, RR_cross=None,
+                                 data_list=None, random_list=None, sedges=None, mubin=None, 
+                                 with_weight=False, muedges=None):
     """
     Compute total pair counts and normalization factors for full sample.
     Inputs should be already weighted logs from extract_npairs.
@@ -1161,10 +1160,18 @@ def compute_total_pairs_and_norm(DD_internal=None, DD_cross=None, DR_internal=No
         RR results for internal pairs (already processed by extract_npairs).
     RR_cross : dict or ndarray, optional
         RR results for cross-pairs (already processed by extract_npairs).
-    sbin : int
-        Number of separation bins.
-    mubin : int
-        Number of mu bins.
+    data_list : list of ndarray, optional
+        List of subvolume data arrays. Required for normalization computation.
+    random_list : list of ndarray, optional
+        List of subvolume random arrays. Required for normalization computation.
+    sedges : array-like, optional
+        Separation bin edges. Required for sbin.
+    mubin : int, optional
+        Number of mu bins. Required for pair computation.
+    with_weight : bool
+        Whether to use weights.
+    muedges : array-like, optional
+        Mu bin edges. Will be returned if provided.
     
     Returns
     -------
@@ -1173,34 +1180,50 @@ def compute_total_pairs_and_norm(DD_internal=None, DD_cross=None, DR_internal=No
         - 'DD_total': ndarray - total DD pair counts (sbin, mubin)
         - 'DR_total': ndarray - total DR pair counts (sbin, mubin) 
         - 'RR_total': ndarray - total RR pair counts (sbin, mubin)
-        - 'norm_DD': float - DD normalization factor
-        - 'norm_DR': float - DR normalization factor  
-        - 'norm_RR': float - RR normalization factor
+        - 'norm_DD': float - DD normalization factor (requires data_list)
+        - 'norm_DR': float - DR normalization factor (requires data_list and random_list)
+        - 'norm_RR': float - RR normalization factor (requires random_list)
+        - 'data_weight': float - total data weight/count
+        - 'random_weight': float - total random weight/count
+        - 'data_weight_sq': float - sum of squared data weights
+        - 'random_weight_sq': float - sum of squared random weights
+        - 'muedges': array-like - mu bin edges (if provided)
         
     Raises
     ------
     ValueError
         If none of DD_internal/DD_cross, DR_internal/DR_cross, RR_internal/RR_cross are provided.
+        If sedges or mubin is None when pair computation is requested.
     """
     import warnings
     
-    if sbin is None or mubin is None:
-        raise ValueError("sbin and mubin must be provided")
+    # Determine sbin
+    sbin = len(sedges) - 1 if sedges is not None else None
+    
+    if sbin is None and (DD_internal is not None or DD_cross is not None or 
+                         DR_internal is not None or DR_cross is not None or
+                         RR_internal is not None or RR_cross is not None):
+        raise ValueError("sedges must be provided when computing pair totals")
+    
+    if mubin is None and (DD_internal is not None or DD_cross is not None or 
+                          DR_internal is not None or DR_cross is not None or
+                          RR_internal is not None or RR_cross is not None):
+        raise ValueError("mubin must be provided when computing pair totals")
     
     # Check input availability and issue warnings
-    dd_inputs_provided = DD_internal is not None and DD_cross is not None
-    dr_inputs_provided = DR_internal is not None and DR_cross is not None
-    rr_inputs_provided = RR_internal is not None and RR_cross is not None
+    dd_inputs_provided = DD_internal is not None or DD_cross is not None
+    dr_inputs_provided = DR_internal is not None or DR_cross is not None
+    rr_inputs_provided = RR_internal is not None or RR_cross is not None
     
     if not (dd_inputs_provided or dr_inputs_provided or rr_inputs_provided):
         raise ValueError("At least one pair of inputs (DD_internal/DD_cross, DR_internal/DR_cross, RR_internal/RR_cross) must be provided")
     
     if dd_inputs_provided and not (dr_inputs_provided and rr_inputs_provided):
-        warnings.warn("Only DD_internal and DD_cross provided. DR and RR inputs are missing.")
+        warnings.warn("Only DD_internal and/or DD_cross provided. DR and RR inputs are missing.")
     elif dr_inputs_provided and not (dd_inputs_provided and rr_inputs_provided):
-        warnings.warn("Only DR_internal and DR_cross provided. DD and RR inputs are missing.")
+        warnings.warn("Only DR_internal and/or DR_cross provided. DD and RR inputs are missing.")
     elif rr_inputs_provided and not (dd_inputs_provided and dr_inputs_provided):
-        warnings.warn("Only RR_internal and RR_cross provided. DD and DR inputs are missing.")
+        warnings.warn("Only RR_internal and/or RR_cross provided. DD and DR inputs are missing.")
     elif (dd_inputs_provided ^ dr_inputs_provided) or (dd_inputs_provided ^ rr_inputs_provided) or (dr_inputs_provided ^ rr_inputs_provided):
         # XOR condition - partial inputs
         warnings.warn("Partial inputs detected. Some pair types are missing.")
@@ -1211,54 +1234,86 @@ def compute_total_pairs_and_norm(DD_internal=None, DD_cross=None, DR_internal=No
         'RR_total': None,
         'norm_DD': None,
         'norm_DR': None,
-        'norm_RR': None
+        'norm_RR': None,
+        'data_weight': None,
+        'random_weight': None,
+        'data_weight_sq': None,
+        'random_weight_sq': None,
+        'muedges': muedges
     }
     
     # Helper function to sum contributions
     def _sum_contributions(internal, cross, sbin, mubin):
         total = np.zeros((sbin, mubin))
         
+        def _extract_and_add(val, total, sbin, mubin):
+            """Extract npairs from value (if structured array) and add to total."""
+            if val is None:
+                return
+            # Check if it's a structured array (DDsmu result)
+            if isinstance(val, np.ndarray) and val.dtype.names is not None:
+                val = extract_npairs(val, with_weight)
+            # Now val should be a simple array
+            if isinstance(val, np.ndarray):
+                if val.ndim == 1:
+                    total += val.reshape(sbin, mubin)
+                else:
+                    total += val
+        
         if internal is not None:
             if isinstance(internal, dict):
                 for idx, val in internal.items():
-                    if val is not None:
-                        if isinstance(val, np.ndarray) and val.ndim == 1:
-                            total += val.reshape(sbin, mubin)
-                        else:
-                            total += val
+                    _extract_and_add(val, total, sbin, mubin)
             else:  # ndarray
-                if internal.ndim == 1:
-                    total += internal.reshape(sbin, mubin)
-                else:
-                    total += internal
+                _extract_and_add(internal, total, sbin, mubin)
         
         if cross is not None:
             if isinstance(cross, dict):
                 for pair, val in cross.items():
-                    if val is not None:
-                        if isinstance(val, np.ndarray) and val.ndim == 1:
-                            total += val.reshape(sbin, mubin)
-                        else:
-                            total += val
+                    _extract_and_add(val, total, sbin, mubin)
             else:  # ndarray
-                if cross.ndim == 1:
-                    total += cross.reshape(sbin, mubin)
-                else:
-                    total += cross
+                _extract_and_add(cross, total, sbin, mubin)
         
         return total
     
-    # Compute DD_total if both internal and cross are provided
-    if DD_internal is not None and DD_cross is not None:
-        result['DD_total'] = _sum_contributions(DD_internal, DD_cross, sbin, mubin).astype(np.uint64)
+    # Compute DD_total if inputs are provided
+    if DD_internal is not None or DD_cross is not None:
+        result['DD_total'] = _sum_contributions(DD_internal, DD_cross, sbin, mubin)
     
-    # Compute DR_total if both internal and cross are provided
-    if DR_internal is not None and DR_cross is not None:
-        result['DR_total'] = _sum_contributions(DR_internal, DR_cross, sbin, mubin).astype(np.uint64)
+    # Compute DR_total if inputs are provided
+    if DR_internal is not None or DR_cross is not None:
+        result['DR_total'] = _sum_contributions(DR_internal, DR_cross, sbin, mubin)
     
-    # Compute RR if both internal and cross are provided
-    if RR_internal is not None and RR_cross is not None:
-        result['RR_total'] = _sum_contributions(RR_internal, RR_cross, sbin, mubin).astype(np.uint64)
+    # Compute RR_total if inputs are provided
+    if RR_internal is not None or RR_cross is not None:
+        result['RR_total'] = _sum_contributions(RR_internal, RR_cross, sbin, mubin)
+    
+    # Compute normalization factors and weights
+    if data_list is not None:
+        if with_weight:
+            result['data_weight'] = sum(np.sum(d[:, 3]) for d in data_list if d is not None and len(d) > 0)
+            result['data_weight_sq'] = sum(np.sum(d[:, 3]**2) for d in data_list if d is not None and len(d) > 0)
+        else:
+            result['data_weight'] = sum(len(d) for d in data_list if d is not None)
+            result['data_weight_sq'] = result['data_weight']
+        
+        # norm_DD = N_d * N_d - sum(w_d^2)
+        result['norm_DD'] = result['data_weight'] * result['data_weight'] - result['data_weight_sq']
+    
+    if random_list is not None:
+        if with_weight:
+            result['random_weight'] = sum(np.sum(r[:, 3]) for r in random_list if r is not None and len(r) > 0)
+            result['random_weight_sq'] = sum(np.sum(r[:, 3]**2) for r in random_list if r is not None and len(r) > 0)
+        else:
+            result['random_weight'] = sum(len(r) for r in random_list if r is not None)
+            result['random_weight_sq'] = result['random_weight']
+        
+        # norm_RR = N_r * N_r - sum(w_r^2)
+        result['norm_RR'] = result['random_weight'] * result['random_weight'] - result['random_weight_sq']
+    
+    # norm_DR = N_d * N_r
+    if result['data_weight'] is not None and result['random_weight'] is not None:
+        result['norm_DR'] = result['data_weight'] * result['random_weight']
     
     return result
 
@@ -1275,17 +1330,17 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
     jk_idx : int
         Index of subvolume to exclude.
     DD_internal : dict, optional
-        DD results for internal pairs.
+        DD results for internal pairs (already processed by extract_npairs).
     DD_cross : dict, optional
-        DD results for cross pairs.
+        DD results for cross pairs (already processed by extract_npairs).
     DR_internal : dict, optional
-        DR results for internal pairs.
+        DR results for internal pairs (already processed by extract_npairs).
     DR_cross : dict, optional
-        DR results for cross pairs.
+        DR results for cross pairs (already processed by extract_npairs).
     RR_internal : dict, optional
-        RR results for internal pairs.
+        RR results for internal pairs (already processed by extract_npairs).
     RR_cross : dict, optional
-        RR results for cross pairs.
+        RR results for cross pairs (already processed by extract_npairs).
     data_list : list of ndarray, optional
         Data subvolume lists.
     random_list : list of ndarray, optional
@@ -1306,30 +1361,60 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
         - 'DD_deduct': ndarray - DD pairs to deduct (sbin, mubin)
         - 'DR_deduct': ndarray - DR pairs to deduct (sbin, mubin)
         - 'RR_deduct': ndarray - RR pairs to deduct (sbin, mubin)
-        - 'norm_DD_deduct': float - DD normalization to deduct
-        - 'norm_DR_deduct': float - DR normalization to deduct
-        - 'norm_RR_deduct': float - RR normalization to deduct
         - 'excluded_data_weight': float - excluded data weight/count
         - 'excluded_random_weight': float - excluded random weight/count
+        - 'excluded_data_weight_sq': float - sum of squared data weights (for norm_DD)
+        - 'excluded_random_weight_sq': float - sum of squared random weights (for norm_RR)
+        
+    Raises
+    ------
+    ValueError
+        If sedges or mubin is None when pair computation is requested.
+        If none of DD_internal/DD_cross, DR_internal/DR_cross, RR_internal/RR_cross are provided.
     """
+    import warnings
+    
     sbin = len(sedges) - 1 if sedges is not None else None
     
     result = {
         'DD_deduct': None,
         'DR_deduct': None,
         'RR_deduct': None,
-        'norm_DD_deduct': None,
-        'norm_DR_deduct': None,
-        'norm_RR_deduct': None,
         'excluded_data_weight': None,
-        'excluded_random_weight': None
+        'excluded_random_weight': None,
+        'excluded_data_weight_sq': None,
+        'excluded_random_weight_sq': None
     }
     
-    if sbin is None or mubin is None or ngrids_1d is None:
-        return result
+    # Check input availability
+    dd_inputs_provided = DD_internal is not None or DD_cross is not None
+    dr_inputs_provided = DR_internal is not None or DR_cross is not None
+    rr_inputs_provided = RR_internal is not None or RR_cross is not None
+    
+    if not (dd_inputs_provided or dr_inputs_provided or rr_inputs_provided):
+        raise ValueError("At least one pair of inputs (DD_internal/DD_cross, DR_internal/DR_cross, RR_internal/RR_cross) must be provided")
+    
+    # Check sbin and mubin for pair computation
+    if (dd_inputs_provided or dr_inputs_provided or rr_inputs_provided) and (sbin is None or mubin is None):
+        raise ValueError("sedges and mubin must be provided when computing pair deductions")
+    
+    # Issue warnings for partial inputs
+    if dd_inputs_provided and not (dr_inputs_provided and rr_inputs_provided):
+        warnings.warn("Only DD_internal and/or DD_cross provided. DR and RR inputs are missing.")
+    elif dr_inputs_provided and not (dd_inputs_provided and rr_inputs_provided):
+        warnings.warn("Only DR_internal and/or DR_cross provided. DD and RR inputs are missing.")
+    elif rr_inputs_provided and not (dd_inputs_provided and dr_inputs_provided):
+        warnings.warn("Only RR_internal and/or RR_cross provided. DD and DR inputs are missing.")
+    elif (dd_inputs_provided ^ dr_inputs_provided) or (dd_inputs_provided ^ rr_inputs_provided) or (dr_inputs_provided ^ rr_inputs_provided):
+        # XOR condition - partial inputs
+        warnings.warn("Partial inputs detected. Some pair types are missing.")
+    
+    # Check ngrids_1d for cross-pair computation
+    if ngrids_1d is None and (DD_cross is not None or DR_cross is not None or RR_cross is not None):
+        warnings.warn("ngrids_1d is None but cross-pair inputs are provided. Cross-pair deductions will be skipped.")
         
     # Compute DD deduction
-    if DD_internal is not None or DD_cross is not None:
+    if dd_inputs_provided:
         DD_deduct = np.zeros((sbin, mubin))
         
         # Internal DD of excluded subvolume
@@ -1348,7 +1433,7 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
         result['DD_deduct'] = DD_deduct
     
     # Compute DR deduction
-    if DR_internal is not None or DR_cross is not None:
+    if dr_inputs_provided:
         DR_deduct = np.zeros((sbin, mubin))
         
         # Internal DR of excluded subvolume
@@ -1373,7 +1458,7 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
         result['DR_deduct'] = DR_deduct
     
     # Compute RR deduction
-    if RR_internal is not None or RR_cross is not None:
+    if rr_inputs_provided:
         RR_deduct = np.zeros((sbin, mubin))
         
         # Internal RR of excluded subvolume
@@ -1391,56 +1476,41 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
                     
         result['RR_deduct'] = RR_deduct
     
-    # Compute normalization deductions and excluded weights
-    if data_list is not None and random_list is not None and jk_idx < len(data_list):
-        # Excluded weights/counts
+    # Compute excluded weights (for external normalization computation)
+    if data_list is not None and jk_idx < len(data_list):
         if data_list[jk_idx] is not None and len(data_list[jk_idx]) > 0:
             if with_weight:
                 result['excluded_data_weight'] = np.sum(data_list[jk_idx][:, 3])
+                result['excluded_data_weight_sq'] = np.sum(data_list[jk_idx][:, 3]**2)
             else:
                 result['excluded_data_weight'] = len(data_list[jk_idx])
+                result['excluded_data_weight_sq'] = len(data_list[jk_idx])
         else:
             result['excluded_data_weight'] = 0
-            
+            result['excluded_data_weight_sq'] = 0
+    else:
+        if data_list is not None:
+            warnings.warn(f"jk_idx {jk_idx} is out of range for data_list (length {len(data_list)})")
+    
+    if random_list is not None and jk_idx < len(random_list):
         if random_list[jk_idx] is not None and len(random_list[jk_idx]) > 0:
             if with_weight:
                 result['excluded_random_weight'] = np.sum(random_list[jk_idx][:, 3])
+                result['excluded_random_weight_sq'] = np.sum(random_list[jk_idx][:, 3]**2)
             else:
                 result['excluded_random_weight'] = len(random_list[jk_idx])
+                result['excluded_random_weight_sq'] = len(random_list[jk_idx])
         else:
             result['excluded_random_weight'] = 0
-        
-        # Total weights/counts for normalization computation
-        if with_weight:
-            total_data_weight = sum(np.sum(d[:, 3]) for d in data_list if d is not None and len(d) > 0)
-            total_random_weight = sum(np.sum(r[:, 3]) for r in random_list if r is not None and len(r) > 0)
-            sum_wd2 = sum(np.sum(d[:, 3]**2) for d in data_list if d is not None and len(d) > 0)
-            sum_wr2 = sum(np.sum(r[:, 3]**2) for r in random_list if r is not None and len(r) > 0)
-        else:
-            total_data_weight = sum(len(d) for d in data_list if d is not None)
-            total_random_weight = sum(len(r) for r in random_list if r is not None)
-            sum_wd2 = total_data_weight
-            sum_wr2 = total_random_weight
-        
-        # Compute normalization deductions
-        excluded_data_weight = result['excluded_data_weight']
-        excluded_random_weight = result['excluded_random_weight']
-        
-        if excluded_data_weight is not None:
-            jk_data_weight = total_data_weight - excluded_data_weight
-            jk_sum_wd2 = sum_wd2 - (np.sum(data_list[jk_idx][:, 3]**2) if with_weight and data_list[jk_idx] is not None and len(data_list[jk_idx]) > 0 else excluded_data_weight)
-            result['norm_DD_deduct'] = (total_data_weight * total_data_weight - sum_wd2) - (jk_data_weight * jk_data_weight - jk_sum_wd2)
-            result['norm_DR_deduct'] = (total_data_weight * total_random_weight) - (jk_data_weight * (total_random_weight - excluded_random_weight))
-        
-        if excluded_random_weight is not None:
-            jk_random_weight = total_random_weight - excluded_random_weight
-            jk_sum_wr2 = sum_wr2 - (np.sum(random_list[jk_idx][:, 3]**2) if with_weight and random_list[jk_idx] is not None and len(random_list[jk_idx]) > 0 else excluded_random_weight)
-            result['norm_RR_deduct'] = (total_random_weight * total_random_weight - sum_wr2) - (jk_random_weight * jk_random_weight - jk_sum_wr2)
+            result['excluded_random_weight_sq'] = 0
+    else:
+        if random_list is not None:
+            warnings.warn(f"jk_idx {jk_idx} is out of range for random_list (length {len(random_list)})")
     
     return result
 
 
-def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_internal, RR_cross, RR_full,
+def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_internal, RR_cross,
                          data_list, random_list, sedges, mubin, with_weight, muedges=None):
     """
     Compute two-point correlation function for each Jackknife sample.
@@ -1462,9 +1532,6 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
     RR_cross : dict
         RR results for cross-pairs between neighboring subvolumes.
         Each value can be a structured array or a simplified ndarray.
-    RR_full : structured array or ndarray
-        RR full result (combined internal + cross pairs). Can be structured array
-        or simplified flattened array of weighted npairs.
     data_list : list of ndarray
         List of n^3 subvolume data arrays.
     random_list : list of ndarray
@@ -1476,9 +1543,7 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
     with_weight : bool
         Whether to use weights.
     muedges : array-like, optional
-        Mu bin edges. If None and RR_full is a structured array, will be
-        extracted from RR_full. If RR_full is simplified (ndarray), this
-        parameter is required to get correct muedges.
+        Mu bin edges. If None, will use default linear spacing from 0 to 1.
     
     Returns
     -------
@@ -1494,19 +1559,18 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
         - 'DR_cross': dict of cross DR results
         - 'RR_internal': dict of internal RR results
         - 'RR_cross': dict of cross RR results
-        - 'RR_full': RR full result
     """
     n_cubes = len(data_list)
     ngrids_1d = round(n_cubes ** (1/3))
     
     # Compute total pairs and normalization factors
     total_result = compute_total_pairs_and_norm(
-        DD_internal, DD_cross, DR_internal, DR_cross, RR_internal, RR_cross, RR_full,
+        DD_internal, DD_cross, DR_internal, DR_cross, RR_internal, RR_cross,
         data_list, random_list, sedges, mubin, with_weight, muedges
     )
     
     # Check if we have sufficient data
-    if any(v is None for v in [total_result['DD_total'], total_result['DR_total'], total_result['RR'], 
+    if any(v is None for v in [total_result['DD_total'], total_result['DR_total'], total_result['RR_total'], 
                              total_result['norm_DD'], total_result['norm_DR'], total_result['norm_RR']]):
         # Return empty results
         xismu_jk = np.empty(n_cubes, dtype=object)
@@ -1524,15 +1588,20 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
             'DR_cross': DR_cross,
             'RR_internal': RR_internal,
             'RR_cross': RR_cross,
-            'RR_full': RR_full,
         }
     
     # Create xismu for full sample
     xismu_full = create_xismu_from_pairs(
-        total_result['DD_total'], total_result['DR_total'], total_result['RR'],
+        total_result['DD_total'], total_result['DR_total'], total_result['RR_total'],
         total_result['norm_DD'], total_result['norm_DR'], total_result['norm_RR'],
         sedges, total_result['muedges']
     )
+    
+    # Extract total weights for convenience
+    total_data_weight = total_result['data_weight']
+    total_random_weight = total_result['random_weight']
+    total_data_weight_sq = total_result['data_weight_sq']
+    total_random_weight_sq = total_result['random_weight_sq']
     
     # Jackknife samples
     xismu_jk = np.empty(n_cubes, dtype=object)
@@ -1545,7 +1614,7 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
             sedges, mubin, with_weight, ngrids_1d
         )
         
-        # Compute Jackknife sample pairs and norms by applying deductions
+        # Compute Jackknife sample pairs by applying deductions
         DD_jk = None
         if total_result['DD_total'] is not None and deductions['DD_deduct'] is not None:
             DD_jk = total_result['DD_total'].copy() - deductions['DD_deduct']
@@ -1555,23 +1624,28 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
             DR_jk = total_result['DR_total'].copy() - deductions['DR_deduct']
             
         RR_jk = None
-        if total_result['RR'] is not None and deductions['RR_deduct'] is not None:
-            RR_jk = total_result['RR'].copy() - deductions['RR_deduct']
+        if total_result['RR_total'] is not None and deductions['RR_deduct'] is not None:
+            RR_jk = total_result['RR_total'].copy() - deductions['RR_deduct']
         
         # Compute Jackknife sample normalizations
-        norm_DD_jk = None
-        if total_result['norm_DD'] is not None and deductions['norm_DD_deduct'] is not None:
-            norm_DD_jk = total_result['norm_DD'] - deductions['norm_DD_deduct']
-            
-        norm_DR_jk = None
-        if total_result['norm_DR'] is not None and deductions['norm_DR_deduct'] is not None:
-            norm_DR_jk = total_result['norm_DR'] - deductions['norm_DR_deduct']
-            
-        norm_RR_jk = None
-        if total_result['norm_RR'] is not None and deductions['norm_RR_deduct'] is not None:
-            norm_RR_jk = total_result['norm_RR'] - deductions['norm_RR_deduct']
+        # Jackknife weights
+        jk_data_weight = total_data_weight - deductions['excluded_data_weight']
+        jk_random_weight = total_random_weight - deductions['excluded_random_weight']
+        jk_data_weight_sq = total_data_weight_sq - deductions['excluded_data_weight_sq']
+        jk_random_weight_sq = total_random_weight_sq - deductions['excluded_random_weight_sq']
+        
+        # norm_DD_jk = N_d_jk * N_d_jk - sum(w_d_jk^2)
+        norm_DD_jk = jk_data_weight * jk_data_weight - jk_data_weight_sq
+        
+        # norm_DR_jk = N_d_jk * N_r_jk
+        norm_DR_jk = jk_data_weight * jk_random_weight
+        
+        # norm_RR_jk = N_r_jk * N_r_jk - sum(w_r_jk^2)
+        norm_RR_jk = jk_random_weight * jk_random_weight - jk_random_weight_sq
         
         # Apply self-pair correction for s=0, mu=0 bin
+        # When excluding a subvolume, we need to add back the self-pairs that were removed
+        # because the excluded particles no longer contribute to self-pairs
         if sedges is not None and sedges[0] == 0.0:
             if DD_jk is not None and deductions['excluded_data_weight'] is not None:
                 DD_jk[0, 0] += deductions['excluded_data_weight']
@@ -1598,5 +1672,809 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
         'DR_cross': DR_cross,
         'RR_internal': RR_internal,
         'RR_cross': RR_cross,
-        'RR_full': RR_full,
     }
+
+def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, -1, None), use_Hartlab=False):
+    """ To get the covariance matrix of specific array
+    
+    Parameters
+    ----------
+    array : ndarray
+        Input array with shape (n_samples, n_features) or (n_samples,)
+    cov_type : str, optional
+        The type of covariance matrix, support "normal", "jk" and "subsample", by default "normal"
+    use_Hartlab : bool, optional
+        Whether to apply Hartlab correction for biased estimation,
+        only applicable for "subsample" and "jk" types, by default False
+    
+    Returns
+    -------
+    ndarray
+        The covariance matrix after covariance correction
+    """
+    if array.ndim == 1:
+        array = array.reshape(-1, 1)
+    elif array.ndim != 2:
+        raise ValueError(f"Input array must be 2D, but got {array.ndim}D")
+    n_samples, n_features = array.shape
+
+    array = array[:, need_slice]
+    
+    if cov_type == "normal":
+        # Standard sample covariance (unbiased, divides by N-1)
+        cov = np.cov(array, rowvar=False, bias=False)
+        
+    elif cov_type == "subsample":
+        # Subsample covariance from run_subsample_tpCF
+        # Each subbox is an independent estimate of the full box statistics
+        # The samples (n_samples) correspond to the number of subboxes, which 
+        # represents the volume ratio between full box and subbox.
+        # 
+        # Standard covariance estimate from np.cov gives:
+        # cov_np = 1/(N-1) * sum((xi - x_mean)^2)
+        # 
+        # To estimate full box covariance from subbox measurements:
+        # cov_full = cov_sub / n_samples (volume correction)
+        
+        # np.cov with bias=False gives: 1/(N-1) * sum((xi - x_mean)^2)
+        cov = np.cov(array, rowvar=False, bias=False)
+        
+        # Volume correction: divide by number of subboxes
+        correction_factor = 1.0 / n_samples
+        cov = cov * correction_factor
+        
+        # Apply Hartlab correction if requested
+        if use_Hartlab:
+            # Hartlab correction factor for subsample covariance
+            hartlab_factor = (n_samples - 1) / (n_samples - n_features - 2)
+            cov = cov * hartlab_factor
+        
+    elif cov_type == "jk":
+        # Jackknife covariance from run_jackknife_tpCF
+        # 
+        # Standard Jackknife covariance formula:
+        # cov_jk = (N-1)/N * sum((xi - x_mean)^2)
+        # 
+        # But np.cov with bias=False gives:
+        # cov_np = 1/(N-1) * sum((xi - x_mean)^2)
+        # 
+        # So the conversion factor is:
+        # cov_jk = (N-1)/N * (N-1) * cov_np = (N-1)^2 / N * cov_np
+        
+        # np.cov with bias=False gives: 1/(N-1) * sum((xi - x_mean)^2)
+        cov = np.cov(array, rowvar=False, bias=False)
+        
+        # Jackknife correction: (N-1)^2 / N
+        correction_factor = (n_samples - 1) ** 2 / n_samples
+        cov = cov * correction_factor
+        
+        # Apply Hartlab correction if requested
+        if use_Hartlab:
+            # Hartlab correction factor for Jackknife covariance
+            hartlab_factor = (n_samples - 1) / (n_samples - n_features - 2)
+            cov = cov * hartlab_factor
+        
+    else:
+        raise ValueError(f"Unknown cov_type: {cov_type}. Supported types are 'normal', 'subsample', 'jk'")
+    
+    return cov
+
+def get_std_array_from_cov(cov_matrix):
+    return np.sqrt(np.diag(cov_matrix))
+
+def box_shift_perodic(data, shift, boxsize, inplace=False):
+    """
+    Apply periodic boundary conditions to shift box positions.
+    
+    Parameters
+    ----------
+    data : ndarray
+        Input data array with shape (N, D), where D >= 3.
+        First three columns are x, y, z coordinates.
+    shift : array_like
+        Three-element sequence (dx, dy, dz) controlling translation distances.
+        Can be list, tuple, or numpy array.
+    boxsize : float or array_like
+        Size of the box. If float, assumes cubic box of that size.
+        If array-like, should have 3 elements for (Lx, Ly, Lz).
+    inplace : bool, optional
+        Whether to modify the input data in-place, by default False
+    
+    Returns
+    -------
+    ndarray
+        New data array with shifted coordinates under periodic boundary conditions.
+        Same shape as input data.
+    """
+    import numpy as np
+    
+    if not inplace:
+        data = data.copy()
+    shift = np.asarray(shift, dtype=float)
+    boxsize = np.asarray(boxsize, dtype=float)
+    
+    if data.ndim != 2:
+        raise ValueError("Input data must be 2D array")
+    if data.shape[1] < 3:
+        raise ValueError("Input data must have at least 3 columns")
+    if shift.shape != (3,):
+        raise ValueError("Shift must be a 3-element sequence")
+    if boxsize.ndim == 0:
+        boxsize = np.array([boxsize, boxsize, boxsize])
+    elif boxsize.shape != (3,):
+        raise ValueError("Boxsize must be scalar or 3-element sequence")
+    
+    # Apply shift to first three columns (x, y, z)
+    data[:, :3] += shift
+    
+    # Apply periodic boundary conditions with given box size
+    data[:, 0] = data[:, 0] % boxsize[0]
+    data[:, 1] = data[:, 1] % boxsize[1]
+    data[:, 2] = data[:, 2] % boxsize[2]
+    
+    return data
+
+def cal_Fisher_matrix(func, best_fit, cov_matrix, delta=None, computed_jac=None, return_jac=False):
+    """
+    Calculate Fisher matrix from covariance matrix and model function.
+
+    The Fisher information matrix is computed using the finite difference
+    approximation of the gradient of the model function with respect to
+    parameters:
+
+    F = (∂μ/∂θ)^T * C^{-1} * (∂μ/∂θ)
+
+    where μ = func(θ) is the model prediction, C is the covariance matrix,
+    and ∂μ/∂θ is the Jacobian matrix.
+
+    Parameters
+    ----------
+    func : callable
+        Model function that takes parameters as individual arguments.
+        Example: for 2 parameters, func(x1, x2).
+    best_fit : array_like
+        Best-fit parameter values.
+    cov_matrix : ndarray
+        Covariance matrix of the parameters.
+    delta : float or array_like, optional
+        Finite difference step size. If None, automatically determined
+        using optimal step size δ = ε^(1/3) * max(|θ|, 1) for each parameter,
+        where ε ≈ 2.22e-16 is machine epsilon. This gives 4th order
+        accuracy for central differences. Can also be a single float
+        applied to all parameters, or an array matching best_fit length.
+
+    Returns
+    -------
+    ndarray
+        Fisher information matrix with shape (n_params, n_params).
+
+    Notes
+    -----
+    The automatic step size is based on the optimal step for numerical
+    differentiation to minimize truncation and round-off errors:
+
+    δ_optimal ≈ ε^(1/3) * max(|x|, 1)
+
+    where ε is machine epsilon. This balances the truncation error
+    (∝ δ²) and round-off error (∝ 1/δ) in central differences.
+    """
+    import numpy as np
+
+    if computed_jac is None:
+        # Convert inputs to numpy arrays
+        best_fit = np.atleast_1d(best_fit)
+        n_params = len(best_fit)
+
+        # Determine step sizes for each parameter
+        if delta is None:
+            # Automatic step size: δ = ε^(1/3) * max(|θ|, 1)
+            # ε^(1/3) ≈ 6.05e-6 for double precision
+            machine_eps = np.finfo(float).eps
+            delta_factor = machine_eps ** (1/3)
+            delta = delta_factor * np.maximum(np.abs(best_fit), 1.0)
+        elif np.isscalar(delta):
+            delta = np.full(n_params, delta)
+        else:
+            delta = np.atleast_1d(delta)
+            if len(delta) != n_params:
+                raise ValueError(f"delta length {len(delta)} does not match "
+                            f"number of parameters {n_params}")
+
+        # Compute inverse covariance matrix
+        try:
+            cov_inv = np.linalg.inv(cov_matrix)
+        except np.linalg.LinAlgError:
+            raise ValueError("Covariance matrix is singular, cannot compute inverse")
+
+        # Compute Jacobian: ∂μ/∂θ for each parameter
+        # We use central difference: (f(x+δ) - f(x-δ)) / (2δ)
+        jacobian = np.zeros(n_params)
+
+        # Evaluate function at best fit point to determine output dimension
+        f0 = func(*best_fit)
+
+        # Determine if model output is scalar or vector
+        if hasattr(f0, '__len__') and not isinstance(f0, (float, int)):
+            f0 = np.asarray(f0)
+            n_output = f0.shape[0] if f0.ndim > 0 else 1
+        else:
+            f0 = float(f0)
+            n_output = 1
+
+        # Validate cov_matrix shape
+        cov_matrix = np.atleast_2d(cov_matrix)
+        if cov_matrix.shape != (n_output, n_output):
+            raise ValueError(f"cov_matrix shape {cov_matrix.shape} does not match "
+                            f"model output dimension {n_output}")
+
+        # Initialize Jacobian matrix (n_output x n_params)
+        jacobian = np.zeros((n_output, n_params))
+
+        # Compute gradient for each parameter using central differences
+        for i in range(n_params):
+            # Forward point
+            theta_plus = best_fit.copy()
+            theta_plus[i] += delta[i]
+            f_plus = func(*theta_plus)
+
+            # Backward point
+            theta_minus = best_fit.copy()
+            theta_minus[i] -= delta[i]
+            f_minus = func(*theta_minus)
+
+            # Central difference
+            if n_output == 1:
+                jacobian[0, i] = (f_plus - f_minus) / (2 * delta[i])
+            else:
+                jacobian[:, i] = (np.asarray(f_plus) - np.asarray(f_minus)) / (2 * delta[i])
+
+    # Compute Fisher matrix: F = J^T * C^{-1} * J
+    # jacobian shape: (n_output, n_params)
+    # cov_inv shape: (n_params, n_params)
+    # Result: (n_params, n_output) @ (n_params, n_params) @ (n_output, n_params)
+    #        = (n_params, n_params) @ (n_output, n_params) -> need to transpose jacobian
+    else:
+        jacobian = computed_jac
+        cov_inv = np.linalg.inv(cov_matrix)
+    fisher = jacobian.T @ cov_inv @ jacobian
+
+    if return_jac:
+        return fisher, jacobian
+    else:
+        return fisher
+
+
+def cal_Fisher_matrix_from_precomputed(precomputed_data, best_fit, delta, cov_matrix, return_jac=False):
+    """
+    Calculate Fisher matrix from precomputed function values at parameter points.
+
+    This function is useful when function evaluations are expensive and have been
+    precomputed at points around the best-fit parameters. It computes the Jacobian
+    matrix from the precomputed values and then calls cal_Fisher_matrix.
+
+    The Fisher information matrix is computed as:
+    F = (∂μ/∂θ)^T * C^{-1} * (∂μ/∂θ)
+
+    where the Jacobian ∂μ/∂θ is computed using central differences from the
+    precomputed function values.
+
+    Parameters
+    ----------
+    precomputed_data : dict
+        Dictionary containing precomputed function values. Format:
+        {param_index: {'plus': f(theta + delta_i), 'minus': f(theta - delta_i)}}
+        
+        Example for 2 parameters:
+        {
+            0: {'plus': array([...]), 'minus': array([...])},  # f(best_fit + delta[0], best_fit[1])
+            1: {'plus': array([...]), 'minus': array([...])}   # f(best_fit[0], best_fit[1] + delta[1])
+        }
+        
+        For scalar function outputs, use float values instead of arrays.
+    
+    best_fit : array_like
+        Best-fit parameter values.
+    
+    delta : float or array_like
+        Finite difference step size(s). Can be:
+        - A single float applied to all parameters
+        - An array matching best_fit length
+    
+    cov_matrix : ndarray
+        Covariance matrix of the model outputs.
+    
+    return_jac : bool, default False
+        If True, return both Fisher matrix and Jacobian matrix.
+
+    Returns
+    -------
+    fisher : ndarray
+        Fisher information matrix with shape (n_params, n_params).
+    
+    jacobian : ndarray, optional
+        Jacobian matrix with shape (n_output, n_params). Only returned if
+        return_jac=True.
+
+    Examples
+    --------
+    >>> # Precompute expensive function evaluations
+    >>> best_fit = [1.0, 2.0]
+    >>> delta = [0.01, 0.02]
+    >>> 
+    >>> # Evaluate at perturbed points (can be done in parallel or saved from previous runs)
+    >>> precomputed_data = {
+    ...     0: {
+    ...         'plus': expensive_model(1.01, 2.0),   # best_fit[0] + delta[0]
+    ...         'minus': expensive_model(0.99, 2.0)   # best_fit[0] - delta[0]
+    ...     },
+    ...     1: {
+    ...         'plus': expensive_model(1.0, 2.02),   # best_fit[1] + delta[1]
+    ...         'minus': expensive_model(1.0, 1.98)   # best_fit[1] - delta[1]
+    ...     }
+    ... }
+    >>> 
+    >>> # Compute Fisher matrix from precomputed values
+    >>> fisher = cal_Fisher_matrix_from_precomputed(
+    ...     precomputed_data, best_fit, delta, cov_matrix
+    ... )
+
+    Notes
+    -----
+    This function avoids redundant function evaluations by using precomputed
+    values, which is particularly useful when:
+    - Function evaluations are computationally expensive
+    - Function values have been computed in parallel
+    - Function values are available from previous optimization/sampling runs
+    
+    The Jacobian is computed using central differences:
+    ∂f/∂θ_i ≈ [f(θ + δ_i e_i) - f(θ - δ_i e_i)] / (2 δ_i)
+    """
+    import numpy as np
+    
+    # Convert inputs to numpy arrays
+    best_fit = np.atleast_1d(best_fit)
+    n_params = len(best_fit)
+    
+    # Validate delta
+    if np.isscalar(delta):
+        delta = np.full(n_params, delta)
+    else:
+        delta = np.atleast_1d(delta)
+        if len(delta) != n_params:
+            raise ValueError(f"delta length {len(delta)} does not match "
+                           f"number of parameters {n_params}")
+    
+    # Validate precomputed_data
+    if not isinstance(precomputed_data, dict):
+        raise TypeError("precomputed_data must be a dictionary")
+    
+    if set(precomputed_data.keys()) != set(range(n_params)):
+        raise ValueError(f"precomputed_data must contain keys 0, 1, ..., {n_params-1}, "
+                        f"but got keys {sorted(precomputed_data.keys())}")
+    
+    # Check structure of each entry
+    for i in range(n_params):
+        if 'plus' not in precomputed_data[i] or 'minus' not in precomputed_data[i]:
+            raise ValueError(f"precomputed_data[{i}] must contain 'plus' and 'minus' keys")
+    
+    # Get the first function value to determine output dimension
+    first_value = precomputed_data[0]['plus']
+    if hasattr(first_value, '__len__') and not isinstance(first_value, (float, int)):
+        first_value = np.asarray(first_value)
+        n_output = first_value.shape[0] if first_value.ndim > 0 else 1
+    else:
+        n_output = 1
+    
+    # Initialize Jacobian matrix (n_output x n_params)
+    jacobian = np.zeros((n_output, n_params))
+    
+    # Compute Jacobian from precomputed values
+    for i in range(n_params):
+        f_plus = precomputed_data[i]['plus']
+        f_minus = precomputed_data[i]['minus']
+        
+        # Convert to numpy arrays if needed
+        if n_output > 1:
+            f_plus = np.asarray(f_plus)
+            f_minus = np.asarray(f_minus)
+        
+        # Central difference
+        if n_output == 1:
+            jacobian[0, i] = (f_plus - f_minus) / (2 * delta[i])
+        else:
+            jacobian[:, i] = (f_plus - f_minus) / (2 * delta[i])
+    
+    # Call cal_Fisher_matrix with computed Jacobian
+    return cal_Fisher_matrix(
+        func=None,  # Not needed when computed_jac is provided
+        best_fit=best_fit,
+        cov_matrix=cov_matrix,
+        computed_jac=jacobian,
+        return_jac=return_jac
+    )
+
+
+def _compute_ellipse_params_from_fisher(fisher, confidence_level=0.683):
+    """
+    Compute ellipse parameters from Fisher matrix (internal helper function).
+
+    Parameters
+    ----------
+    fisher : ndarray
+        Fisher information matrix, must be 2x2.
+    confidence_level : float, default 0.683
+        Confidence level for the ellipse (0 < confidence_level < 1).
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - 'semi_minor' : float - semi-minor axis length (smaller)
+        - 'semi_major' : float - semi-major axis length (larger)
+        - 'angle_rad' : float - rotation angle in radians
+        - 'angle_deg' : float - rotation angle in degrees
+        - 'eigenvals' : ndarray - eigenvalues [λ_small, λ_large]
+        - 'eigenvecs' : ndarray - eigenvectors as columns
+        - 'delta_chi2' : float - chi-squared critical value
+
+    Raises
+    ------
+    ValueError
+        If fisher is not a 2x2 matrix or not positive definite.
+    """
+    import numpy as np
+    from scipy.stats import chi2
+
+    # Validate fisher matrix dimensions
+    fisher = np.atleast_2d(fisher)
+    if fisher.shape != (2, 2):
+        raise ValueError(f"Fisher matrix must be 2x2 for ellipse computation, "
+                        f"got shape {fisher.shape}")
+
+    # Validate confidence level
+    if not (0 < confidence_level < 1):
+        raise ValueError(f"confidence_level must be between 0 and 1, got {confidence_level}")
+
+    # Chi-squared critical value for 2 degrees of freedom
+    delta_chi2 = chi2.ppf(confidence_level, df=2)
+
+    # Eigen-decomposition of Fisher matrix
+    # Fisher matrix F is the inverse of parameter covariance matrix C: F = C^{-1}
+    # The error ellipse satisfies: (θ - θ₀)^T · F · (θ - θ₀) = Δχ²
+    #
+    # Eigen-decomposition: F = Q · Λ · Q^T
+    #   where Λ = diag(λ₁, λ₂) with λ₁ ≥ λ₂ > 0 (eigenvalues)
+    #   Q is orthogonal matrix (rotation) from eigenvectors
+    #
+    # In eigenvector coordinates: λ₁ u₁² + λ₂ u₂² = Δχ²
+    #   → u₁²/(Δχ²/λ₁) + u₂²/(Δχ²/λ₂) = 1
+    #   → semi-axis lengths: a = sqrt(Δχ²/λ₁), b = sqrt(Δχ²/λ₂)
+    #
+    # Note: λ₁ is the larger eigenvalue → a is the semi-minor (smaller error)
+    #       λ₂ is the smaller eigenvalue → b is the semi-major (larger error)
+
+    eigenvals, eigenvecs = np.linalg.eigh(fisher)
+    # eigh returns sorted ascending: λ₂ ≤ λ₁
+    lambda_small, lambda_large = eigenvals  # λ₂ (small), λ₁ (large)
+    # eigenvectors are columns: v₁ (for λ₁), v₂ (for λ₂)
+
+    # Check for positive definiteness (both eigenvalues > 0)
+    if lambda_small <= 0:
+        raise ValueError(f"Fisher matrix is not positive definite. "
+                        f"Eigenvalues: {eigenvals}. "
+                        f"The Fisher matrix must be positive definite for ellipse computation. "
+                        f"This may indicate parameter degeneracy or a poorly constrained model.")
+
+    # Semi-axis lengths (before rotation)
+    # a = sqrt(Δχ² / λ_large)  (semi-minor, smaller)
+    # b = sqrt(Δχ² / λ_small)  (semi-major, larger)
+    semi_minor = np.sqrt(delta_chi2 / lambda_large)
+    semi_major = np.sqrt(delta_chi2 / lambda_small)
+
+    # Angle of the ellipse (rotation from eigenvector of larger eigenvalue)
+    # The eigenvector corresponding to the larger eigenvalue (λ₁) gives
+    # the direction of the semi-minor axis (smaller uncertainty).
+    v_major = eigenvecs[:, 1]  # eigenvector for λ₁ (larger eigenvalue)
+    angle_rad = np.arctan2(v_major[1], v_major[0])
+    angle_deg = np.degrees(angle_rad)
+
+    return {
+        'semi_minor': semi_minor,
+        'semi_major': semi_major,
+        'angle_rad': angle_rad,
+        'angle_deg': angle_deg,
+        'eigenvals': eigenvals,
+        'eigenvecs': eigenvecs,
+        'delta_chi2': delta_chi2
+    }
+
+
+def cal_ellipse_from_fisher(fisher, confidence_level=0.683, full_output=False):
+    """
+    Calculate ellipse area and parameters from Fisher matrix.
+
+    Parameters
+    ----------
+    fisher : ndarray
+        Fisher information matrix, must be 2x2.
+    confidence_level : float, default 0.683
+        Confidence level for the ellipse (0 < confidence_level < 1).
+        For 1σ Gaussian: 0.683, for 2σ: 0.954, for 3σ: 0.997.
+    full_output : bool, default False
+        If True, return additional ellipse parameters.
+
+    Returns
+    -------
+    area : float
+        Area of the error ellipse (π * a * b).
+    params : dict, optional
+        Only returned if full_output=True. Dictionary containing:
+        - 'semi_minor' : float - semi-minor axis length (smaller)
+        - 'semi_major' : float - semi-major axis length (larger)
+        - 'minor_axis_slope' : float - slope of the semi-minor axis
+        - 'major_axis_slope' : float - slope of the semi-major axis
+        - 'angle_rad' : float - rotation angle in radians
+        - 'angle_deg' : float - rotation angle in degrees
+        - 'eigenvals' : ndarray - eigenvalues [λ_small, λ_large]
+        - 'eigenvecs' : ndarray - eigenvectors as columns
+        - 'delta_chi2' : float - chi-squared critical value
+
+    Raises
+    ------
+    ValueError
+        If fisher is not a 2x2 matrix or not positive definite.
+
+    Notes
+    -----
+    The ellipse area is calculated as: Area = π * a * b
+    where a is the semi-minor axis and b is the semi-major axis.
+
+    The axis slopes are calculated from the eigenvectors of the Fisher matrix:
+    - The semi-minor axis aligns with the eigenvector of the larger eigenvalue
+    - The semi-major axis aligns with the eigenvector of the smaller eigenvalue
+    """
+    import numpy as np
+
+    # Compute ellipse parameters using helper function
+    params = _compute_ellipse_params_from_fisher(fisher, confidence_level)
+
+    # Calculate area: π * a * b
+    area = np.pi * params['semi_minor'] * params['semi_major']
+
+    if full_output:
+        # Calculate axis slopes from eigenvectors
+        # eigenvectors are columns: v_small (for λ_small), v_large (for λ_large)
+        # semi-minor axis aligns with v_large (eigenvector for larger eigenvalue)
+        # semi-major axis aligns with v_small (eigenvector for smaller eigenvalue)
+        v_minor = params['eigenvecs'][:, 1]  # eigenvector for λ_large (semi-minor)
+        v_major = params['eigenvecs'][:, 0]  # eigenvector for λ_small (semi-major)
+
+        # Slope = y/x (be careful with vertical lines where x ≈ 0)
+        # For near-vertical lines, slope approaches infinity
+        minor_axis_slope = v_minor[1] / v_minor[0] if np.abs(v_minor[0]) > 1e-10 else np.inf
+        major_axis_slope = v_major[1] / v_major[0] if np.abs(v_major[0]) > 1e-10 else np.inf
+
+        # Add slopes to params
+        params['minor_axis_slope'] = minor_axis_slope
+        params['major_axis_slope'] = major_axis_slope
+
+        return area, params
+    else:
+        return area
+
+
+def plot_ellipse_from_fisher(fisher, best_fit, ax=None, **kwargs):
+    """
+    Plot error ellipse from Fisher matrix.
+
+    The error ellipse represents the 1\sigma (68.3%) confidence region
+    for two parameters, derived from the Fisher information matrix.
+
+    Parameters
+    ----------
+    fisher : ndarray
+        Fisher information matrix, must be 2x2.
+    best_fit : array_like
+        Best-fit parameter values [p1, p2] for the ellipse center.
+    ax : matplotlib.axes.Axes, optional
+        Matplotlib axis to plot on. If None, creates a new figure and axis.
+    **kwargs : dict
+        Additional keyword arguments for customization. Supported keys:
+
+        **Ellipse properties** (passed to matplotlib.patches.Ellipse):
+        - ellipse_color / color : str, default 'C0'
+            Color of the ellipse edge.
+        - ellipse_alpha / alpha : float, default 0.5
+            Transparency of the ellipse fill.
+        - ellipse_facecolor / facecolor : str, optional
+            Fill color of the ellipse. If None, uses ellipse_color with alpha.
+        - ellipse_edgecolor / edgecolor : str, optional
+            Edge color of the ellipse. If None, uses ellipse_color.
+        - ellipse_linewidth / linewidth : float, default 1.5
+            Width of the ellipse edge.
+        - ellipse_linestyle / linestyle : str, default '-'
+            Style of the ellipse edge.
+        - ellipse_fill / fill : bool, default True
+            Whether to fill the ellipse.
+        - ellipse_zorder : float, optional
+            Z-order for the ellipse patch.
+
+        **Confidence level**:
+        - confidence_level : float, default 0.683
+            Confidence level for the ellipse (0 < confidence_level < 1).
+            For 1\sigma Gaussian: 0.683, for 2\sigma: 0.954, for 3\sigma: 0.997.
+            The ellipse size scales with sqrt(χ² quantile).
+
+        **Center marker**:
+        - show_center : bool, default True
+            Whether to show a marker at the best-fit center point.
+        - center_marker : str, default 'x'
+            Marker style for the center point.
+        - center_color / center_markercolor : str, default 'C3'
+            Color of the center marker.
+        - center_size / markersize : float, default 8
+            Size of the center marker.
+        - center_zorder : float, optional
+            Z-order for the center marker.
+
+        **Axis limits**:
+        - xlim : tuple, optional
+            (xmin, xmax) for the axis. Auto-determined if not provided.
+        - ylim : tuple, optional
+            (ymin, ymax) for the axis. Auto-determined if not provided.
+        - padding : float, default 0.1
+            Fractional padding for auto axis limits (10% of ellipse extent).
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+        The matplotlib axis with the ellipse plotted.
+
+    Raises
+    ------
+    ValueError
+        If fisher is not a 2x2 matrix.
+    ImportError
+        If matplotlib is not installed.
+
+    Notes
+    -----
+    The ellipse represents the contour of constant likelihood deviation:
+        (θ - θ₀)^T · F · (θ - θ₀) = Δχ²
+
+    For a 1\sigma confidence region in 2D, Δχ² = χ²_{2, 0.683} ≈ 2.28.
+    The semi-axis lengths are: a = sqrt(Δχ² / λ₁), b = sqrt(Δχ² / λ₂)
+    where λ₁, λ₂ are the eigenvalues of the Fisher matrix.
+    """
+    import numpy as np
+
+    # Check if matplotlib is available
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Ellipse
+    except ImportError:
+        raise ImportError("matplotlib is required for plotting. "
+                         "Install it with: pip install matplotlib")
+
+    # Validate fisher matrix dimensions
+    fisher = np.atleast_2d(fisher)
+    if fisher.shape != (2, 2):
+        raise ValueError(f"Fisher matrix must be 2x2 for ellipse plotting, "
+                        f"got shape {fisher.shape}")
+
+    # Validate best_fit
+    best_fit = np.atleast_1d(best_fit)
+    if len(best_fit) != 2:
+        raise ValueError(f"best_fit must have exactly 2 elements, got {len(best_fit)}")
+
+    # Create axis if not provided
+    if ax is None:
+        ax = plt.gca()
+
+    # Extract kwargs with defaults
+    # Ellipse appearance
+    ellipse_color = kwargs.get('ellipse_color', kwargs.get('color', 'C0'))
+    ellipse_alpha = kwargs.get('ellipse_alpha', kwargs.get('alpha', 0.5))
+    ellipse_facecolor = kwargs.get('ellipse_facecolor', kwargs.get('facecolor', None))
+    ellipse_edgecolor = kwargs.get('ellipse_edgecolor', kwargs.get('edgecolor', None))
+    ellipse_linewidth = kwargs.get('ellipse_linewidth', kwargs.get('linewidth', 1.5))
+    ellipse_linestyle = kwargs.get('ellipse_linestyle', kwargs.get('linestyle', '-'))
+    ellipse_fill = kwargs.get('ellipse_fill', kwargs.get('fill', True))
+    ellipse_zorder = kwargs.get('ellipse_zorder', kwargs.get('zorder', 1))
+
+    # Confidence level
+    confidence_level = kwargs.get('confidence_level', 0.683)
+
+    # Center marker
+    show_center = kwargs.get('show_center', True)
+    center_marker = kwargs.get('center_marker', 'x')
+    center_color = kwargs.get('center_color', kwargs.get('center_markercolor', 'C3'))
+    center_size = kwargs.get('center_size', kwargs.get('markersize', 8))
+    center_zorder = kwargs.get('center_zorder', 2)
+
+    # Axis limits
+    xlim = kwargs.get('xlim', None)
+    ylim = kwargs.get('ylim', None)
+    padding = kwargs.get('padding', 0.1)
+
+    # Compute ellipse parameters using helper function
+    ellipse_params = _compute_ellipse_params_from_fisher(fisher, confidence_level)
+    
+    # Extract parameters
+    a = ellipse_params['semi_minor']  # semi-minor axis
+    b = ellipse_params['semi_major']  # semi-major axis
+    angle_rad = ellipse_params['angle_rad']
+    angle_deg = ellipse_params['angle_deg']
+    eigenvecs = ellipse_params['eigenvecs']
+
+    # Set facecolor default to ellipse_color with alpha if not specified
+    if ellipse_facecolor is None:
+        ellipse_facecolor = ellipse_color
+    if ellipse_edgecolor is None:
+        ellipse_edgecolor = ellipse_color
+    
+    # Handle fill=False: set facecolor to 'none' instead of using alpha=0
+    # This ensures the edge remains visible
+    if not ellipse_fill:
+        ellipse_facecolor = 'none'
+
+    # Create and add ellipse patch
+    ellipse = Ellipse(
+        xy=best_fit,
+        width=2 * a,      # full width (2 * semi-axis)
+        height=2 * b,     # full height (2 * semi-axis)
+        angle=angle_deg,
+        facecolor=ellipse_facecolor,
+        edgecolor=ellipse_edgecolor,
+        alpha=ellipse_alpha,
+        linewidth=ellipse_linewidth,
+        linestyle=ellipse_linestyle,
+        zorder=ellipse_zorder
+    )
+    ax.add_patch(ellipse)
+
+    # Plot center point if requested
+    if show_center:
+        ax.plot(best_fit[0], best_fit[1],
+                marker=center_marker,
+                color=center_color,
+                markersize=center_size,
+                zorder=center_zorder,
+                linestyle='None')
+
+    # Set axis limits if not provided, auto-scale based on ellipse
+    if xlim is None or ylim is None:
+        # Compute bounding box of ellipse correctly
+        # For a rotated ellipse, the bounding box extent is:
+        # width = 2 * sqrt((a*cos(θ))² + (b*sin(θ))²)
+        # height = 2 * sqrt((a*sin(θ))² + (b*cos(θ))²)
+        # where θ is the rotation angle, a and b are semi-axes
+        cos_angle = np.cos(angle_rad)
+        sin_angle = np.sin(angle_rad)
+        
+        half_width = np.sqrt((a * cos_angle)**2 + (b * sin_angle)**2)
+        half_height = np.sqrt((a * sin_angle)**2 + (b * cos_angle)**2)
+        
+        x_min = best_fit[0] - half_width
+        x_max = best_fit[0] + half_width
+        y_min = best_fit[1] - half_height
+        y_max = best_fit[1] + half_height
+
+        # Apply padding
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        x_pad = padding * max(x_range, 1e-8)  # avoid division by zero
+        y_pad = padding * max(y_range, 1e-8)
+
+        if xlim is None:
+            ax.set_xlim(x_min - x_pad, x_max + x_pad)
+        if ylim is None:
+            ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+    # Set labels if not already set
+    if ax.get_xlabel() == '':
+        ax.set_xlabel('Parameter 1')
+    if ax.get_ylabel() == '':
+        ax.set_ylabel('Parameter 2')
+
+    return ax

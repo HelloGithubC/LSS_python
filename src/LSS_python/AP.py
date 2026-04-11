@@ -8,6 +8,9 @@ def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_met
     sbin = xismu.xis.shape[0]
     mubin = xismu.xis.shape[1]
 
+    if abs(omega_mm - omega_mf) < 1e-8 and abs(w_m - w_f) < 1e-8 and abs(wa_m - wa_f) < 1e-8:
+        return assis_xismu
+
     if convert_method == "dense":
         if sbin < 300 and mubin < 240:
             raise RuntimeError(f"Dense conversion is not available for {sbin:d} sbins and {mubin:d} mubins")

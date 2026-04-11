@@ -877,7 +877,7 @@ def get_rate(outpoint, scope, smu_scope_tuple, smu_dense_points, smu_sparse_tupl
         elif scope == -mu_scope * 2 or scope == -mu_scope * 2 + s_scope or scope == -mu_scope * 2 - s_scope:
             return (smu_dense_points[2,1] - mu_sparse_low) / dense_mu
         else:
-            print(outpoint, scope)
+            print(f"Waring: outpoint = 2, scope = {scope}")
             return 0.0
     if outpoint == 3:
         if scope == -s_scope * 3 or scope == s_scope * 3:
@@ -903,7 +903,7 @@ def get_rate(outpoint, scope, smu_scope_tuple, smu_dense_points, smu_sparse_tupl
             middle_line = top_line + (smu_dense_points[0,0] - smu_dense_points[2,0]) * high_temp / dense_mu
             in_area = (top_line + middle_line) * high_temp / 2.0 
         else:
-            print(outpoint, scope)
+            print(f"Waring: outpoint = 3, scope = {scope}")
             return 0.0
     if outpoint == 1:
         if scope == s_scope or scope == -s_scope:

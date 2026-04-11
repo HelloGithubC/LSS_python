@@ -17,46 +17,6 @@ def ln_prob(X, X_range, chi2_core):
     else:
         return ln_prior_value - 0.5 * chi2_core(X)
 
-def get_xismus_convert(source_xismu_dict, asistant_xismus_dict, snaps_pair, weipows_str_list, parameters, redshift_dict, fiducial_parameters=(0.3071, -1.0), mapping_s=(3, 70), **args):
-    snap1, snap2 = snaps_pair
-    omega_mm, w_m = parameters
-    omega_mf, w_f = fiducial_parameters 
-    new_xismus_dict = {
-        weipow_str: {} 
-        for weipow_str in weipows_str_list
-    }
-
-    smin = args.get("smin", 6.0)
-    smax = args.get("smax", 40.0)
-    mupack = args.get("mupack", 6)
-    mumax = args.get("mumax", 0.97)
-
-    for snap in snaps_pair:
-        for weipow_str in weipows_str_list:
-            xismu_source_temp = source_xismu_dict[weipow_str][snap]
-            new_xismu = xismu_source_temp.cosmo_conv_DenseToSparse(
-                omstd = omega_mf,
-                wstd = w_f,
-                omwrong = omega_mm,
-                wwrong = w_m,
-                redshift = redshift_dict[snap],
-                smin_mapping=mapping_s[0],
-                smax_mapping=mapping_s[1],
-                assistant_xismu = asistant_xismus_dict[weipow_str]
-            )
-            new_xismus_dict[weipow_str][snap] = new_xismu
-    xismus_diff_weipows_dict = {}
-    for weipow_str in weipows_str_list:
-        mu_temp, xis_mu_temp_1 = new_xismus_dict[weipow_str][snap1].integrate_tpcf(smin=smin, smax=smax, mupack=mupack, mumax=mumax, is_norm=True, intximu=True, quick_return=True)
-        mu_temp, xis_mu_temp_2 = new_xismus_dict[weipow_str][snap2].integrate_tpcf(smin=smin, smax=smax, mupack=mupack,  mumax=mumax, is_norm=True, intximu=True, quick_return=True)
-        xismus_diff_weipows_dict[weipow_str] = xis_mu_temp_1 - xis_mu_temp_2
-    return xismus_diff_weipows_dict
-def get_xismus_diff_concatenate_mcmc(xismus_diff_weipows_dict, weipows_str_list):
-    xismus_diff_weipows_list = []
-    for weipow_str in weipows_str_list:
-        xismus_diff_weipows_list.append(xismus_diff_weipows_dict[weipow_str])
-    return np.concatenate(xismus_diff_weipows_list)
-
 
 def get_chain(
     backend_filename, remove_exception=False, thin=5, discard_min=500, return_loglikes=False, flatten=True
@@ -213,7 +173,7 @@ def get_area(sampler, params=["x1", "x2"], level=0.68):
     return np.sum(density_2d.P > level) * pixel_area
 
 
-def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, converge_method, detail, progress_kwargs, output):
+def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, detail, progress_kwargs, output):
     sampler = emcee.EnsembleSampler(
             nwalkers,
             ndim,
@@ -234,69 +194,47 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
             if sampler.iteration % 100:
                 continue
             
-            result_dict = is_converged(sampler, converge_factor=converge_factor, method=converge_method, verbose=True)
+            result_dict = is_converged(sampler, converge_factor=converge_factor, method="tau", verbose=True)
             if detail and not sampler.iteration % 1000:
-                if converge_method == "tau":
-                    tau = result_dict["tau"]
-                    print(f"{sampler.iteration:d}: tau, {tau}; old tau: {old_tau}", file=output)
-                elif converge_method == "GR":
-                    print(f"{sampler.iteration:d}: R, {result_dict['R']}", file=output)
-                else:
-                    pass
-            converged = result_dict["converged"]
-            if converge_method == "tau":
                 tau = result_dict["tau"]
-                converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
+                print(f"{sampler.iteration:d}: tau, {tau}; old tau: {old_tau}", file=output)
+            converged = result_dict["converged"]
+            tau = result_dict["tau"]
+            converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
             if converged:
                 print(f"Converged at {sampler.iteration:d}", file=output)
-                if converge_method == "tau":
-                    print(
-                        f"Tau: {np.max(tau):.5f}; converge_factor_now: {np.min(sampler.iteration / tau):.1f}",
-                        file=output,
-                    )
-                    print(
-                        f"Tau difference: {np.max(np.abs(old_tau - tau) / tau):.5f}",
-                        file=output,
-                    )
-                elif converge_method == "GR":
-                    print(f"R: {result_dict['R']}", file=output)
-                else:
-                    pass
+                print(
+                    f"Tau: {np.max(tau):.5f}; converge_factor_now: {np.min(sampler.iteration / tau):.1f}",
+                    file=output,
+                )
+                print(
+                    f"Tau difference: {np.max(np.abs(old_tau - tau) / tau):.5f}",
+                    file=output,
+                )
                 break
             else:
-                if converge_method == "tau":
-                    old_tau = tau
+                old_tau = tau
 
     if not use_converge_factor:
-        result_dict = is_converged(sampler, converge_factor=converge_factor, method=converge_method, verbose=True)
+        result_dict = is_converged(sampler, converge_factor=converge_factor, method="tau", verbose=True)
         print(f"Finished at {max_iterator:d}", file=output)
-        if converge_method == "tau":
-            tau = result_dict["tau"]
-            print(
-                f"Tau: {np.max(tau):.5f}; converge_factor_now: {np.min(max_iterator / tau):.1f}",
-                file=output,
-            )
-        elif converge_method == "GR":
-            print(f"R: {result_dict['R']}", file=output)
-        else:
-            pass
+        tau = result_dict["tau"]
+        print(
+            f"Tau: {np.max(tau):.5f}; converge_factor_now: {np.min(max_iterator / tau):.1f}",
+            file=output,
+        )
         converged = True
     
     if not converged:
         print(f"Not Converged at {max_iterator:d}", file=output)
-        if converge_method == "tau":
-            print(
-                f"Tau: {np.max(tau):.5f}; converge_factor_now: {np.min(max_iterator / tau):.1f}",
-                file=output,
-            )
-            print(
-                f"Tau difference: {np.max(np.abs(old_tau - tau) / tau):.5f}",
-                file=output,
-            )
-        elif converge_method == "GR":
-            print(f"R: {result_dict['R']}", file=output)
-        else:
-            pass
+        print(
+            f"Tau: {np.max(tau):.5f}; converge_factor_now: {np.min(max_iterator / tau):.1f}",
+            file=output,
+        )
+        print(
+            f"Tau difference: {np.max(np.abs(old_tau - tau) / tau):.5f}",
+            file=output,
+        )
     return converged
 
 def run_mcmc_main_emcee(
@@ -306,7 +244,6 @@ def run_mcmc_main_emcee(
     ndim,
     lnprob,
     args,
-    converge_method="tau",
     converge_factor=50,
     moves=None,
     backend=None,
@@ -352,7 +289,6 @@ def run_mcmc_main_emcee(
             pool = None,
             max_iterator = max_iterator,
             use_converge_factor = use_converge_factor,
-            converge_method=converge_method,
             converge_factor = converge_factor,
             detail = detail,
             progress_kwargs = progress_kwargs,
@@ -371,7 +307,6 @@ def run_mcmc_main_emcee(
                 pool = pool,
                 max_iterator = max_iterator,
                 use_converge_factor = use_converge_factor,
-                converge_method=converge_method,
                 converge_factor = converge_factor,
                 detail = detail,
                 progress_kwargs = progress_kwargs,
