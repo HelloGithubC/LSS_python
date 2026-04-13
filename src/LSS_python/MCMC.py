@@ -173,7 +173,7 @@ def get_area(sampler, params=["x1", "x2"], level=0.68):
     return np.sum(density_2d.P > level) * pixel_area
 
 
-def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, detail, progress_kwargs, output):
+def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, verbose, progress_kwargs, output):
     sampler = emcee.EnsembleSampler(
             nwalkers,
             ndim,
@@ -195,7 +195,7 @@ def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend
                 continue
             
             result_dict = is_converged(sampler, converge_factor=converge_factor, method="tau", verbose=True)
-            if detail and not sampler.iteration % 1000:
+            if verbose and not sampler.iteration % 1000:
                 tau = result_dict["tau"]
                 print(f"{sampler.iteration:d}: tau, {tau}; old tau: {old_tau}", file=output)
             converged = result_dict["converged"]
@@ -247,7 +247,7 @@ def run_mcmc_main_emcee(
     converge_factor=50,
     moves=None,
     backend=None,
-    detail=False,
+    verbose=False,
     desc_str=None,
     output=None,
     force_no_pool=False
@@ -260,7 +260,7 @@ def run_mcmc_main_emcee(
     lnprob: fun, the function of lnprob.
     args: tunble, the args for lnprob
     backend: if None, just store in memory; if HDFBackend class, will store in specific file.
-    detail: if True, print tau in progress(once per 1000 steps)
+    verbose: if True, print tau in progress(once per 1000 steps)
     output: redirect output.
 
     Returns:
@@ -290,7 +290,7 @@ def run_mcmc_main_emcee(
             max_iterator = max_iterator,
             use_converge_factor = use_converge_factor,
             converge_factor = converge_factor,
-            detail = detail,
+            verbose = verbose,
             progress_kwargs = progress_kwargs,
             output = output,
         )
@@ -308,8 +308,133 @@ def run_mcmc_main_emcee(
                 max_iterator = max_iterator,
                 use_converge_factor = use_converge_factor,
                 converge_factor = converge_factor,
-                detail = detail,
+                verbose = verbose,
                 progress_kwargs = progress_kwargs,
                 output = output,
             )
     return converged
+
+
+def check_convergence_cobaya(chains, converge_factor=1.05, parameters=None, verbose=False):
+    """
+    Check convergence for cobaya MCMC chains using Gelman-Rubin diagnostic.
+    
+    Args:
+        chains: ndarray with shape (n_length, n_chains, n_parameters) or list of chains
+        converge_factor: float, threshold for R-1 statistic (default 1.05)
+        parameters: list of parameter names (optional)
+        verbose: bool, if True return verboseed convergence information
+    
+    Returns:
+        If verbose=False: bool indicating convergence
+        If verbose=True: dict with convergence verboses
+    """
+    # Convert list of chains to array if needed
+    if isinstance(chains, list):
+        chains = np.array(chains)
+    
+    # Ensure shape is (n_length, n_chains, n_parameters)
+    if chains.ndim != 3:
+        raise ValueError(f"chains should be 3D array, got shape {chains.shape}")
+    
+    n_length, n_chains, n_parameters = chains.shape
+    
+    if parameters is None:
+        parameters = [f"param{i+1:d}" for i in range(n_parameters)]
+    
+    R_dict = {}
+    W_dict = {}
+    B_dict = {}
+    
+    for i in range(n_parameters):
+        parameter = parameters[i]
+        
+        # Calculate mean for each chain
+        mean_chains = [np.mean(chains[:, j, i]) for j in range(n_chains)]
+        mean_all = np.mean(mean_chains)
+        
+        # Between-chain variance
+        B = n_length / (n_chains - 1) * np.sum((mean_chains - mean_all)**2)
+        
+        # Within-chain variance
+        W = np.mean([np.var(chains[:, j, i], ddof=1) for j in range(n_chains)])
+        
+        # Pooled variance estimate
+        var_plus = (n_length - 1) / n_length * W + 1 / n_length * B
+        
+        # R-1 statistic
+        R_dict[parameter] = var_plus / W if W > 0 else np.inf
+        W_dict[parameter] = W
+        B_dict[parameter] = B
+    
+    max_R = np.max(list(R_dict.values()))
+    converged = max_R < converge_factor
+    
+    if verbose:
+        return {
+            "converged": converged,
+            "max_R": max_R,
+            "R_dict": R_dict,
+            "W_dict": W_dict,
+            "B_dict": B_dict
+        }
+    else:
+        return converged
+
+
+def run_mcmc_main_cobaya(info, resume=False, force=False):
+    """
+    Run cobaya MCMC with simplified interface. All configuration should be provided in info dict.
+
+    Args:
+        info: dict, cobaya configuration dictionary (must contain params, likelihood, and optionally output, sampler, etc.)
+        resume: bool, resume from previous run
+        force: bool, force overwrite existing output
+
+    Returns:
+        dict with 'converged' bool, 'info', and 'sampler'
+    """
+    from cobaya.run import run
+
+    # Handle output filename: if not resuming/forcing, avoid overwriting existing output
+    if not resume and not force:
+        output = info.get('output')
+        if output is not None:
+            import os
+            # Find the next available suffix
+            counter = 0
+            while True:
+                candidate = output if counter == 0 else f"{output}_{counter}"
+                candidate_dir = os.path.dirname(candidate) or '.'
+                candidate_base = os.path.basename(candidate)
+
+                # Check if any file with this prefix exists in the directory
+                if candidate_dir == '.':
+                    exists = any(
+                        f.startswith(candidate_base)
+                        for f in os.listdir('.')
+                        if os.path.isfile(f)
+                    )
+                else:
+                    exists = any(
+                        f.startswith(candidate_base)
+                        for f in os.listdir(candidate_dir)
+                        if os.path.isfile(os.path.join(candidate_dir, f))
+                    )
+
+                if not exists:
+                    info['output'] = candidate
+                    break
+                counter += 1
+
+    # Run cobaya
+    updated_info, sampler = run(info, resume=resume, force=force)
+
+    # Get convergence status from sampler
+    converged = getattr(sampler, 'converged', False)
+
+    return {
+        'converged': converged,
+        'info': updated_info,
+        'sampler': sampler
+    }

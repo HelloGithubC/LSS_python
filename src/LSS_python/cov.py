@@ -643,7 +643,7 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
             'DR_sub': DR_sub,
         }
     else:
-        xismu_sub
+        return xismu_sub
 
 
 def check_and_shift_data(data_list, boxsize, n, index_list=None):
@@ -2174,8 +2174,8 @@ def _compute_ellipse_params_from_fisher(fisher, confidence_level=0.683):
     # Angle of the ellipse (rotation from eigenvector of larger eigenvalue)
     # The eigenvector corresponding to the larger eigenvalue (λ₁) gives
     # the direction of the semi-minor axis (smaller uncertainty).
-    v_major = eigenvecs[:, 1]  # eigenvector for λ₁ (larger eigenvalue)
-    angle_rad = np.arctan2(v_major[1], v_major[0])
+    v_semi_minor = eigenvecs[:, 1]  # eigenvector for λ₁ (larger eigenvalue) -> semi-minor axis
+    angle_rad = np.arctan2(v_semi_minor[1], v_semi_minor[0])
     angle_deg = np.degrees(angle_rad)
 
     return {
@@ -2185,7 +2185,9 @@ def _compute_ellipse_params_from_fisher(fisher, confidence_level=0.683):
         'angle_deg': angle_deg,
         'eigenvals': eigenvals,
         'eigenvecs': eigenvecs,
-        'delta_chi2': delta_chi2
+        'delta_chi2': delta_chi2,
+        'v_semi_minor': v_semi_minor,  # eigenvector for λ₁ (larger eigenvalue)
+        'v_semi_major': eigenvecs[:, 0]  # eigenvector for λ₂ (smaller eigenvalue)
     }
 
 
@@ -2199,7 +2201,7 @@ def cal_ellipse_from_fisher(fisher, confidence_level=0.683, full_output=False):
         Fisher information matrix, must be 2x2.
     confidence_level : float, default 0.683
         Confidence level for the ellipse (0 < confidence_level < 1).
-        For 1σ Gaussian: 0.683, for 2σ: 0.954, for 3σ: 0.997.
+        For 1\sigma Gaussian: 0.683, for 2\sigma: 0.954, for 3\sigma: 0.997.
     full_output : bool, default False
         If True, return additional ellipse parameters.
 
@@ -2243,238 +2245,163 @@ def cal_ellipse_from_fisher(fisher, confidence_level=0.683, full_output=False):
 
     if full_output:
         # Calculate axis slopes from eigenvectors
-        # eigenvectors are columns: v_small (for λ_small), v_large (for λ_large)
-        # semi-minor axis aligns with v_large (eigenvector for larger eigenvalue)
-        # semi-major axis aligns with v_small (eigenvector for smaller eigenvalue)
-        v_minor = params['eigenvecs'][:, 1]  # eigenvector for λ_large (semi-minor)
-        v_major = params['eigenvecs'][:, 0]  # eigenvector for λ_small (semi-major)
+        # eigenvectors are columns: v_semi_major (for λ_small), v_semi_minor (for λ_large)
+        # semi-minor axis aligns with v_semi_minor (eigenvector for larger eigenvalue)
+        # semi-major axis aligns with v_semi_major (eigenvector for smaller eigenvalue)
+        v_semi_minor = params['eigenvecs'][:, 1]  # eigenvector for λ_large (semi-minor)
+        v_semi_major = params['eigenvecs'][:, 0]  # eigenvector for λ_small (semi-major)
 
         # Slope = y/x (be careful with vertical lines where x ≈ 0)
         # For near-vertical lines, slope approaches infinity
-        minor_axis_slope = v_minor[1] / v_minor[0] if np.abs(v_minor[0]) > 1e-10 else np.inf
-        major_axis_slope = v_major[1] / v_major[0] if np.abs(v_major[0]) > 1e-10 else np.inf
+        minor_axis_slope = v_semi_minor[1] / v_semi_minor[0] if np.abs(v_semi_minor[0]) > 1e-10 else np.inf
+        major_axis_slope = v_semi_major[1] / v_semi_major[0] if np.abs(v_semi_major[0]) > 1e-10 else np.inf
 
-        # Add slopes to params
+        # Add slopes and vectors to params
         params['minor_axis_slope'] = minor_axis_slope
         params['major_axis_slope'] = major_axis_slope
+        params['v_semi_minor'] = v_semi_minor
+        params['v_semi_major'] = v_semi_major
 
         return area, params
     else:
         return area
 
 
-def plot_ellipse_from_fisher(fisher, best_fit, ax=None, **kwargs):
+def get_sigma_point_from_fisher(fisher, sigma=1.0, center=None):
     """
-    Plot error ellipse from Fisher matrix.
+    Get points along degenerate and non-degenerate directions from Fisher matrix at specified sigma.
 
-    The error ellipse represents the 1\sigma (68.3%) confidence region
-    for two parameters, derived from the Fisher information matrix.
+    This function computes the ellipse parameters from the Fisher matrix and returns
+    the coordinates of points along the semi-minor (non-degenerate, smaller uncertainty)
+    and semi-major (degenerate, larger uncertainty) directions at a given sigma confidence
+    level. The sigma parameter corresponds to the number of standard deviations in a
+    one-dimensional Gaussian distribution:
+        - sigma=1 → 68.3% confidence
+        - sigma=2 → 95.4% confidence
+        - sigma=3 → 99.7% confidence
+
+    This ensures consistency with standard statistical practice where sigma refers to
+    the standard deviation of a 1D normal distribution.
 
     Parameters
     ----------
     fisher : ndarray
         Fisher information matrix, must be 2x2.
-    best_fit : array_like
-        Best-fit parameter values [p1, p2] for the ellipse center.
-    ax : matplotlib.axes.Axes, optional
-        Matplotlib axis to plot on. If None, creates a new figure and axis.
-    **kwargs : dict
-        Additional keyword arguments for customization. Supported keys:
-
-        **Ellipse properties** (passed to matplotlib.patches.Ellipse):
-        - ellipse_color / color : str, default 'C0'
-            Color of the ellipse edge.
-        - ellipse_alpha / alpha : float, default 0.5
-            Transparency of the ellipse fill.
-        - ellipse_facecolor / facecolor : str, optional
-            Fill color of the ellipse. If None, uses ellipse_color with alpha.
-        - ellipse_edgecolor / edgecolor : str, optional
-            Edge color of the ellipse. If None, uses ellipse_color.
-        - ellipse_linewidth / linewidth : float, default 1.5
-            Width of the ellipse edge.
-        - ellipse_linestyle / linestyle : str, default '-'
-            Style of the ellipse edge.
-        - ellipse_fill / fill : bool, default True
-            Whether to fill the ellipse.
-        - ellipse_zorder : float, optional
-            Z-order for the ellipse patch.
-
-        **Confidence level**:
-        - confidence_level : float, default 0.683
-            Confidence level for the ellipse (0 < confidence_level < 1).
-            For 1\sigma Gaussian: 0.683, for 2\sigma: 0.954, for 3\sigma: 0.997.
-            The ellipse size scales with sqrt(χ² quantile).
-
-        **Center marker**:
-        - show_center : bool, default True
-            Whether to show a marker at the best-fit center point.
-        - center_marker : str, default 'x'
-            Marker style for the center point.
-        - center_color / center_markercolor : str, default 'C3'
-            Color of the center marker.
-        - center_size / markersize : float, default 8
-            Size of the center marker.
-        - center_zorder : float, optional
-            Z-order for the center marker.
-
-        **Axis limits**:
-        - xlim : tuple, optional
-            (xmin, xmax) for the axis. Auto-determined if not provided.
-        - ylim : tuple, optional
-            (ymin, ymax) for the axis. Auto-determined if not provided.
-        - padding : float, default 0.1
-            Fractional padding for auto axis limits (10% of ellipse extent).
+    sigma : float, default 1.0
+        Confidence level in sigma units, corresponding to the number of standard
+        deviations for a 1D Gaussian. The confidence level is computed as:
+            CL = Φ(sigma) - Φ(-sigma)
+        where Φ is the standard normal cumulative distribution function.
+        For example:
+        - sigma=1.0 → CL=0.683 (68.3%)
+        - sigma=2.0 → CL=0.954 (95.4%)
+        - sigma=3.0 → CL=0.997 (99.7%)
+    center : array-like, optional
+        Center coordinates (x0, y0) of the ellipse. If None, defaults to (0, 0).
 
     Returns
     -------
-    ax : matplotlib.axes.Axes
-        The matplotlib axis with the ellipse plotted.
-
-    Raises
-    ------
-    ValueError
-        If fisher is not a 2x2 matrix.
-    ImportError
-        If matplotlib is not installed.
+    dict
+        Dictionary containing:
+        - 'non_degenerate_points' : ndarray of shape (2, 2)
+            Points along the non-degenerate direction (semi-minor axis, smaller uncertainty).
+            Row 0: positive direction (+sigma), Row 1: negative direction (-sigma).
+        - 'degenerate_points' : ndarray of shape (2, 2)
+            Points along the degenerate direction (semi-major axis, larger uncertainty).
+            Row 0: positive direction (+sigma), Row 1: negative direction (-sigma).
+        - 'ellipse_params' : dict
+            Ellipse parameters computed at the corresponding confidence level.
 
     Notes
     -----
-    The ellipse represents the contour of constant likelihood deviation:
+    The Fisher matrix F is the inverse of the covariance matrix C: F = C^{-1}.
+    For a 2D Gaussian, the error ellipse satisfies:
         (θ - θ₀)^T · F · (θ - θ₀) = Δχ²
 
-    For a 1\sigma confidence region in 2D, Δχ² = χ²_{2, 0.683} ≈ 2.28.
-    The semi-axis lengths are: a = sqrt(Δχ² / λ₁), b = sqrt(Δχ² / λ₂)
-    where λ₁, λ₂ are the eigenvalues of the Fisher matrix.
+    The confidence level is determined by the one-dimensional Gaussian probability:
+        CL = P(|Z| < sigma) where Z ~ N(0, 1)
+
+    This CL is then used to compute the chi-squared critical value Δχ² = χ²_{2, CL}
+    for the 2-degree-of-freedom chi-squared distribution.
+
+    In the eigenvector basis (u along semi-minor, v along semi-major):
+        λ_small * u² + λ_large * v² = Δχ²
+
+    The semi-axis lengths are:
+        a (semi-minor) = sqrt(Δχ² / λ_large) = sigma * sqrt(χ²_{2,0.683} / λ_large)
+        b (semi-major) = sqrt(Δχ² / λ_small) = sigma * sqrt(χ²_{2,0.683} / λ_small)
+
+    Examples
+    --------
+    >>> fisher = np.array([[1.0, 0.3], [0.3, 0.5]])
+    >>> result = get_sigma_point_from_fisher(fisher, sigma=1.0, center=[0.5, -0.2])
+    >>> result['non_degenerate_points']  # points along the tighter constraint direction
+    >>> result['degenerate_points']      # points along the more degenerate direction
     """
     import numpy as np
+    from scipy.stats import norm
 
-    # Check if matplotlib is available
-    try:
-        import matplotlib.pyplot as plt
-        from matplotlib.patches import Ellipse
-    except ImportError:
-        raise ImportError("matplotlib is required for plotting. "
-                         "Install it with: pip install matplotlib")
-
-    # Validate fisher matrix dimensions
+    # Compute eigen-decomposition
     fisher = np.atleast_2d(fisher)
     if fisher.shape != (2, 2):
-        raise ValueError(f"Fisher matrix must be 2x2 for ellipse plotting, "
-                        f"got shape {fisher.shape}")
+        raise ValueError(f"Fisher matrix must be 2x2, got shape {fisher.shape}")
 
-    # Validate best_fit
-    best_fit = np.atleast_1d(best_fit)
-    if len(best_fit) != 2:
-        raise ValueError(f"best_fit must have exactly 2 elements, got {len(best_fit)}")
+    # Convert sigma (1D normal distribution) to confidence level
+    # sigma=1 -> CL=0.683, sigma=2 -> CL=0.954, sigma=3 -> CL=0.997
+    confidence_level = norm.cdf(sigma) - norm.cdf(-sigma)
 
-    # Create axis if not provided
-    if ax is None:
-        ax = plt.gca()
+    # Use _compute_ellipse_params_from_fisher directly with the correct confidence level
+    ellipse_params = _compute_ellipse_params_from_fisher(fisher, confidence_level=confidence_level)
 
-    # Extract kwargs with defaults
-    # Ellipse appearance
-    ellipse_color = kwargs.get('ellipse_color', kwargs.get('color', 'C0'))
-    ellipse_alpha = kwargs.get('ellipse_alpha', kwargs.get('alpha', 0.5))
-    ellipse_facecolor = kwargs.get('ellipse_facecolor', kwargs.get('facecolor', None))
-    ellipse_edgecolor = kwargs.get('ellipse_edgecolor', kwargs.get('edgecolor', None))
-    ellipse_linewidth = kwargs.get('ellipse_linewidth', kwargs.get('linewidth', 1.5))
-    ellipse_linestyle = kwargs.get('ellipse_linestyle', kwargs.get('linestyle', '-'))
-    ellipse_fill = kwargs.get('ellipse_fill', kwargs.get('fill', True))
-    ellipse_zorder = kwargs.get('ellipse_zorder', kwargs.get('zorder', 1))
-
-    # Confidence level
-    confidence_level = kwargs.get('confidence_level', 0.683)
-
-    # Center marker
-    show_center = kwargs.get('show_center', True)
-    center_marker = kwargs.get('center_marker', 'x')
-    center_color = kwargs.get('center_color', kwargs.get('center_markercolor', 'C3'))
-    center_size = kwargs.get('center_size', kwargs.get('markersize', 8))
-    center_zorder = kwargs.get('center_zorder', 2)
-
-    # Axis limits
-    xlim = kwargs.get('xlim', None)
-    ylim = kwargs.get('ylim', None)
-    padding = kwargs.get('padding', 0.1)
-
-    # Compute ellipse parameters using helper function
-    ellipse_params = _compute_ellipse_params_from_fisher(fisher, confidence_level)
-    
-    # Extract parameters
-    a = ellipse_params['semi_minor']  # semi-minor axis
-    b = ellipse_params['semi_major']  # semi-major axis
+    # Extract parameters (already scaled correctly)
+    semi_minor = ellipse_params['semi_minor']
+    semi_major = ellipse_params['semi_major']
     angle_rad = ellipse_params['angle_rad']
-    angle_deg = ellipse_params['angle_deg']
+    eigenvals = ellipse_params['eigenvals']
     eigenvecs = ellipse_params['eigenvecs']
+    delta_chi2 = ellipse_params['delta_chi2']
 
-    # Set facecolor default to ellipse_color with alpha if not specified
-    if ellipse_facecolor is None:
-        ellipse_facecolor = ellipse_color
-    if ellipse_edgecolor is None:
-        ellipse_edgecolor = ellipse_color
-    
-    # Handle fill=False: set facecolor to 'none' instead of using alpha=0
-    # This ensures the edge remains visible
-    if not ellipse_fill:
-        ellipse_facecolor = 'none'
+    # Set center
+    if center is None:
+        center = np.array([0.0, 0.0])
+    else:
+        center = np.asarray(center, dtype=float)
 
-    # Create and add ellipse patch
-    ellipse = Ellipse(
-        xy=best_fit,
-        width=2 * a,      # full width (2 * semi-axis)
-        height=2 * b,     # full height (2 * semi-axis)
-        angle=angle_deg,
-        facecolor=ellipse_facecolor,
-        edgecolor=ellipse_edgecolor,
-        alpha=ellipse_alpha,
-        linewidth=ellipse_linewidth,
-        linestyle=ellipse_linestyle,
-        zorder=ellipse_zorder
-    )
-    ax.add_patch(ellipse)
+    # Rotation matrix (from principal axes to data axes)
+    cos_theta = np.cos(angle_rad)
+    sin_theta = np.sin(angle_rad)
+    R = np.array([[cos_theta, -sin_theta],
+                  [sin_theta,  cos_theta]])
 
-    # Plot center point if requested
-    if show_center:
-        ax.plot(best_fit[0], best_fit[1],
-                marker=center_marker,
-                color=center_color,
-                markersize=center_size,
-                zorder=center_zorder,
-                linestyle='None')
+    # Points in principal axes coordinates
+    # The rotation angle is the semi-minor axis angle
+    # In principal axes coordinates (before rotation):
+    # - semi-minor axis (smaller uncertainty) is along x-direction (angle θ)
+    # - semi-major axis (larger uncertainty) is along y-direction (angle θ + 90°)
+    points_semi_minor_principal = np.array([[ semi_minor, 0.0],
+                                             [-semi_minor, 0.0]])
+    points_semi_major_principal = np.array([[0.0,  semi_major],
+                                             [0.0, -semi_major]])
 
-    # Set axis limits if not provided, auto-scale based on ellipse
-    if xlim is None or ylim is None:
-        # Compute bounding box of ellipse correctly
-        # For a rotated ellipse, the bounding box extent is:
-        # width = 2 * sqrt((a*cos(θ))² + (b*sin(θ))²)
-        # height = 2 * sqrt((a*sin(θ))² + (b*cos(θ))²)
-        # where θ is the rotation angle, a and b are semi-axes
-        cos_angle = np.cos(angle_rad)
-        sin_angle = np.sin(angle_rad)
-        
-        half_width = np.sqrt((a * cos_angle)**2 + (b * sin_angle)**2)
-        half_height = np.sqrt((a * sin_angle)**2 + (b * cos_angle)**2)
-        
-        x_min = best_fit[0] - half_width
-        x_max = best_fit[0] + half_width
-        y_min = best_fit[1] - half_height
-        y_max = best_fit[1] + half_height
+    # Rotate and translate to data coordinates
+    points_semi_minor = points_semi_minor_principal @ R.T + center
+    points_semi_major = points_semi_major_principal @ R.T + center
 
-        # Apply padding
-        x_range = x_max - x_min
-        y_range = y_max - y_min
-        x_pad = padding * max(x_range, 1e-8)  # avoid division by zero
-        y_pad = padding * max(y_range, 1e-8)
+    # Build ellipse params dict (similar to _compute_ellipse_params_from_fisher)
+    ellipse_params = {
+        'semi_minor': semi_minor,
+        'semi_major': semi_major,
+        'angle_rad': angle_rad,
+        'angle_deg': np.degrees(angle_rad),
+        'eigenvals': eigenvals,
+        'eigenvecs': eigenvecs,
+        'delta_chi2': delta_chi2,
+        'v_semi_minor': eigenvecs[:, 1],  # eigenvector for λ₁ (larger eigenvalue)
+        'v_semi_major': eigenvecs[:, 0]   # eigenvector for λ₂ (smaller eigenvalue)
+    }
 
-        if xlim is None:
-            ax.set_xlim(x_min - x_pad, x_max + x_pad)
-        if ylim is None:
-            ax.set_ylim(y_min - y_pad, y_max + y_pad)
-
-    # Set labels if not already set
-    if ax.get_xlabel() == '':
-        ax.set_xlabel('Parameter 1')
-    if ax.get_ylabel() == '':
-        ax.set_ylabel('Parameter 2')
-
-    return ax
+    return {
+        'non_degenerate_points': points_semi_minor,  # along semi-minor axis (smaller uncertainty)
+        'degenerate_points': points_semi_major,      # along semi-major axis (larger uncertainty)
+        'ellipse_params': ellipse_params
+    }

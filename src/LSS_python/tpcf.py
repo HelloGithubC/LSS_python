@@ -488,9 +488,9 @@ def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, 
     if "DD" in run_parts or "DR" in run_parts:
         if data_catalog.dtype != random_catalog.dtype:
             if data_catalog.dtype == np.float32:
-                random_catalog = data_catalog.astype(np.float32)
+                random_catalog = random_catalog.astype(np.float32)
             elif data_catalog.dtype == np.float64:
-                random_catalog = data_catalog.astype(np.float64)
+                random_catalog = random_catalog.astype(np.float64)
             else:
                 raise ValueError("The data type of data_catalog and random_catalog should be np.float32 or np.float64")
         
@@ -498,6 +498,10 @@ def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, 
         output_DD = output_dict.get("DD", None)
         output_DR = output_dict.get("DR", None)
         output_RR = output_dict.get("RR", None)
+    else:
+        output_DD = None
+        output_DR = None
+        output_RR = None
 
     x_refine_factor, y_refine_factor, z_refine_factor = refine_factors
     result_dict = {

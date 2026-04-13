@@ -223,7 +223,7 @@ def ps_2d_convert_main(ps_2d, k_2d, omega_mf, w_f, omega_mm, w_m, redshift, boxs
 
     return fftpower_new
 
-def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxsize_old, los_axis=2, inplace=False):
+def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxsize_old, los_axis=2, inplace=False, return_boxsize_new=False):
     """
     position: The position of the particles. ndarray with shape (N, 3)
     boxsize: The boxsize of the simulation. float or ndarray is OK.
@@ -244,7 +244,11 @@ def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxs
         convert_array[los_axis] = parallel_convert_factor
         convert_array[2] = perp_convert_factor
     position = position * convert_array
-    return position, boxsize_old * convert_array
+
+    if return_boxsize_new:
+        return position, boxsize_old * convert_array
+    else:
+        return position
 
 def get_convert_array(omega_mf, w_f, omega_mm, w_m, redshift, los_axis=2):
     Hz_f, Hz_m = Hz(redshift, omega_mf, w_f), Hz(redshift, omega_mm, w_m)

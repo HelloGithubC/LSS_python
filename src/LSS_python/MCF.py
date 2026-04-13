@@ -2,6 +2,8 @@ import numpy as np
 from numba import njit 
 from scipy.spatial import KDTree
 
+from LSS_python.base import Hz, DA
+
 @njit 
 def w_kernel_jit(d_array, h):
     w_array = np.zeros(d_array.shape, dtype=np.float64)
@@ -89,9 +91,20 @@ def create_rho(pos, boxsize, k=30, nthreads=1, only_return_rho=True):
         boxsize += 1e-5
     kdtree = KDTree(pos, boxsize=boxsize)
     distance_array, _ = kdtree.query(pos, k=k, workers=nthreads)
-    rho_array = cal_rho_array(distance_array, h=None, use_max_distance_as_h=True)
+    rho_array = cal_rho_array(distance_array, h=None, use_max_distance_as_h=True).astype(pos.dtype)
     if only_return_rho:
         return rho_array
     else:
         pos_new = np.concatenate([pos, rho_array[:, None]], axis=1)
         return pos_new
+
+def create_random(omega_mf, w_f, omega_mm, w_m, redshift, boxsize_source, npar, return_boxsize_new=False):
+    Hz_f, Hz_m = Hz(redshift, omega_mf, w_f), Hz(redshift, omega_mm, w_m)
+    DA_f, DA_m = DA(redshift, omega_mf, w_f), DA(redshift, omega_mm, w_m)
+    convert_factor = np.array([DA_m / DA_f, DA_m / DA_f, Hz_f / Hz_m])
+    boxsize = boxsize_source * convert_factor
+    random = np.random.uniform(0, boxsize, size=(int(npar * np.prod(boxsize)), 3)).astype(np.float32)
+    if return_boxsize_new:
+        return random, boxsize 
+    else:
+        return random
