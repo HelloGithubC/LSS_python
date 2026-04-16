@@ -516,7 +516,7 @@ def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, 
             else:
                 autocorr = True 
                 if verbose:
-                    print("Now running DD")
+                    print("Now running DD", flush=True)
                 if with_weight:
                     DD_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=data_catalog[:,0], Y1=data_catalog[:,1], Z1=data_catalog[:,2], weights1=data_catalog[:,3], weight_type="pair_product", verbose=verbose, periodic=False, boxsize=boxsize, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 else:
@@ -530,7 +530,7 @@ def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, 
                 raise ValueError("DR: data_catalog or random_catalog is not set")
             else:
                 if verbose:
-                    print("Now running DR")
+                    print("Now running DR", flush=True)
                 autocorr = False 
                 if with_weight:
                     DR_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=data_catalog[:,0], Y1=data_catalog[:,1], Z1=data_catalog[:,2], weights1=data_catalog[:,3], X2=random_catalog[:,0], Y2=random_catalog[:,1], Z2=random_catalog[:,2], weights2=random_catalog[:,3], weight_type="pair_product", verbose = verbose, periodic=False, boxsize=boxsize, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
@@ -545,7 +545,7 @@ def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, 
                 raise ValueError("RR: random_catalog is not set")
             else:
                 if verbose:
-                    print("Now running RR")
+                    print("Now running RR", flush=True)
                 autocorr = True 
                 if with_weight:
                     RR_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=random_catalog[:,0], Y1=random_catalog[:,1], Z1=random_catalog[:,2], weights1=random_catalog[:,3], weight_type="pair_product", verbose = verbose, periodic=False, boxsize=boxsize, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
