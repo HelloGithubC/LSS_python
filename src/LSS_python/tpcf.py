@@ -616,7 +616,7 @@ def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_
             else:
                 autocorr = True 
                 if verbose:
-                    print("Now running DD")
+                    print("Now running DD", flush=True)
                 DD_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, weights1=mock_weight, weight_type="pair_product", verbose=verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 result_dict["DD"] = DD_result
                 if output_DD is not None:
@@ -627,7 +627,7 @@ def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_
                 raise ValueError("DR: mock_catalog or random_catalog is not set")
             else:
                 if verbose:
-                    print("Now running DR")
+                    print("Now running DR", flush=True)
                 autocorr = False 
                 DR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=mock_catalog[:,0], DEC1=mock_catalog[:,1], CZ1=mock_catalog[:,2], is_comoving_dist=True, weights1=mock_weight, RA2=random_catalog[:,0], DEC2=random_catalog[:,1], CZ2=random_catalog[:,2], weights2=random_weight, weight_type="pair_product", verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 result_dict["DR"] = DR_result
@@ -639,7 +639,7 @@ def run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_
                 raise ValueError("RR: random_catalog is not set")
             else:
                 if verbose:
-                    print("Now running RR")
+                    print("Now running RR", flush=True)
                 autocorr = True 
                 RR_result = DDsmu_mocks(autocorr, cosmology=1, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, RA1=random_catalog[:,0], DEC1=random_catalog[:,1], CZ1=random_catalog[:,2], is_comoving_dist=True, weights1=random_weight, weight_type="pair_product", verbose = verbose,  xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 result_dict["RR"] = RR_result
