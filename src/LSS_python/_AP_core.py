@@ -161,7 +161,7 @@ def mapping_smudata_to_another_cosmology_DenseToSparse(
     else:
         return smutab2
 
-@njit    
+@njit(cache=True) 
 def mapping_smudata_dense(
     smutabstd,
     cosmos_tuple,

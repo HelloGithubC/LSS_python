@@ -1,10 +1,13 @@
-import numpy as np 
-import matplotlib.pyplot as plt 
+import numpy as np
+import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
+from scipy.stats import norm, chi2
 
 from LSS_python.cov import _compute_ellipse_params_from_fisher
 
-def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse', **kwargs):
+def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
+                              sigma=1, color='C0', show_center=True,
+                              ellipse_fill=True, visual_xylims=True, **kwargs):
     """
     Plot error ellipse from Fisher matrix.
 
@@ -27,38 +30,44 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse', *
           with data-space calculations.
         - 'parametric': Use parametric equation to draw ellipse in data space.
           This ensures correct alignment regardless of aspect ratio.
+    sigma : float, default 1
+        Number of standard deviations for the confidence ellipse.
+        The confidence level is computed from sigma using the Gaussian
+        cumulative distribution function. For example:
+        - sigma=1 corresponds to ~68.3% confidence level
+        - sigma=2 corresponds to ~95.4% confidence level
+        - sigma=3 corresponds to ~99.7% confidence level
+        The ellipse size scales with sqrt(χ² quantile) based on this confidence level.
+    color : str, default 'C0'
+        Color of the ellipse edge.
+    show_center : bool, default True
+        Whether to show a marker at the best-fit center point.
+    ellipse_fill : bool, default True
+        Whether to fill the ellipse.
+    visual_xylims : bool, default True
+        If True, use visually pleasing axis limits (different ranges for x and y).
+        If False, enforce equal axis ranges and aspect ratio to ensure perfect
+        alignment between ellipse and sigma points.
     **kwargs : dict
         Additional keyword arguments for customization. Supported keys:
 
         **Ellipse properties** (passed to matplotlib.patches.Ellipse or plot):
-        - ellipse_color / color : str, default 'C0'
-            Color of the ellipse edge.
         - ellipse_alpha / alpha : float, default 0.5
             Transparency of the ellipse fill.
         - ellipse_facecolor / facecolor : str, optional
-            Fill color of the ellipse. If None, uses ellipse_color with alpha.
+            Fill color of the ellipse. If None, uses color with alpha.
         - ellipse_edgecolor / edgecolor : str, optional
-            Edge color of the ellipse. If None, uses ellipse_color.
+            Edge color of the ellipse. If None, uses color.
         - ellipse_linewidth / linewidth : float, default 1.5
             Width of the ellipse edge.
         - ellipse_linestyle / linestyle : str, default '-'
             Style of the ellipse edge.
-        - ellipse_fill / fill : bool, default True
-            Whether to fill the ellipse.
         - ellipse_zorder : float, optional
             Z-order for the ellipse patch.
         - n_points : int, default 200
             Number of points for parametric ellipse (only used when plot_engine='parametric').
 
-        **Confidence level**:
-        - confidence_level : float, default 0.683
-            Confidence level for the ellipse (0 < confidence_level < 1).
-            For 1\sigma Gaussian: 0.683, for 2\sigma: 0.954, for 3\sigma: 0.997.
-            The ellipse size scales with sqrt(χ² quantile).
-
         **Center marker**:
-        - show_center : bool, default True
-            Whether to show a marker at the best-fit center point.
         - center_marker : str, default 'x'
             Marker style for the center point.
         - center_color / center_markercolor : str, default 'C3'
@@ -75,10 +84,6 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse', *
             (ymin, ymax) for the axis. Auto-determined if not provided.
         - padding : float, default 0.1
             Fractional padding for auto axis limits (10% of ellipse extent).
-        - visual_limit : bool, default True
-            If True, use visually pleasing axis limits (different ranges for x and y).
-            If False, enforce equal axis ranges and aspect ratio to ensure perfect
-            alignment between ellipse and sigma points.
 
     Returns
     -------
@@ -130,22 +135,22 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse', *
     if ax is None:
         ax = plt.gca()
 
+    # Convert sigma to confidence level
+    # sigma -> confidence_level: P(-sigma < X < sigma) = 2*norm.cdf(sigma) - 1
+    confidence_level = 2 * norm.cdf(sigma) - 1
+
     # Extract kwargs with defaults
     # Ellipse appearance
-    ellipse_color = kwargs.get('ellipse_color', kwargs.get('color', 'C0'))
+    ellipse_color = kwargs.get('ellipse_color', kwargs.get('color', color))
     ellipse_alpha = kwargs.get('ellipse_alpha', kwargs.get('alpha', 0.5))
     ellipse_facecolor = kwargs.get('ellipse_facecolor', kwargs.get('facecolor', None))
     ellipse_edgecolor = kwargs.get('ellipse_edgecolor', kwargs.get('edgecolor', None))
     ellipse_linewidth = kwargs.get('ellipse_linewidth', kwargs.get('linewidth', 1.5))
     ellipse_linestyle = kwargs.get('ellipse_linestyle', kwargs.get('linestyle', '-'))
-    ellipse_fill = kwargs.get('ellipse_fill', kwargs.get('fill', True))
+    ellipse_fill = kwargs.get('ellipse_fill', kwargs.get('fill', ellipse_fill))
     ellipse_zorder = kwargs.get('ellipse_zorder', kwargs.get('zorder', 1))
 
-    # Confidence level
-    confidence_level = kwargs.get('confidence_level', 0.683)
-
     # Center marker
-    show_center = kwargs.get('show_center', True)
     center_marker = kwargs.get('center_marker', 'x')
     center_color = kwargs.get('center_color', kwargs.get('center_markercolor', 'C3'))
     center_size = kwargs.get('center_size', kwargs.get('markersize', 8))
@@ -155,7 +160,7 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse', *
     xlim = kwargs.get('xlim', None)
     ylim = kwargs.get('ylim', None)
     padding = kwargs.get('padding', 0.1)
-    visual_limit = kwargs.get('visual_limit', True)
+    visual_xylims = kwargs.get('visual_xylims', visual_xylims)
 
     # Parametric ellipse parameters
     n_points = kwargs.get('n_points', 200)
@@ -255,7 +260,7 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse', *
     half_width = np.sqrt((a * cos_angle)**2 + (b * sin_angle)**2)
     half_height = np.sqrt((a * sin_angle)**2 + (b * cos_angle)**2)
     
-    if visual_limit:
+    if visual_xylims:
         # Visual mode: use visually pleasing axis limits (different ranges)
         # This allows different axis ranges for better visual appearance
         

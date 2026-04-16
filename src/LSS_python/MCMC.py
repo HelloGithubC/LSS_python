@@ -382,7 +382,7 @@ def check_convergence_cobaya(chains, converge_factor=1.05, parameters=None, verb
         return converged
 
 
-def run_mcmc_main_cobaya(info, resume=False, force=False):
+def run_mcmc_main_cobaya(info, resume=False, force=False, debug=False):
     """
     Run cobaya MCMC with simplified interface. All configuration should be provided in info dict.
 
@@ -390,6 +390,7 @@ def run_mcmc_main_cobaya(info, resume=False, force=False):
         info: dict, cobaya configuration dictionary (must contain params, likelihood, and optionally output, sampler, etc.)
         resume: bool, resume from previous run
         force: bool, force overwrite existing output
+        debug: bool, enable debug mode
 
     Returns:
         dict with 'converged' bool, 'info', and 'sampler'
@@ -428,13 +429,4 @@ def run_mcmc_main_cobaya(info, resume=False, force=False):
                 counter += 1
 
     # Run cobaya
-    updated_info, sampler = run(info, resume=resume, force=force)
-
-    # Get convergence status from sampler
-    converged = getattr(sampler, 'converged', False)
-
-    return {
-        'converged': converged,
-        'info': updated_info,
-        'sampler': sampler
-    }
+    return run(info, resume=resume, force=force, debug=debug)

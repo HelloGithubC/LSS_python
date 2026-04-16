@@ -1674,7 +1674,7 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
         'RR_cross': RR_cross,
     }
 
-def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, -1, None), use_Hartlab=False):
+def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, None, None), use_Hartlab=False, volume_factor=1.0):
     """ To get the covariance matrix of specific array
     
     Parameters
@@ -1757,7 +1757,7 @@ def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, -1, None), u
     else:
         raise ValueError(f"Unknown cov_type: {cov_type}. Supported types are 'normal', 'subsample', 'jk'")
     
-    return cov
+    return cov * volume_factor
 
 def get_std_array_from_cov(cov_matrix):
     return np.sqrt(np.diag(cov_matrix))
@@ -1955,7 +1955,7 @@ def cal_Fisher_matrix_from_precomputed(precomputed_data, best_fit, delta, cov_ma
     The Fisher information matrix is computed as:
     F = (∂μ/∂θ)^T * C^{-1} * (∂μ/∂θ)
 
-    where the Jacobian ∂μ/∂θ is computed using central differences from the
+    where the Jacobian ∂μ/∂θ is computed using finite differences from the
     precomputed function values.
 
     Parameters
@@ -1964,10 +1964,20 @@ def cal_Fisher_matrix_from_precomputed(precomputed_data, best_fit, delta, cov_ma
         Dictionary containing precomputed function values. Format:
         {param_index: {'plus': f(theta + delta_i), 'minus': f(theta - delta_i)}}
         
-        Example for 2 parameters:
+        Optionally include 'best' key for one-sided derivatives:
+        {'best': f(theta), 0: {'plus': ...}, 1: {'minus': ...}, ...}
+        
+        Example for 2 parameters (central differences):
         {
             0: {'plus': array([...]), 'minus': array([...])},  # f(best_fit + delta[0], best_fit[1])
             1: {'plus': array([...]), 'minus': array([...])}   # f(best_fit[0], best_fit[1] + delta[1])
+        }
+        
+        Example with one-sided derivatives:
+        {
+            'best': array([...]),  # f(best_fit) - required for one-sided derivatives
+            0: {'plus': array([...]), 'minus': array([...])},  # central difference
+            1: {'plus': array([...])}  # forward difference only (requires 'best')
         }
         
         For scalar function outputs, use float values instead of arrays.
@@ -2026,8 +2036,14 @@ def cal_Fisher_matrix_from_precomputed(precomputed_data, best_fit, delta, cov_ma
     - Function values have been computed in parallel
     - Function values are available from previous optimization/sampling runs
     
-    The Jacobian is computed using central differences:
-    ∂f/∂θ_i ≈ [f(θ + δ_i e_i) - f(θ - δ_i e_i)] / (2 δ_i)
+    The Jacobian is computed using finite differences:
+    - Central difference (preferred): ∂f/∂θ_i ≈ [f(θ + δ_i e_i) - f(θ - δ_i e_i)] / (2 δ_i)
+    - Forward difference: ∂f/∂θ_i ≈ [f(θ + δ_i e_i) - f(θ)] / δ_i
+    - Backward difference: ∂f/∂θ_i ≈ [f(θ) - f(θ - δ_i e_i)] / δ_i
+    
+    When using one-sided derivatives (forward or backward), a 'best' key must be
+    provided in precomputed_data with the function value at best-fit parameters.
+    A warning will be issued for parameters using one-sided derivatives.
     """
     import numpy as np
     
@@ -2048,17 +2064,57 @@ def cal_Fisher_matrix_from_precomputed(precomputed_data, best_fit, delta, cov_ma
     if not isinstance(precomputed_data, dict):
         raise TypeError("precomputed_data must be a dictionary")
     
-    if set(precomputed_data.keys()) != set(range(n_params)):
+    # Check that all required parameter indices are present
+    param_keys = set(k for k in precomputed_data.keys() if isinstance(k, int))
+    required_keys = set(range(n_params))
+    if param_keys != required_keys:
         raise ValueError(f"precomputed_data must contain keys 0, 1, ..., {n_params-1}, "
-                        f"but got keys {sorted(precomputed_data.keys())}")
+                        f"but got keys {sorted(param_keys)}")
     
-    # Check structure of each entry
+    # Check structure of each entry and determine derivative type
+    import warnings
+    derivative_types = []
+    has_best = 'best' in precomputed_data
+    
     for i in range(n_params):
-        if 'plus' not in precomputed_data[i] or 'minus' not in precomputed_data[i]:
-            raise ValueError(f"precomputed_data[{i}] must contain 'plus' and 'minus' keys")
+        has_plus = 'plus' in precomputed_data[i]
+        has_minus = 'minus' in precomputed_data[i]
+        
+        if has_plus and has_minus:
+            derivative_types.append('central')
+        elif has_plus and has_best:
+            derivative_types.append('forward')
+        elif has_minus and has_best:
+            derivative_types.append('backward')
+        elif has_plus or has_minus:
+            raise ValueError(
+                f"precomputed_data[{i}] has only one-sided data but no 'best' key "
+                f"at top level. For one-sided derivatives, provide 'best' key "
+                f"with function value at best-fit parameters."
+            )
+        else:
+            raise ValueError(f"precomputed_data[{i}] must contain at least 'plus' or 'minus' key")
+    
+    # Issue warning for one-sided derivatives
+    one_sided_params = [i for i, dtype in enumerate(derivative_types) if dtype != 'central']
+    if one_sided_params:
+        warnings.warn(
+            f"Parameters {one_sided_params} are using one-sided derivatives "
+            f"({[derivative_types[i] for i in one_sided_params]}). "
+            f"Results may be less accurate than central differences.",
+            UserWarning
+        )
     
     # Get the first function value to determine output dimension
-    first_value = precomputed_data[0]['plus']
+    first_entry = precomputed_data[0]
+    if 'plus' in first_entry:
+        first_value = first_entry['plus']
+    elif 'minus' in first_entry:
+        first_value = first_entry['minus']
+    elif 'best' in precomputed_data:
+        first_value = precomputed_data['best']
+    else:
+        raise ValueError("Cannot determine output dimension from precomputed_data")
     if hasattr(first_value, '__len__') and not isinstance(first_value, (float, int)):
         first_value = np.asarray(first_value)
         n_output = first_value.shape[0] if first_value.ndim > 0 else 1
@@ -2069,20 +2125,41 @@ def cal_Fisher_matrix_from_precomputed(precomputed_data, best_fit, delta, cov_ma
     jacobian = np.zeros((n_output, n_params))
     
     # Compute Jacobian from precomputed values
+    f_best = precomputed_data.get('best')
+    if f_best is not None and n_output > 1:
+        f_best = np.asarray(f_best)
+    
     for i in range(n_params):
-        f_plus = precomputed_data[i]['plus']
-        f_minus = precomputed_data[i]['minus']
+        f_plus = precomputed_data[i].get('plus')
+        f_minus = precomputed_data[i].get('minus')
         
         # Convert to numpy arrays if needed
         if n_output > 1:
-            f_plus = np.asarray(f_plus)
-            f_minus = np.asarray(f_minus)
+            if f_plus is not None:
+                f_plus = np.asarray(f_plus)
+            if f_minus is not None:
+                f_minus = np.asarray(f_minus)
         
-        # Central difference
-        if n_output == 1:
-            jacobian[0, i] = (f_plus - f_minus) / (2 * delta[i])
-        else:
-            jacobian[:, i] = (f_plus - f_minus) / (2 * delta[i])
+        # Compute derivative based on available data
+        dtype = derivative_types[i]
+        if dtype == 'central':
+            # Central difference: (f_plus - f_minus) / (2 * delta)
+            if n_output == 1:
+                jacobian[0, i] = (f_plus - f_minus) / (2 * delta[i])
+            else:
+                jacobian[:, i] = (f_plus - f_minus) / (2 * delta[i])
+        elif dtype == 'forward':
+            # Forward difference: (f_plus - f_best) / delta
+            if n_output == 1:
+                jacobian[0, i] = (f_plus - f_best) / delta[i]
+            else:
+                jacobian[:, i] = (f_plus - f_best) / delta[i]
+        else:  # backward
+            # Backward difference: (f_best - f_minus) / delta
+            if n_output == 1:
+                jacobian[0, i] = (f_best - f_minus) / delta[i]
+            else:
+                jacobian[:, i] = (f_best - f_minus) / delta[i]
     
     # Call cal_Fisher_matrix with computed Jacobian
     return cal_Fisher_matrix(

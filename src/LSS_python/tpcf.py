@@ -714,3 +714,28 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
     })
 
     return result_dict
+
+def get_diff_array(tpcf_dict_list, snap_ids, smin=6.0, smax=40.0, mupack=6, shift=5, return_mu=False, need_slice=slice(None, -1, None)):
+    if isinstance(tpcf_dict_list, dict):
+        tpcf_dict_list = [tpcf_dict_list, ]
+    snap1, snap2 = snap_ids[0], snap_ids[1]
+    size = len(tpcf_dict_list[0][snap1])
+    if size == 1:
+        shift = 0
+    tpcf_diff_list_list = []
+
+    for i_list in range(len(tpcf_dict_list)):
+        tpcf_diff_list = []
+        for i in range(size):
+            i_shift = i + shift
+            if i_shift >= size:
+                i_shift -= size
+            mu_temp_1, xi_mu_temp_1 = tpcf_dict_list[i_list][snap1][i].integrate_tpcf(intximu=True, mupack=mupack, is_norm=True)
+            mu_temp_2, xi_mu_temp_2 = tpcf_dict_list[i_list][snap2][i_shift].integrate_tpcf(intximu=True, mupack=mupack, is_norm=True)
+            xi_mu_temp_diff = (xi_mu_temp_1 - xi_mu_temp_2)[need_slice]
+            tpcf_diff_list.append(xi_mu_temp_diff)
+        tpcf_diff_list_list.append(np.array(tpcf_diff_list))
+    if return_mu:
+        return mu_temp_1, np.concatenate(tpcf_diff_list_list, axis=1)
+    else:
+        return np.concatenate(tpcf_diff_list_list, axis=1)
