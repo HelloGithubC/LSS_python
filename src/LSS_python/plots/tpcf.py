@@ -15,6 +15,7 @@ def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, snap_diff_index=(
     mu_smin = argv.get("mu_smin", 6.0)
     mu_smax = argv.get("mu_smax", 40.0)
     mupack = argv.get("mupack", 6)
+    need_slice = argv.get("need_slice", slice(None, None, None))
 
     for i, (xismu_dict, snaps) in enumerate(zip(xismu_dicts_list, snaps_list)):
         xi_mus = []
@@ -28,7 +29,7 @@ def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, snap_diff_index=(
         
         snap1_index, snap2_index = snap_diff_index
         xi_mu_diff = xi_mus[snap1_index] - xi_mus[snap2_index]
-        ax_diff.plot(mu, xi_mu_diff, color=colors[i])
+        ax_diff.plot(mu[need_slice], xi_mu_diff[need_slice], color=colors[i])
     return fig
 
 def test(a, b):

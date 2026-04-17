@@ -715,16 +715,20 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
 
     return result_dict
 
-def get_diff_array(tpcf_dict_list, snap_ids, smin=6.0, smax=40.0, mupack=6, shift=5, return_mu=False, need_slice=slice(None, -1, None)):
+def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6, shift=5, return_mu=False, need_slice=slice(None, -1, None)):
     if isinstance(tpcf_dict_list, dict):
         tpcf_dict_list = [tpcf_dict_list, ]
-    snap1, snap2 = snap_ids[0], snap_ids[1]
+    # 若 snap_ids_list 只是一个列表或元组没有嵌套，则外层补上一个列表
+    if not isinstance(snap_ids_list[0], (list, tuple)):
+        snap_ids_list = [snap_ids_list, ]
+    snap1, snap2 = snap_ids_list[0][0], snap_ids_list[0][1]
     size = len(tpcf_dict_list[0][snap1])
     if size == 1:
         shift = 0
     tpcf_diff_list_list = []
 
     for i_list in range(len(tpcf_dict_list)):
+        snap1, snap2 = snap_ids_list[i_list][0], snap_ids_list[i_list][1]
         tpcf_diff_list = []
         for i in range(size):
             i_shift = i + shift
