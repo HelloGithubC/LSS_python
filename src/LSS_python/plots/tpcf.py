@@ -15,15 +15,16 @@ def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, snap_diff_index=(
     mu_smin = argv.get("mu_smin", 6.0)
     mu_smax = argv.get("mu_smax", 40.0)
     mupack = argv.get("mupack", 6)
+    mumax = argv.get("mumax", 0.97)
     need_slice = argv.get("need_slice", slice(None, None, None))
 
     for i, (xismu_dict, snaps) in enumerate(zip(xismu_dicts_list, snaps_list)):
         xi_mus = []
         for j, snap in enumerate(snaps):
             xismu_temp = xismu_dict[snap]
-            s, xi_s = xismu_temp.integrate_tpcf(s_xis=True, smin=s_smin, smax=s_smax, is_norm=False, mupack=mupack)
+            s, xi_s = xismu_temp.integrate_tpcf(s_xis=True, smin=s_smin, smax=s_smax, is_norm=False, mupack=mupack, mumax=mumax)
             axes_s[j].plot(s, xi_s, color=colors[i])
-            mu, xi_mu = xismu_temp.integrate_tpcf(intximu=True, smin=mu_smin, smax=mu_smax, is_norm=True, mupack=mupack)
+            mu, xi_mu = xismu_temp.integrate_tpcf(intximu=True, smin=mu_smin, smax=mu_smax, is_norm=True, mupack=mupack, mumax=mumax)
             axes_mu[j].plot(mu, xi_mu, color=colors[i])
             xi_mus.append(xi_mu)
         

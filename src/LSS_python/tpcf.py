@@ -715,7 +715,7 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
 
     return result_dict
 
-def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6, shift=5, return_mu=False, need_slice=slice(None, -1, None)):
+def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6, shift=5, return_mu=False, need_slice=slice(None, -1, None), mumax=0.97, pca_model_list=None):
     if isinstance(tpcf_dict_list, dict):
         tpcf_dict_list = [tpcf_dict_list, ]
     # 若 snap_ids_list 只是一个列表或元组没有嵌套，则外层补上一个列表
@@ -727,6 +727,12 @@ def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6,
         shift = 0
     tpcf_diff_list_list = []
 
+    if pca_model_list is None:
+        is_pca = False 
+    else:
+        is_pca = True 
+        mupack = 1
+
     for i_list in range(len(tpcf_dict_list)):
         snap1, snap2 = snap_ids_list[i_list][0], snap_ids_list[i_list][1]
         tpcf_diff_list = []
@@ -734,12 +740,31 @@ def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6,
             i_shift = i + shift
             if i_shift >= size:
                 i_shift -= size
-            mu_temp_1, xi_mu_temp_1 = tpcf_dict_list[i_list][snap1][i].integrate_tpcf(intximu=True, mupack=mupack, is_norm=True)
-            mu_temp_2, xi_mu_temp_2 = tpcf_dict_list[i_list][snap2][i_shift].integrate_tpcf(intximu=True, mupack=mupack, is_norm=True)
+            mu_temp_1, xi_mu_temp_1 = tpcf_dict_list[i_list][snap1][i].integrate_tpcf(intximu=True, mupack=mupack, is_norm=True, mumax=mumax)
+            mu_temp_2, xi_mu_temp_2 = tpcf_dict_list[i_list][snap2][i_shift].integrate_tpcf(intximu=True, mupack=mupack, is_norm=True, mumax=mumax)
             xi_mu_temp_diff = (xi_mu_temp_1 - xi_mu_temp_2)[need_slice]
             tpcf_diff_list.append(xi_mu_temp_diff)
         tpcf_diff_list_list.append(np.array(tpcf_diff_list))
-    if return_mu:
-        return mu_temp_1, np.concatenate(tpcf_diff_list_list, axis=1)
+
+
+    # Apply PCA transformation if needed
+    if is_pca and pca_model_list is not None:
+        if isinstance(pca_model_list, list):
+            # Multiple PCA models: transform each local segment separately
+            transformed_segments = []
+            for i, local_array in enumerate(tpcf_diff_list_list):
+                # Each local_array shape: (size, n_bins), transform each sample
+                transformed = pca_model_list[i].transform(local_array)
+                transformed_segments.append(transformed)
+            result_array = np.concatenate(transformed_segments, axis=1)
+        else:
+            result_array = np.concatenate(tpcf_diff_list_list, axis=1)
+            # Single PCA model: transform the whole concatenated array
+            result_array = pca_model_list.transform(result_array)
     else:
-        return np.concatenate(tpcf_diff_list_list, axis=1)
+        result_array = np.concatenate(tpcf_diff_list_list, axis=1)
+
+    if return_mu:
+        return mu_temp_1, result_array
+    else:
+        return result_array
