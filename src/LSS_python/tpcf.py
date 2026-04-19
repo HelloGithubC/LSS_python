@@ -171,7 +171,7 @@ class xismu(object):
             self.xis = (self.DD - 2.0 * self.DR + self.RR) / self.RR 
         return self.xis
     
-    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=True):
+    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=True, remove_last_one=True):
         """ A powerful function to integrate the tpcf
 
         Parameters
@@ -191,8 +191,10 @@ class xismu(object):
             Only be valid when intximu is True. Use s^2 xi(s, mu) to integrate
         is_norm: bool
             Whether to normalize
-        re_calculate : bool
-            Whether to re-calculate the tpcf based on DD, DR and RR
+        remove_last_one: bool 
+            Only be valid when intximu=True and is_norm=True
+        mupack: int
+            The number of mu bins to pack together for integration
         """
 
         if not s_xis and not intximu:
@@ -229,14 +231,15 @@ class xismu(object):
             mumax_index = len(mu_array) 
         else:
             mumax_index = mumax_index_source[0]
+
+        if remove_last_one and intximu and is_norm:
+            need_slice = slice(None, -1, None)
+        else:
+            need_slice = slice(None, None, None)
         
         DD_need = self.DD[smin_index: smax_index, mumin_index: mumax_index]
         DR_need = self.DR[smin_index: smax_index, mumin_index: mumax_index]
         RR_need = self.RR[smin_index: smax_index, mumin_index: mumax_index]
-        if mupack > 1:
-            DD_need = packarray2d(DD_need, mupack, axis=1)
-            DR_need = packarray2d(DR_need, mupack, axis=1)
-            RR_need = packarray2d(RR_need, mupack, axis=1)
             
         result_dict = {}
         if s_xis:
@@ -244,6 +247,9 @@ class xismu(object):
             xis_s = (np.sum(DD_need, axis=1) - 2 * np.sum(DR_need, axis=1) + np.sum(RR_need, axis=1)) / np.sum(RR_need, axis=1)
             if is_norm:
                 xis_s = meannorm(xis_s)
+            if mupack > 1:
+                s = packarray1d(s, mupack)
+                xis_s = packarray1d(xis_s, mupack)
             result_dict["s"] = s
             result_dict["xis_s"] = xis_s * s**2
             if not intximu and quick_return:
@@ -259,7 +265,9 @@ class xismu(object):
                 Xis_need = Xis_need * s[:,np.newaxis]**2
             xis_mu = np.mean(Xis_need, axis=0)
             if is_norm:
-                xis_mu = meannorm(xis_mu)
+                xis_mu = meannorm(xis_mu)[need_slice]
+            if mupack > 1:
+                xis_mu = packarray1d(xis_mu, mupack)
             result_dict["mu"] = mu
             result_dict["xis_mu"] = xis_mu
             if not s_xis and quick_return:
@@ -715,14 +723,23 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
 
     return result_dict
 
-def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6, shift=5, return_mu=False, need_slice=slice(None, -1, None), mumax=0.97, pca_model_list=None):
+def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6, shift=5, return_mu=False, mumax=0.97, remove_last_one=True, pca_model_list=None):
     if isinstance(tpcf_dict_list, dict):
         tpcf_dict_list = [tpcf_dict_list, ]
     # 若 snap_ids_list 只是一个列表或元组没有嵌套，则外层补上一个列表
     if not isinstance(snap_ids_list[0], (list, tuple)):
         snap_ids_list = [snap_ids_list, ]
     snap1, snap2 = snap_ids_list[0][0], snap_ids_list[0][1]
-    size = len(tpcf_dict_list[0][snap1])
+
+    # Ensure tpcf_dict_list[0][snap1] is a list, tuple, or array
+    first_snap_data = tpcf_dict_list[0][snap1]
+    if not isinstance(first_snap_data, (list, tuple, np.ndarray)):
+        first_snap_data = [first_snap_data]
+        single_xismu = True 
+    else:
+        single_xismu = False
+
+    size = len(first_snap_data)
     if size == 1:
         shift = 0
     tpcf_diff_list_list = []
@@ -740,9 +757,11 @@ def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6,
             i_shift = i + shift
             if i_shift >= size:
                 i_shift -= size
-            mu_temp_1, xi_mu_temp_1 = tpcf_dict_list[i_list][snap1][i].integrate_tpcf(intximu=True, mupack=mupack, is_norm=True, mumax=mumax)
-            mu_temp_2, xi_mu_temp_2 = tpcf_dict_list[i_list][snap2][i_shift].integrate_tpcf(intximu=True, mupack=mupack, is_norm=True, mumax=mumax)
-            xi_mu_temp_diff = (xi_mu_temp_1 - xi_mu_temp_2)[need_slice]
+            xismu_first = tpcf_dict_list[i_list][snap1][i] if not single_xismu else tpcf_dict_list[i_list][snap1]
+            mu_temp_1, xi_mu_temp_1 = xismu_first.integrate_tpcf(intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
+            xismu_second = tpcf_dict_list[i_list][snap2][i_shift] if not single_xismu else tpcf_dict_list[i_list][snap2]
+            mu_temp_2, xi_mu_temp_2 = xismu_second.integrate_tpcf(intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
+            xi_mu_temp_diff = (xi_mu_temp_1 - xi_mu_temp_2)
             tpcf_diff_list.append(xi_mu_temp_diff)
         tpcf_diff_list_list.append(np.array(tpcf_diff_list))
 
