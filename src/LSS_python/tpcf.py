@@ -29,6 +29,41 @@ def packarray1d(X, rat):
     X_new = X[np.newaxis,:]
     return packarray2d(X_new, rat, axis=1)[0]
 
+
+def cal_convert_factor(n, rat):
+    """
+    Compute the conversion matrix that transforms a full covariance matrix
+    to the covariance matrix after applying packarray1d with given ratio.
+
+    The packing operation is a linear transformation: X_packed = P @ X,
+    where P is an averaging matrix of shape (floor(n/rat), n).
+
+    For covariance matrices: Cov_packed = P @ Cov_full @ P.T
+
+    Parameters
+    ----------
+    n : int
+        Original length of the data array.
+    rat : int
+        Packing ratio (number of elements to average together).
+
+    Returns
+    -------
+    convert_matrix : ndarray
+        The conversion matrix P of shape (floor(n/rat), n).
+        Can be used as: Cov_packed = P @ Cov_full @ P.T
+    """
+    m = int(n / rat)  # packed length, floor division (same as packarray2d)
+    convert_matrix = np.zeros((m, n))
+
+    for i in range(m):
+        # Each row averages rat consecutive elements
+        convert_matrix[i, i * rat : (i + 1) * rat] = 1.0 / rat
+
+    return convert_matrix
+
+    return convert_matrix
+
 class xismu(object):
     def __init__(
         self,
