@@ -12,6 +12,8 @@ from scipy.linalg import eigh
 from sklearn.decomposition import PCA
 import joblib
 
+from LSS_python.cov import cal_Fisher_matrix_from_precomputed
+
 
 class Compressor:
     """Data compression using various algorithms (PCA, KL, MOPED).
@@ -48,9 +50,25 @@ class Compressor:
 
     >>> # MOPED compression with precomputed data (central differences)
     >>> compressor = Compressor(method='moped')
-    >>> compressor.fit(precomputed_data=data, delta=d, cov_matrix=C,
-    ...                fiducial_array=mu_fid)
+    >>> compressor.fit(
+    ...     fiducial_array=mu_fid,
+    ...     precomputed_data=data,
+    ...     delta=d,
+    ...     cov_matrix=C
+    ... )
     >>> X_compressed = compressor.transform(X_test)
+
+    >>> # MOPED compression with Fisher matrix calculation
+    >>> compressor = Compressor(method='moped')
+    >>> compressor.fit(
+    ...     fiducial_array=mu_fid,
+    ...     precomputed_data=data,
+    ...     delta=d,
+    ...     cov_matrix=C,
+    ...     best_fit=theta_best
+    ... )
+    >>> X_compressed = compressor.transform(X_test)
+    >>> print(compressor.get_fisher_matrix())  # Access the computed Fisher matrix
     """
 
     def __init__(self, method: str):
@@ -82,17 +100,74 @@ class Compressor:
         self._projection = None  # Projection matrix (for KL and MOPED)
         self._eigenvalues_all = None # eigenvalues (for KL)
         self._moped_coefficients = None  # MOPED compression coefficients
+        self._fisher_matrix = None  # Fisher information matrix (for MOPED)
 
-    def fit(self, X_signal, *args, **kwargs) -> 'Compressor':
+    def get_fisher_matrix(self):
+        """Get the Fisher information matrix.
+
+        This method is only available for MOPED compression. An error is
+        raised if the compressor uses a different method.
+
+        Returns
+        -------
+        fisher_matrix : ndarray or None
+            Fisher information matrix with shape (n_params, n_params) if
+            computed during fitting (only available for MOPED method with
+            best_fit parameter provided), otherwise None.
+
+        Raises
+        ------
+        RuntimeError
+            If the compressor method is not 'moped'.
+        """
+        if self.method != 'moped':
+            raise RuntimeError(
+                f"Fisher matrix is only available for MOPED compression, "
+                f"but the compressor uses method '{self.method}'."
+            )
+        return self._fisher_matrix
+
+    def fit(self, X_signal=None, *, n_components=None, X_noise=None, snr_threshold=None,
+            fiducial_array=None, precomputed_data=None, delta=None, cov_matrix=None,
+            best_fit=None):
         """Fit the compression model.
 
         Parameters
         ----------
         X_signal : ndarray, shape (n_samples, n_features), optional
             Training signal data. Required for PCA and KL methods.
-            For MOPED, this parameter is ignored; use `fiducial_array` instead.
-        *args, **kwargs
-            Method-specific parameters. See individual method documentation.
+            For MOPED, this parameter is ignored.
+
+        # PCA-specific parameters
+        n_components : int, optional
+            Number of components to keep. Required for PCA if X_noise is not
+            provided. If None and X_noise is provided, automatically determine
+            components using std_signal > std_noise criterion.
+        X_noise : ndarray, shape (n_samples_var, n_features), optional
+            Noise/variance data for automatic component selection. Only used
+            when n_components is None.
+
+        # KL-specific parameters
+        snr_threshold : float, optional
+            Signal-to-noise ratio threshold. Required for KL compression.
+            Keep all modes with SNR >= threshold.
+
+        # MOPED-specific parameters
+        fiducial_array : ndarray, shape (n_features,), optional
+            Fiducial/mean array for centering. Required for MOPED compression.
+        precomputed_data : dict, optional
+            Precomputed function values for derivative calculation. Required
+            for MOPED compression. Format:
+            {param_index: {'plus': f(theta + delta_i), 'minus': f(theta - delta_i)}}
+        delta : float or array_like, optional
+            Finite difference step size(s) for each parameter. Required for
+            MOPED compression.
+        cov_matrix : ndarray, shape (n_features, n_features), optional
+            Covariance matrix. Required for MOPED compression.
+        best_fit : array_like, optional
+            Best-fit parameter values. Optional for MOPED. If provided, the
+            Fisher information matrix is computed and stored in
+            `self._fisher_matrix`.
 
         Returns
         -------
@@ -103,21 +178,53 @@ class Compressor:
         ------
         ValueError
             If required parameters are missing for the specified method.
-        """
+
+        Examples
+        --------
+        >>> # PCA compression with explicit n_components
+        >>> compressor = Compressor(method='pca')
+        >>> compressor.fit(X_signal_train, n_components=10)
+
+        >>> # PCA compression with automatic component selection
+        >>> compressor = Compressor(method='pca')
+        >>> compressor.fit(X_signal_train, X_noise=noise_train)
+
+        >>> # KL compression
+        >>> compressor = Compressor(method='kl')
+        >>> compressor.fit(X_signal_train, X_noise=noise_train, snr_threshold=1.0)
+
+        >>> # MOPED compression
+        >>> compressor = Compressor(method='moped')
+        >>> compressor.fit(
+        ...     fiducial_array=mu_fid,
+        ...     precomputed_data=data,
+        ...     delta=d,
+        ...     cov_matrix=C
+        ... )
+
+        >>> # MOPED compression with Fisher matrix
+        >>> compressor = Compressor(method='moped')
+        >>> compressor.fit(
+        ...     fiducial_array=mu_fid,
+        ...     precomputed_data=data,
+        ...     delta=d,
+        ...     cov_matrix=C,
+        ...     best_fit=theta_best
+        ... )
+    >>> print(compressor.get_fisher_matrix())
+    """
         if self.method == 'moped':
             # For MOPED, X_signal is ignored; require fiducial_array instead
-            if 'fiducial_array' not in kwargs or kwargs['fiducial_array'] is None:
+            if fiducial_array is None:
                 raise ValueError(
                     "For MOPED compression, 'fiducial_array' parameter is required. "
                     "This provides the theoretical model prediction used for centering."
                 )
-            self._mean = np.asarray(kwargs['fiducial_array'], dtype=np.float64)
+            self._mean = np.asarray(fiducial_array, dtype=np.float64)
             if self._mean.ndim != 1:
                 raise ValueError(
                     f"fiducial_array must be 1D, got shape {self._mean.shape}"
                 )
-            # Remove fiducial_array from kwargs to avoid passing to _fit_moped
-            kwargs = {k: v for k, v in kwargs.items() if k != 'fiducial_array'}
             # X_signal is ignored for MOPED
             X_signal = None
         else:
@@ -136,11 +243,17 @@ class Compressor:
 
         # Dispatch to method-specific fit
         if self.method == 'pca':
-            self._fit_pca(X_signal, **kwargs)
+            self._fit_pca(X_signal, n_components=n_components, X_noise=X_noise)
         elif self.method == 'kl':
-            self._fit_kl(X_signal, **kwargs)
+            self._fit_kl(X_signal, X_noise=X_noise, snr_threshold=snr_threshold)
         elif self.method == 'moped':
-            self._fit_moped(X_signal, **kwargs)
+            self._fit_moped(
+                X_signal,
+                precomputed_data=precomputed_data,
+                delta=delta,
+                cov_matrix=cov_matrix,
+                best_fit=best_fit,
+            )
 
         self.is_fitted = True
 
@@ -197,6 +310,8 @@ class Compressor:
             X_compressed = self._transform_kl(X_centered)
         elif self.method == 'moped':
             X_compressed = self._transform_moped(X_centered)
+        else:
+            raise ValueError(f"Unknown method: {self.method}")
 
         # If input was 1D, squeeze output back to 1D
         if return_1d:
@@ -431,7 +546,7 @@ class Compressor:
     # MOPED implementation
     # =========================================================================
 
-    def _fit_moped(self, X_signal, precomputed_data, delta, cov_matrix, **kwargs):
+    def _fit_moped(self, X_signal, precomputed_data, delta, cov_matrix, best_fit=None, **kwargs):
         """Fit MOPED compression.
 
         MOPED (MOPED Algorithm for Parameter Estimation and Data Compression)
@@ -456,6 +571,10 @@ class Compressor:
             Finite difference step size(s) for each parameter.
         cov_matrix : ndarray, shape (n_features, n_features), required
             Covariance matrix. Must be provided explicitly.
+        best_fit : array_like, optional
+            Best-fit parameter values. If provided, the Fisher information matrix
+            is computed using `cal_Fisher_matrix_from_precomputed` and stored in
+            `self._fisher_matrix`.
 
         Raises
         ------
@@ -558,6 +677,12 @@ class Compressor:
             self._moped_coefficients[:, i] = numerator / denominator
 
         self.n_components = n_parameters
+
+        # Compute and store Fisher information matrix if best_fit is provided
+        if best_fit is not None:
+            self._fisher_matrix = cal_Fisher_matrix_from_precomputed(
+                precomputed_data, best_fit, delta, cov_matrix
+            )
 
     def _transform_moped(self, X_centered):
         """Transform using fitted MOPED coefficients.
