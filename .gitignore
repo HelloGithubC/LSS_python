@@ -10,3 +10,7 @@ src/LSS_python/CPP/lib/*.so
 # vscode settings #
 ############################
 .vscode/
+
+# codebuddy settings
+############################
+.codebuddy/

@@ -301,6 +301,7 @@ class xismu(object):
             xis_mu = np.mean(Xis_need, axis=0)
             if is_norm:
                 xis_mu = meannorm(xis_mu)[need_slice]
+                mu = mu[need_slice]
             if mupack > 1:
                 xis_mu = packarray1d(xis_mu, mupack)
             result_dict["mu"] = mu
@@ -793,9 +794,9 @@ def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6,
             if i_shift >= size:
                 i_shift -= size
             xismu_first = tpcf_dict_list[i_list][snap1][i] if not single_xismu else tpcf_dict_list[i_list][snap1]
-            mu_temp_1, xi_mu_temp_1 = xismu_first.integrate_tpcf(intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
+            mu_temp_1, xi_mu_temp_1 = xismu_first.integrate_tpcf(smin=smin, smax=smax, intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
             xismu_second = tpcf_dict_list[i_list][snap2][i_shift] if not single_xismu else tpcf_dict_list[i_list][snap2]
-            mu_temp_2, xi_mu_temp_2 = xismu_second.integrate_tpcf(intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
+            mu_temp_2, xi_mu_temp_2 = xismu_second.integrate_tpcf(smin=smin, smax=smax,intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
             xi_mu_temp_diff = (xi_mu_temp_1 - xi_mu_temp_2)
             tpcf_diff_list.append(xi_mu_temp_diff)
         tpcf_diff_list_list.append(np.array(tpcf_diff_list))

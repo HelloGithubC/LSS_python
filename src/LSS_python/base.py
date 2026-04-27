@@ -1,5 +1,6 @@
 import numpy as np 
 from scipy.integrate import quad
+from scipy.interpolate import interp1d
 from numba import njit, set_num_threads, prange
 
 CONST_C = 299792.458
@@ -290,3 +291,101 @@ class CosmologyExact:
     def DA(self, z, z_start=0.0):
         """角直径距离 D_A(z) = D_c(z) / (1+z)，单位 Mpc/h"""
         return self.comov_dist(z, z_start=z_start) / (1.0 + z)
+
+# ============================================================================
+# Interpolation Function (yntra)
+# ============================================================================
+
+@njit(cache=True)
+def yntra(r, rw, fu, imax):
+    """
+    1-dimensional linear interpolation routine.
+    
+    This is a direct translation of the Fortran yntra function from interp.f.
+    
+    Parameters
+    ----------
+    r : float64
+        The point where interpolation is performed
+    rw : ndarray (float64, shape (imax,))
+        The x values of the function (must be increasing)
+    fu : ndarray (float64, shape (imax,))
+        The function values for interpolation
+    imax : int
+        Number of elements in rw and fu
+    
+    Returns
+    -------
+    float64
+        Interpolated value at point r
+    
+    Notes
+    -----
+    - Uses a persistent index to speed up repeated calls
+    - Extrapolation outside the range will raise an error (like Fortran version)
+    
+    DEPRECATION NOTE: Consider using interp1d_linear from scipy.interpolate
+    for better performance in non-JIT contexts. This function is retained for
+    backward compatibility and potential future needs.
+    """
+    i = 1
+    
+    # Check if r is outside the range
+    if r < rw[0] or r > rw[imax - 1]:
+        raise ValueError(f"Interpolation point {r} is outside range [{rw[0]}, {rw[imax-1]}]")
+    
+    # Find the interval containing r
+    if r == rw[0]:
+        return fu[0]
+    if r == rw[imax - 1]:
+        return fu[imax - 1]
+    
+    # Search for the correct interval
+    for i in range(imax - 1):
+        if rw[i] <= r <= rw[i + 1]:
+            # Perform linear interpolation
+            fak = (r - rw[i]) / (rw[i + 1] - rw[i])
+            return fu[i] + (fu[i + 1] - fu[i]) * fak
+    
+    # Should never reach here if input is valid
+    return fu[imax - 1]
+
+
+def interp1d_linear(r, rw, fu):
+    """
+    1-dimensional linear interpolation using scipy.interpolate.interp1d.
+    
+    This function provides the same functionality as yntra but uses scipy
+    for potentially better performance in non-JIT contexts.
+    
+    Parameters
+    ----------
+    r : float or ndarray
+        The point(s) where interpolation is performed
+    rw : ndarray (float64, shape (n,))
+        The x values of the function (must be increasing)
+    fu : ndarray (float64, shape (n,))
+        The function values for interpolation
+    
+    Returns
+    -------
+    float or ndarray
+        Interpolated value(s) at point(s) r
+    
+    Notes
+    -----
+    - Uses scipy.interpolate.interp1d with kind='linear'
+    - Raises ValueError if r is outside the range [rw[0], rw[-1]]
+    - More efficient for repeated calls with the same (rw, fu) grid
+    """
+    # Create interpolation function (bounds_error=True matches yntra behavior)
+    interp_func = interp1d(rw, fu, kind='linear', bounds_error=True, 
+                          assume_sorted=True)
+    
+    # Perform interpolation
+    result = interp_func(r)
+    
+    # Return scalar if input is scalar
+    if np.isscalar(r):
+        return float(result)
+    return result

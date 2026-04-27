@@ -1674,6 +1674,17 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
         'RR_cross': RR_cross,
     }
 
+def get_cov_factor(n_samples, n_features=None, factor_type="jk"):
+    if factor_type == "jk":
+        return (n_samples - 1) ** 2 / n_samples
+    elif factor_type == "subsample":
+        return 1.0 / n_samples
+    elif factor_type == "Hartlab":
+        return (n_samples - 1) / (n_samples - n_features - 2)
+    else:
+        raise ValueError(f"Unknown factor_type: {factor_type}")
+
+
 def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, None, None), use_Hartlab=False, volume_factor=1.0):
     """ To get the covariance matrix of specific array
     
@@ -1720,14 +1731,9 @@ def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, None, None),
         cov = np.cov(array, rowvar=False, bias=False)
         
         # Volume correction: divide by number of subboxes
-        correction_factor = 1.0 / n_samples
+        correction_factor = get_cov_factor(n_samples, n_features, "subsample")
         cov = cov * correction_factor
         
-        # Apply Hartlab correction if requested
-        if use_Hartlab:
-            # Hartlab correction factor for subsample covariance
-            hartlab_factor = (n_samples - 1) / (n_samples - n_features - 2)
-            cov = cov * hartlab_factor
         
     elif cov_type == "jk":
         # Jackknife covariance from run_jackknife_tpCF
@@ -1745,18 +1751,19 @@ def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, None, None),
         cov = np.cov(array, rowvar=False, bias=False)
         
         # Jackknife correction: (N-1)^2 / N
-        correction_factor = (n_samples - 1) ** 2 / n_samples
+        correction_factor = get_cov_factor(n_samples, n_features, "jk")
         cov = cov * correction_factor
         
-        # Apply Hartlab correction if requested
-        if use_Hartlab:
-            # Hartlab correction factor for Jackknife covariance
-            hartlab_factor = (n_samples - 1) / (n_samples - n_features - 2)
-            cov = cov * hartlab_factor
         
     else:
         raise ValueError(f"Unknown cov_type: {cov_type}. Supported types are 'normal', 'subsample', 'jk'")
     
+    # Apply Hartlab correction if requested
+    if use_Hartlab:
+        # Hartlab correction factor for subsample covariance
+        hartlab_factor = get_cov_factor(n_samples, n_features, "Hartlab")
+        cov = cov * hartlab_factor
+
     return cov * volume_factor
 
 def get_std_array_from_cov(cov_matrix):
