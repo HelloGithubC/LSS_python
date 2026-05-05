@@ -67,6 +67,7 @@ class FFTPower:
         }
         self.power = None
         self.removed_shotnoise = False
+        self.is_run_ps_3d = False
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
     mode="1d", k_logarithmic=False, ps_3d_inplace=True, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=True, pybind=True):
@@ -99,7 +100,7 @@ class FFTPower:
         else:
             ps_3d_kernel_need = None
             
-        ps_3d_need = deal_ps_3d(ps_3d_need, ps_3d_kernel=ps_3d_kernel_need, ps_3d_factor=boxsize_prod, shotnoise=shotnoise, inplace=ps_3d_inplace, nthreads=nthreads, c_api=c_api, pybind=pybind)
+        ps_3d_need = deal_ps_3d(ps_3d_need, ps_3d_kernel=ps_3d_kernel_need, ps_3d_factor=float(boxsize_prod), shotnoise=shotnoise, inplace=ps_3d_inplace, nthreads=nthreads, c_api=c_api, pybind=pybind)
         self.removed_shotnoise = True # Avoid shotnoise being removed twice
         self.attrs["shotnoise"] = shotnoise
 
@@ -195,6 +196,8 @@ class FFTPower:
                     nthreads=nthreads,
                 )
         
+        if power_mu is None:
+            raise ValueError("power_mu is None. Please check if you have run the r2c or converted it to correct device.")
         masked_index = power_modes == 0
         need_index = np.logical_not(masked_index)
         power_k[masked_index] = np.nan 
@@ -278,7 +281,7 @@ class FFTPower:
         power_k[need_index] = power_k[need_index] / power_modes[need_index]
         power[need_index] = power[need_index] / power_modes[need_index]
         
-        if mode == "2d":
+        if mode == "2d" and power_mu is not None:
             power_mu[masked_index] = np.nan
             power_mu[need_index] = power_mu[need_index] / power_modes[need_index]
             self.power = {"k": power_k, "mu": power_mu, "Pkmu": power, "modes": power_modes}
@@ -287,7 +290,8 @@ class FFTPower:
         
         return self.power
     
-    def intergrate_fftpower(self, kmin=-1.0, kmax=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", use_fit_mu=False, norm=False, bin_pack=1):
+    def intergrate_fftpower(self, k_min=-1.0, k_max=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", use_fit_mu=False, norm=False, bin_pack=1, remove_last_bin=False):
+        from .base import packarray
         if not isinstance(bin_pack, int):
             bin_pack = int(bin_pack)
         if bin_pack > 1:
@@ -295,6 +299,8 @@ class FFTPower:
         else:
             do_pack = False
         power = self.power 
+        if power is None:
+            raise ValueError("power is None")
         k_array = np.nanmean(power["k"], axis=1)
         if use_fit_mu:
             mu_array_edges = np.linspace(0.0, 1.0, self.attrs["Nmu"]+1)
@@ -302,20 +308,20 @@ class FFTPower:
         else:
             mu_array = np.nanmean(power["mu"], axis=0)
         
-        if kmin <= k_array[0] or kmin < 0.0:
+        if k_min <= k_array[0] or k_min < 0.0:
             k_min_index = 0
         else:
-            k_min_index_source = np.where(k_array >= kmin)[0]
+            k_min_index_source = np.where(k_array >= k_min)[0]
             if len(k_min_index_source) == 0:
-                raise ValueError(f"kmin({kmin:.2f}) is too large")
+                raise ValueError(f"k_min({k_min:.2f}) is too large")
             else:
                 k_min_index = k_min_index_source[0]
-        if kmax >= k_array[-1] or kmax < 0.0:
+        if k_max >= k_array[-1] or k_max < 0.0:
             k_max_index = len(k_array)
         else:
-            k_max_index_source = np.where(k_array >= kmax)[0]
+            k_max_index_source = np.where(k_array >= k_max)[0]
             if len(k_max_index_source) == 0:
-                raise ValueError("kmax({kmax:.2f}) is too small")
+                raise ValueError("k_max({k_max:.2f}) is too small")
             else:
                 k_max_index = k_max_index_source[0]
 
@@ -340,26 +346,29 @@ class FFTPower:
         mu_need = mu_array[mu_min_index: mu_max_index]
         k_need = k_array[k_min_index:k_max_index]
         if integrate == "k":
-            if do_pack:
-                new_bin_num = Pkmu_select.shape[1] // bin_pack
-                Pkmu_select_split = np.array_split(Pkmu_select, new_bin_num, axis=1)
-                Pkmu_select = np.stack([np.nanmean(Pkmu_select_split[i], axis=1) for i in range(new_bin_num)], axis=-1)
-                mu_need_split = np.array_split(mu_need, new_bin_num)
-                mu_need = np.array([np.nanmean(mu_need_split[i]) for i in range(new_bin_num)])
-            Pkmu_integrate = np.nanmean(Pkmu_select, axis=0) 
+            Pkmu_integrate = np.nanmean(Pkmu_select, axis=0)
+            # Apply normalization before remove_last_bin to ensure it's computed on full data
             if norm:
                 Pkmu_integrate = Pkmu_integrate / np.nanmean(Pkmu_integrate)
+            # Apply remove_last_bin after normalization
+                if remove_last_bin:
+                    Pkmu_integrate = Pkmu_integrate[:-1]
+                    mu_need = mu_need[:-1]
+            # Apply bin_pack to 1D arrays after nanmean
+            if do_pack:
+                mu_need = packarray(mu_need, bin_pack=bin_pack, axis=0)
+                Pkmu_integrate = packarray(Pkmu_integrate, bin_pack=bin_pack, axis=0)
             return mu_need, Pkmu_integrate
         elif integrate == "mu":
-            if do_pack:
-                new_bin_num = Pkmu_select.shape[0] // bin_pack
-                Pkmu_select_split = np.array_split(Pkmu_select, new_bin_num, axis=0)
-                Pkmu_select = np.stack([np.nanmean(Pkmu_select_split[i], axis=0) for i in range(new_bin_num)], axis=-1)
-                k_need_split = np.array_split(k_need, new_bin_num)
-                k_need = np.array([np.nanmean(k_need_split[i]) for i in range(new_bin_num)])
-            Pkmu_integrate = np.nanmean(Pkmu_select, axis=1) 
+            Pkmu_integrate = np.nanmean(Pkmu_select, axis=1)
+            # Apply normalization before remove_last_bin to ensure it's computed on full data
             if norm:
                 Pkmu_integrate = Pkmu_integrate / np.nanmean(Pkmu_integrate)
+            # Note: remove_last_bin is not applicable for mu integration in current implementation
+            # Apply bin_pack to 1D arrays after nanmean
+            if do_pack:
+                k_need = packarray(k_need, bin_pack=bin_pack, axis=0)
+                Pkmu_integrate = packarray(Pkmu_integrate, bin_pack=bin_pack, axis=0)
             return k_need, Pkmu_integrate
         else:
             raise ValueError("integrate must be k or mu")
@@ -438,6 +447,8 @@ class FFTPower2D(FFTPower):
             mode=mode, k_logarithmic=k_logarithmic,
             nthreads=nthreads, c_api=c_api
         )
+        if fftpower.power is None:
+            raise ValueError("cal_pkmu_from_ps_2d failed.")
         fftpower.power["modes_2d"] = self.modes_2d
         return fftpower
 

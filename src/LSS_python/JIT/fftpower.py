@@ -20,7 +20,7 @@ def deal_ps_3d_single(ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0)
                 ps_3d[ix, iy, iz] = (ps_3d[ix, iy, iz] * np.conj(ps_3d[ix, iy, iz]) * ps_3d_factor - shotnoise) * kernel_element
     return
 
-def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, ps_factor=1.0, shotnoise=0.0, nthreads=1):
+def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, ps_factor=1.0, shotnoise=0.0, nthreads=1, dk=None):
     if mesh.complex_field is None:
         raise ValueError("Complex field is not set.")
     complex_field = mesh.complex_field
@@ -33,33 +33,48 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, ps_factor=1.0, sh
         k_z_array = np.fft.rfftfreq(Nmesh[2], d=BoxSize[2] / Nmesh[2]) * 2.0 * np.pi
     else:
         k_x_array, k_y_array, k_z_array = k_arrays
-    
+
+    if dk is None:
+        dk = (k_z_array[1] - k_z_array[0]) * 2.0
+
     k_perp_source = np.sqrt(k_x_array**2 + k_y_array**2)
     k_perp_min = np.min(k_perp_source)
     k_perp_max = np.max(k_perp_source)
-    dk_perp = k_z_array[1] - k_z_array[0]
-    k_perp_edge = np.arange(k_perp_min, k_perp_max + dk_perp, dk_perp)
+    k_perp_edge = np.arange(k_perp_min, k_perp_max + dk, dk)
+    k_perp_bin = len(k_perp_edge) - 1
 
-    k_2d, ps_2d, modes_2d = cal_ps_2d_core(complex_field, kernel, [k_x_array, k_y_array, k_z_array], k_perp_edge, ps_factor, shotnoise, nthreads)
+    k_parallel_edge = np.arange(k_z_array[0], k_z_array[-1] + dk, dk)
+    k_parallel_bin = len(k_parallel_edge) - 1
+
+    k_2d, ps_2d, modes_2d = cal_ps_2d_core(complex_field, kernel, [k_x_array, k_y_array, k_z_array],
+                                            k_perp_edge, k_parallel_edge, ps_factor, shotnoise, nthreads)
 
     return k_2d, ps_2d, modes_2d
 
 @njit(parallel=True)
-def cal_ps_2d_core(complex_field, kernel, k_arrays, k_perp_edge, ps_factor, shotnoise, nthreads=1):
+def cal_ps_2d_core(complex_field, kernel, k_arrays, k_perp_edge, k_parallel_edge, ps_factor, shotnoise, nthreads=1):
     k_x_array, k_y_array, k_z_array = k_arrays
-    k_parallel_size = len(k_z_array)
     k_perp_size = len(k_perp_edge) - 1
+    k_parallel_size = len(k_parallel_edge) - 1
     dk_perp = k_perp_edge[1] - k_perp_edge[0]
+    dk_parallel = k_parallel_edge[1] - k_parallel_edge[0]
 
     k_2d = np.zeros((k_perp_size, k_parallel_size, 2), dtype=np.float32)
     ps_2d = np.zeros((k_perp_size, k_parallel_size), dtype=np.complex64)
     modes_2d = np.zeros((k_perp_size, k_parallel_size), dtype=np.uint64)
 
     set_num_threads(nthreads)
-    for i_z in prange(len(k_z_array)):
+    for i_z in range(len(k_z_array)):
         k_z = k_z_array[i_z]
+        # Determine k_parallel index
+        if k_z < k_parallel_edge[0] or k_z > k_parallel_edge[-1]:
+            continue
+        k_parallel_index = int((k_z - k_parallel_edge[0]) / dk_parallel)
+        if k_parallel_index == k_parallel_size:
+            k_parallel_index -= 1
+
         modes = np.zeros(k_perp_size, dtype=np.int32)
-        k_2d[:, i_z, 1] = k_z
+        k_2d[:, k_parallel_index, 1] = k_z
         for i_x in range(len(k_x_array)):
             k_x = k_x_array[i_x]
             for i_y in range(len(k_y_array)):
@@ -73,16 +88,16 @@ def cal_ps_2d_core(complex_field, kernel, k_arrays, k_perp_edge, ps_factor, shot
                 else:
                     kernel_value = 1.0 if kernel is None else kernel[i_x, i_y, i_z]
                     modes[k_perp_index] += 1
-                    k_2d[k_perp_index, i_z, 0] += k_perp
-                    ps_2d[k_perp_index, i_z] += ((complex_field[i_x, i_y, i_z] * np.conjugate(complex_field[i_x, i_y, i_z]) * ps_factor) - shotnoise) * kernel_value
+                    k_2d[k_perp_index, k_parallel_index, 0] += k_perp
+                    ps_2d[k_perp_index, k_parallel_index] += ((complex_field[i_x, i_y, i_z] * np.conjugate(complex_field[i_x, i_y, i_z]) * ps_factor) - shotnoise) * kernel_value
         for i in range(k_perp_size):
             if modes[i] > 0:
-                k_2d[i, i_z, 0] /= modes[i]
-                ps_2d[i, i_z] /= modes[i]
+                k_2d[i, k_parallel_index, 0] /= modes[i]
+                ps_2d[i, k_parallel_index] /= modes[i]
             else:
-                k_2d[i, i_z, 0] = np.nan 
-                ps_2d[i, i_z] = np.nan
-        modes_2d[:,i_z] = modes
+                k_2d[i, k_parallel_index, 0] = np.nan
+                ps_2d[i, k_parallel_index] = np.nan
+        modes_2d[:, k_parallel_index] += modes
     return k_2d, ps_2d, modes_2d
 
 @njit(parallel=True)

@@ -50,7 +50,7 @@ def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_met
     else:
         raise ValueError("convert_method must be 'simple' or 'dense'")
 
-def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, ps_rescale=False, mesh_done_norm=True, device_id=-1, pybind=False, **kargs):
+def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh_done_norm=True, device_id=-1, pybind=False, **kargs):
     """
     ps_3d: The 3d PS after removing the shot noise and including kernel
     boxsize: The boxsize of the simulation. float or ndarray is OK.
@@ -65,7 +65,6 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, ps_r
         Nmu: Default 30
         mode: Default '2d'
         nthreads: Default 1
-        add_HI: Default False.
         device_id: If >= 0, use GPU. Default -1.
         shotnoise: Only add to fftpower.attrs but not to deduct. 
     """
@@ -90,18 +89,9 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, ps_r
     Nmu = kargs.get("Nmu", 30)
     mode = kargs.get("mode", "2d")
     nthreads = kargs.get("nthreads", 1)
-    add_HI = kargs.get("add_HI", False)
 
-    if ps_rescale:
-        from ._AP_core import rescale_ps
-        kx = np.fft.fftfreq(n=Nmesh, d=boxsize_array[0]/Nmesh_array[0]) * np.pi * 2 
-        ky = np.fft.fftfreq(n=Nmesh, d=boxsize_array[1]/Nmesh_array[1]) * np.pi * 2
-        kz = np.fft.rfftfreq(n=Nmesh, d=boxsize_array[2]/Nmesh_array[2]) * np.pi * 2
-        ps_3d_need = rescale_ps(ps_3d, kx, ky, kz, perp_convert_factor, parallel_convert_factor, nthreads)
-        fftpower_new = FFTPower(Nmesh=Nmesh_array, BoxSize=boxsize_array)
-    else:
-        ps_3d_need = ps_3d
-        fftpower_new = FFTPower(Nmesh=Nmesh_array, BoxSize=boxsize_convert_array)
+    ps_3d_need = ps_3d
+    fftpower_new = FFTPower(Nmesh=Nmesh_array, BoxSize=boxsize_convert_array)
     fftpower_new.is_run_ps_3d = True
     _ = fftpower_new.cal_ps_from_3d(
             ps_3d_need,
@@ -116,6 +106,8 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, ps_r
             c_api=True,
             pybind=pybind
     )
+    if fftpower_new.power is None:
+        raise RuntimeError("FFTPower.cal_ps_from_3d failed")
 
     if mode == "1d":
         key_str = "Pk"
@@ -129,100 +121,132 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, ps_r
         fftpower_new.attrs["mesh_done_norm"] = False
         fftpower_new.power[key_str] *= 1.0 / np.prod(convert_array)
 
-    if add_HI:
-        HI_factor = cal_HI_factor(redshift, omega_mf, V_cell=1.0) # The relation of convertion should not be changed in AP test
-        fftpower_new.attrs["HI_factor"] = HI_factor
-    else:
-        HI_factor = 1.0
-
-    fftpower_new.power[key_str] *= HI_factor**2
-
     return fftpower_new
 
-def ps_2d_convert_main(ps_2d, k_2d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh_done_norm=True, w_af=None, w_am=None, **kargs):
-    """
-    ps_2d: The 2D PS array from cal_ps_2d_from_mesh.
-    k_2d: 2D k-space coordinates with shape (k_perp_bin, k_parallel_bin, 2),
-          where k_2d[..., 0] is k_perp and k_2d[..., 1] is k_parallel.
-    boxsize: The boxsize of the simulation. float or ndarray is OK.
+# def ps_2d_convert_main_bak(fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift, mesh_done_norm=True, w_af=None, w_am=None, **kargs):
+#     """
+#     fftpower_2d: The FFTPower2D object
 
-    kargs:
-        Nmesh: Default 1024
-        k_min: Default 0.01
-        k_max: Default 3.0
-        dk: Default 0.01
-        Nmu: Default 30
-        mode: Default '2d'
-        nthreads: Default 1
-        add_HI: Default False.
-        c_api: Default False.
-        shotnoise: Only add to fftpower.attrs but not to deduct.
+#     kargs:
+#         Nmesh: Default 1024
+#         kmin: Default 0.01
+#         kmax: Default 3.0
+#         dk: Default 0.01
+#         Nmu: Default 30
+#         mode: Default '2d'
+#         nthreads: Default 1
+#         c_api: Default False.
+#     """
+    # from .fftpower import FFTPower
+    # z = redshift
+    # if w_af is None or w_am is None:
+    #     Hz_f, Hz_m = Hz(z, omega_mf, w_f), Hz(z, omega_mm, w_m)
+    #     DA_f, DA_m = DA(z, omega_mf, w_f), DA(z, omega_mm, w_m)
+    # else:
+    #     from .base import Hz_w0wa
+    #     Hz_f, Hz_m = Hz_w0wa(z, omega_mf, w_f, w_af), Hz_w0wa(z, omega_mm, w_m, w_am)
+    #     DA_f, DA_m = DA(z, omega_mf, w_f, w_af), DA(z, omega_mm, w_m, w_am)
+    # perp_convert_factor = DA_m / DA_f
+    # parallel_convert_factor = Hz_f / Hz_m
+
+    # k_2d = fftpower_2d.k_2d
+    # ps_2d = fftpower_2d.ps_2d
+    # boxsize = fftpower_2d.attrs["BoxSize"]
+
+    # kmin = kargs.get("kmin", 0.1)
+    # kmax = kargs.get("kmax", 2.1)
+    # dk = kargs.get("dk", 0.01)
+    # Nmu = kargs.get("Nmu", 30)
+    # mode = kargs.get("mode", "2d")
+    # nthreads = kargs.get("nthreads", 1)
+    # c_api = kargs.get("c_api", True)
+
+    # Transform k_2d coordinates for AP effect
+    # k_2d_converted = np.copy(k_2d)
+    # k_2d_converted[..., 0] *= 1.0 / perp_convert_factor   # k_perp
+    # k_2d_converted[..., 1] *= 1.0 / parallel_convert_factor  # k_parallel
+
+    # boxsize_array = boxsize * np.ones(3) if isinstance(boxsize, (float, int)) else np.array(boxsize, dtype=float)
+    # Nmesh = kargs.get("Nmesh", 1024)
+    # Nmesh_array = Nmesh * np.ones(3) if isinstance(Nmesh, (int, float)) else np.array(Nmesh, dtype=np.int32)
+
+    # fftpower_new = FFTPower(Nmesh=Nmesh_array, BoxSize=boxsize_array)
+    # fftpower_new.is_run_ps_3d = True
+    # _ = fftpower_new.cal_pkmu_from_ps_2d(
+    #     ps_2d,
+    #     k_2d_converted,
+    #     kmin,
+    #     kmax,
+    #     dk,
+    #     Nmu=Nmu,
+    #     mode=mode,
+    #     k_logarithmic=False,
+    #     nthreads=nthreads,
+    #     c_api=c_api,
+    # )
+
+    # if fftpower_new.power is None:
+    #     raise RuntimeError("FFTPower.cal_pkmu_from_ps_2d failed")
+
+    # if mode == "1d":
+    #     key_str = "Pk"
+    # else:
+    #     key_str = "Pkmu"
+
+    # convert_prod = perp_convert_factor**2 * parallel_convert_factor
+    # if mesh_done_norm:
+    #     fftpower_new.attrs["mesh_done_norm"] = True
+    #     fftpower_new.power[key_str] *= convert_prod
+    # else:
+    #     fftpower_new.attrs["mesh_done_norm"] = False
+    #     fftpower_new.power[key_str] *= 1.0 / convert_prod
+
+    # return fftpower_new
+
+def ps_2d_convert_main(fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift, mesh_done_norm=True, w_af=None, w_am=None):
     """
-    from .fftpower import FFTPower
+    fftpower_2d: The FFTPower2D object
+    """
+    from .fftpower import FFTPower2D
     z = redshift
-    if w_af is None and w_am is None:
+    if w_af is None or w_am is None:
+        if abs(omega_mm - omega_mf) < 1e-5 and abs(w_m - w_f) < 1e-5 or redshift < 1e-3:
+            return fftpower_2d
         Hz_f, Hz_m = Hz(z, omega_mf, w_f), Hz(z, omega_mm, w_m)
         DA_f, DA_m = DA(z, omega_mf, w_f), DA(z, omega_mm, w_m)
     else:
+        if abs(omega_mm - omega_mf) < 1e-5 and abs(w_m - w_f) < 1e-5 and abs(w_am - w_af) < 1e-5 or redshift < 1e-3:
+            return fftpower_2d
         from .base import Hz_w0wa
         Hz_f, Hz_m = Hz_w0wa(z, omega_mf, w_f, w_af), Hz_w0wa(z, omega_mm, w_m, w_am)
         DA_f, DA_m = DA(z, omega_mf, w_f, w_af), DA(z, omega_mm, w_m, w_am)
     perp_convert_factor = DA_m / DA_f
     parallel_convert_factor = Hz_f / Hz_m
 
-    k_min = kargs.get("k_min", 0.01)
-    k_max = kargs.get("k_max", 3.0)
-    dk = kargs.get("dk", 0.01)
-    Nmu = kargs.get("Nmu", 30)
-    mode = kargs.get("mode", "2d")
-    nthreads = kargs.get("nthreads", 1)
-    add_HI = kargs.get("add_HI", False)
-    c_api = kargs.get("c_api", False)
+    k_2d = fftpower_2d.k_2d
+    boxsize = fftpower_2d.attrs["BoxSize"]
+    Nmesh = fftpower_2d.attrs["Nmesh"]
 
     # Transform k_2d coordinates for AP effect
     k_2d_converted = np.copy(k_2d)
     k_2d_converted[..., 0] *= 1.0 / perp_convert_factor   # k_perp
     k_2d_converted[..., 1] *= 1.0 / parallel_convert_factor  # k_parallel
 
-    boxsize_array = boxsize * np.ones(3) if isinstance(boxsize, (float, int)) else np.array(boxsize, dtype=float)
-    Nmesh = kargs.get("Nmesh", 1024)
-    Nmesh_array = Nmesh * np.ones(3) if isinstance(Nmesh, (int, float)) else np.array(Nmesh, dtype=np.int32)
-
-    fftpower_new = FFTPower(Nmesh=Nmesh_array, BoxSize=boxsize_array)
-    fftpower_new.is_run_ps_3d = True
-    _ = fftpower_new.cal_pkmu_from_ps_2d(
-        ps_2d,
-        k_2d_converted,
-        k_min,
-        k_max,
-        dk,
-        Nmu=Nmu,
-        mode=mode,
-        k_logarithmic=False,
-        nthreads=nthreads,
-        c_api=c_api,
-    )
-
-    if mode == "1d":
-        key_str = "Pk"
-    else:
-        key_str = "Pkmu"
+    boxsize_array = boxsize * np.array([perp_convert_factor, perp_convert_factor, parallel_convert_factor])
+    fftpower_new = FFTPower2D(Nmesh=Nmesh, BoxSize=boxsize_array)
+    fftpower_new.k_2d = k_2d_converted 
+    fftpower_new.ps_2d = np.copy(fftpower_2d.ps_2d)
+    fftpower_new.modes_2d = fftpower_2d.modes_2d
+    fftpower_new.removed_shotnoise = fftpower_2d.removed_shotnoise
+    fftpower_new.attrs = fftpower_2d.attrs
 
     convert_prod = perp_convert_factor**2 * parallel_convert_factor
     if mesh_done_norm:
         fftpower_new.attrs["mesh_done_norm"] = True
-        fftpower_new.power[key_str] *= convert_prod
+        fftpower_new.ps_2d *= convert_prod
     else:
         fftpower_new.attrs["mesh_done_norm"] = False
-        fftpower_new.power[key_str] *= 1.0 / convert_prod
-
-    if add_HI:
-        HI_factor = cal_HI_factor(redshift, omega_mf, V_cell=1.0)
-        fftpower_new.attrs["HI_factor"] = HI_factor
-    else:
-        HI_factor = 1.0
-
-    fftpower_new.power[key_str] *= HI_factor**2
+        fftpower_new.ps_2d *= 1.0 / convert_prod
 
     return fftpower_new
 
