@@ -6,6 +6,146 @@ import time
 import os
 import joblib
 
+def run_jaccknife_fftpower(data, boxsize, Nmesh, ngrids, nthreads=1, with_weights=False, with_values=False, dk=None, verbose=True):
+    """
+    Compute Jackknife power spectrum 2D measurements by leaving out one subbox at a time.
+
+    Parameters
+    ----------
+    data : ndarray
+        Data array with shape (N, 3) for positions only, (N, 4) for positions + weights or values,
+        or (N, 5) for positions + weights + values.
+    boxsize : float or array-like
+        Box size. If float, assumes cubic box.
+    ngrids : int or array-like of 3 ints
+        Number of divisions along each axis for Jackknife subboxes.
+        Total number of Jackknife samples = ngrids[0] * ngrids[1] * ngrids[2].
+    Nmesh : int or array-like of 3 ints
+        Number of grid cells for the power spectrum mesh. This determines the resolution
+        of the FFT mesh used for P(k) calculation.
+    nthreads : int, optional
+        Number of threads for parallel computation.
+    with_weights : bool, optional
+        If True, the 4th column of data is treated as weights.
+    with_values : bool, optional
+        If True, the 4th (or 5th if with_weights also True) column of data is treated as values.
+    dk : float, optional
+        Bin size for k. If None, uses default.
+
+    Returns
+    -------
+    list of FFTPower2D
+        List of FFTPower2D objects, one for each Jackknife sample (leave-one-out).
+    """
+    from .mesh import Mesh
+    from .fftpower import FFTPower2D
+
+    # Validate data columns
+    n_cols = data.shape[1]
+    if not with_weights and not with_values:
+        if n_cols != 3:
+            raise ValueError("data must have 3 columns if with_weights and with_values are False")
+    elif (with_weights and not with_values) or (not with_weights and with_values):
+        if n_cols != 4:
+            raise ValueError("data must have 4 columns if with_weights and with_values are not both False")
+    else:  # with_weights and with_values
+        if n_cols != 5:
+            raise ValueError("data must have 5 columns if with_weights and with_values are both True")
+
+    # Normalize boxsize and ngrids
+    if isinstance(boxsize, (int, float)):
+        boxsize = np.array([boxsize, boxsize, boxsize])
+    if isinstance(ngrids, (int, float)):
+        ngrids = np.array([ngrids, ngrids, ngrids], dtype=np.int32)
+    else:
+        ngrids = np.array(ngrids, dtype=np.int32)
+
+    n_subboxes = int(np.prod(ngrids))
+
+    # Divide data into subboxes (keep global coordinates)
+    data_subboxes = get_sub_box_shift(data, boxsize, ngrids, shift=False)
+
+    # Build list of subbox data in order and record index ranges
+    subbox_data_list = []
+    subbox_slices = []  # List of (start_idx, end_idx) for each subbox in the stacked array
+    for i in range(ngrids[0]):
+        for j in range(ngrids[1]):
+            for k in range(ngrids[2]):
+                subbox_data = data_subboxes[i, j, k]
+                start_idx = len(subbox_data_list)  # Will be updated after stacking
+                subbox_data_list.append(subbox_data)
+
+    # Stack all subbox data into a single array
+    all_data = np.vstack(subbox_data_list)
+
+    # Now compute the actual slices
+    current_idx = 0
+    for idx, subbox_data in enumerate(subbox_data_list):
+        n_points = len(subbox_data)
+        subbox_slices.append((current_idx, current_idx + n_points))
+        current_idx += n_points
+
+    # Release memory for subbox_data_list and data_subboxes
+    del subbox_data_list
+    del data_subboxes
+
+    # Compute Jackknife samples: for each subbox, leave it out and compute P(k) on the rest
+    fftpower2d_list = []
+    indices = range(n_subboxes)
+    if verbose:
+        indices = tqdm(indices, total=n_subboxes, desc="Computing Jackknife samples")
+    for idx in indices:
+        # Create bool mask: True for points to keep, False for points to exclude
+        mask = np.ones(len(all_data), dtype=bool)
+        start_idx, end_idx = subbox_slices[idx]
+        mask[start_idx:end_idx] = False
+
+        # Check if we have any data left
+        if not np.any(mask):
+            raise ValueError(f"All data is in one subbox; cannot create Jackknife sample by removing subbox {idx}")
+
+        # Extract positions from all_data
+        pos = all_data[:, :3]
+
+        # Prepare weights and values based on column configuration
+        if with_weights and with_values:
+            # Original weights and values
+            w_orig = all_data[:, 3]
+            v_orig = all_data[:, 4]
+            # Apply mask as weights: multiply original weights by mask
+            w = w_orig * mask.astype(w_orig.dtype)
+            v = v_orig * mask.astype(v_orig.dtype)
+        elif with_weights:
+            w_orig = all_data[:, 3]
+            w = w_orig * mask.astype(w_orig.dtype)
+            v = None
+        elif with_values:
+            v_orig = all_data[:, 3]
+            w = None
+            v = v_orig * mask.astype(v_orig.dtype)
+        else:
+            # No original weights or values: use mask as weights
+            w = mask.astype(pos.dtype)
+            v = None
+
+        # Create mesh for the full box
+        mesh = Mesh(Nmesh, boxsize)
+        mesh.to_mesh(pos, values=v, weights=w, nthreads=nthreads, c_api=True, pybind=True)
+        mesh.r2c(compensated=True, nthreads=nthreads, c_api=True, pybind=True)
+
+        # Correct the number count: N should equal W (since W_total correctly reflects kept particles)
+        mesh.attrs["N"] = int(mesh.attrs["W"])
+
+        # Create FFTPower2D and compute power spectrum
+        fftpower_2d = FFTPower2D(Nmesh, boxsize)
+        fftpower_2d.attrs["num_per_V"] = mesh.attrs["num_per_V"]
+        fftpower_2d.cal_ps_2d_from_mesh(mesh, nthreads=nthreads, dk=dk)
+
+        fftpower2d_list.append(fftpower_2d)
+
+    return fftpower2d_list
+    
+
 def get_sub_box_shift(data, boxsize, ngrids, max_points_default=None, perodic=False, shift=False):
     """
     Divide data into subvolumes.

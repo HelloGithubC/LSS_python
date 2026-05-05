@@ -8,13 +8,13 @@
 
 namespace py = pybind11;
 template <typename T>
-void run_mesh(py::array_t<T> pos, 
-                     py::array_t<T> field, 
-                     py::object weights, 
-                     py::object values, 
-                     py::array_t<T> boxSize, 
-                     py::array_t<size_t> ngrids, 
-                     T shift, 
+void run_mesh(const py::array_t<T>& pos,
+                     const py::array_t<T>& field,
+                     py::object weights,
+                     py::object values,
+                     const py::array_t<T>& boxSize,
+                     const py::array_t<size_t>& ngrids,
+                     T shift,
                      int type,
                      int nthreads
                     ) {
@@ -22,12 +22,12 @@ void run_mesh(py::array_t<T> pos,
     if (!(field.flags() & py::array::c_style) || !field.writeable())  {
         throw std::runtime_error("Field must be C-contiguous and writeable");
     }
-    
+
     // 获取数据指针
-    auto pos_buf = pos.request();
-    auto field_buf = field.request();
-    auto boxSize_buf = boxSize.request();
-    auto ngrids_buf = ngrids.request();
+    auto pos_buf = pos.request(false);
+    auto field_buf = field.request(false);
+    auto boxSize_buf = boxSize.request(false);
+    auto ngrids_buf = ngrids.request(false);
 
     const T* pos_ptr = static_cast<const T*>(pos_buf.ptr);
     T* field_ptr = static_cast<T*>(field_buf.ptr);
@@ -80,19 +80,19 @@ void run_mesh(py::array_t<T> pos,
 }
 
 template <typename T>
-void do_compensation(py::array_t<std::complex<T>> complex_field,
-                    py::array_t<size_t> ngrids,
-                    py::array_t<double> kx_array,
-                    py::array_t<double> ky_array,
-                    py::array_t<double> kz_array,
+void do_compensation(const py::array_t<std::complex<T>>& complex_field,
+                    const py::array_t<size_t>& ngrids,
+                    const py::array_t<double>& kx_array,
+                    const py::array_t<double>& ky_array,
+                    const py::array_t<double>& kz_array,
                     int type,
                     int nthreads)
 {
-    auto buf_field = complex_field.request();
-    auto buf_ngrids = ngrids.request();
-    auto buf_kx = kx_array.request();
-    auto buf_ky = ky_array.request();
-    auto buf_kz = kz_array.request();
+    auto buf_field = complex_field.request(false);
+    auto buf_ngrids = ngrids.request(false);
+    auto buf_kx = kx_array.request(false);
+    auto buf_ky = ky_array.request(false);
+    auto buf_kz = kz_array.request(false);
 
     std::complex<T>* ptr_field = static_cast<std::complex<T>*>(buf_field.ptr);
     size_t* ptr_ngrids = static_cast<size_t*>(buf_ngrids.ptr);
@@ -106,19 +106,19 @@ void do_compensation(py::array_t<std::complex<T>> complex_field,
 }
 
 template<typename T>
-void do_compensation_interlaced(py::array_t<std::complex<T>> complex_field, 
-                               py::array_t<size_t> ngrids,
-                               py::array_t<double> kx_array,
-                               py::array_t<double> ky_array,
-                               py::array_t<double> kz_array,
+void do_compensation_interlaced(const py::array_t<std::complex<T>>& complex_field,
+                               const py::array_t<size_t>& ngrids,
+                               const py::array_t<double>& kx_array,
+                               const py::array_t<double>& ky_array,
+                               const py::array_t<double>& kz_array,
                                int p,
                                int nthreads)
 {
-    auto buf_field = complex_field.request();
-    auto buf_ngrids = ngrids.request();
-    auto buf_kx = kx_array.request();
-    auto buf_ky = ky_array.request();
-    auto buf_kz = kz_array.request();
+    auto buf_field = complex_field.request(false);
+    auto buf_ngrids = ngrids.request(false);
+    auto buf_kx = kx_array.request(false);
+    auto buf_ky = ky_array.request(false);
+    auto buf_kz = kz_array.request(false);
 
     std::complex<T>* ptr_field = static_cast<std::complex<T>*>(buf_field.ptr);
     size_t* ptr_ngrids = static_cast<size_t*>(buf_ngrids.ptr);
@@ -130,22 +130,22 @@ void do_compensation_interlaced(py::array_t<std::complex<T>> complex_field,
 }
 
 template<typename T>
-void do_interlace(py::array_t<std::complex<T>> c1,
-                  py::array_t<std::complex<T>> c2,
-                  py::array_t<double> H, 
-                  py::array_t<size_t> ngrids,
-                  py::array_t<double> kx_array,
-                  py::array_t<double> ky_array,
-                  py::array_t<double> kz_array,
+void do_interlace(const py::array_t<std::complex<T>>& c1,
+                  const py::array_t<std::complex<T>>& c2,
+                  const py::array_t<double>& H,
+                  const py::array_t<size_t>& ngrids,
+                  const py::array_t<double>& kx_array,
+                  const py::array_t<double>& ky_array,
+                  const py::array_t<double>& kz_array,
                   int nthreads)
 {
-    auto buf_c1 = c1.request();
-    auto buf_c2 = c2.request();
-    auto buf_H = H.request();
-    auto buf_ngrids = ngrids.request();
-    auto buf_kx = kx_array.request();
-    auto buf_ky = ky_array.request();
-    auto buf_kz = kz_array.request();
+    auto buf_c1 = c1.request(false);
+    auto buf_c2 = c2.request(false);
+    auto buf_H = H.request(false);
+    auto buf_ngrids = ngrids.request(false);
+    auto buf_kx = kx_array.request(false);
+    auto buf_ky = ky_array.request(false);
+    auto buf_kz = kz_array.request(false);
 
     std::complex<T>* ptr_c1 = static_cast<std::complex<T>*>(buf_c1.ptr);
     std::complex<T>* ptr_c2 = static_cast<std::complex<T>*>(buf_c2.ptr);

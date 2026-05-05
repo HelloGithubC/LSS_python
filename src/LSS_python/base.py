@@ -115,12 +115,71 @@ def traz(V_array, x_array, y_array=None):
         total_V = 0.5 * np.sum(delta_x_array * (V_array[1:] + V_array[:-1]))
         return total_V 
     
-    if use_2D:
+    if use_2D and y_array is not None:
         X_mesh, Y_mesh = np.meshgrid(x_array, y_array, indexing="ij")
         delta_X_mesh = X_mesh[1:, 1:] - X_mesh[:-1, :-1]
         delta_Y_mesh = Y_mesh[1:, 1:] - Y_mesh[:-1, :-1]
         total_V = 0.25 * np.sum(delta_X_mesh * delta_Y_mesh * (V_array[1:,1:] + V_array[:-1,:-1] + V_array[1:,:-1] + V_array[:-1,1:]))
         return total_V
+
+def packarray(array, bin_pack=1, axis=-1):
+    """Pack the array along the given axis by averaging over bins.
+
+    Parameters
+    ----------
+    array : ndarray
+        The array to be packed.
+    bin_pack : int, optional
+        The number of bins to average. Must be a positive integer. Default is 1.
+    axis : int, optional
+        The axis along which to pack. Negative values are counted from the end.
+        Default is -1 (last axis).
+
+    Returns
+    -------
+    ndarray
+        The packed array with the specified axis reduced by a factor of bin_pack.
+        Residual elements that do not form a complete bin are discarded.
+
+    Examples
+    --------
+    >>> a = np.arange(10)
+    >>> packarray(a, bin_pack=3)
+    array([1., 4., 7.])  # averages of [0,1,2], [3,4,5], [6,7,8]; 9 is discarded
+    """
+    if bin_pack < 1:
+        raise ValueError("bin_pack must be a positive integer")
+    if bin_pack == 1:
+        return array
+
+    # Normalize axis to be non-negative
+    ndim = array.ndim
+    if axis < 0:
+        axis = ndim + axis
+    if axis < 0 or axis >= ndim:
+        raise ValueError(f"axis {axis} is out of bounds for array of dimension {ndim}")
+
+    # Get the size of the axis to be packed
+    n = array.shape[axis]
+
+    # Calculate the number of complete bins (discard residuals)
+    n_packed = n // bin_pack
+
+    # Trim the array to keep only complete bins
+    trim_size = n_packed * bin_pack
+    slices = [slice(None)] * ndim
+    slices[axis] = slice(0, trim_size)
+    trimmed = array[tuple(slices)]
+
+    # Reshape to separate the bin_pack dimension
+    new_shape = list(trimmed.shape)
+    new_shape[axis] = n_packed
+    new_shape.insert(axis + 1, bin_pack)
+    reshaped = trimmed.reshape(new_shape)
+
+    # Average over the bin_pack dimension
+    return np.mean(reshaped, axis=axis + 1)
+    
 
 def get_chi2(snap_ids_pair, P_ap_dict, P_sys_dict=None, sys_array=None, cov_source_dict=None, need_slice = slice(None, -1, None), do_pinv=False, pinv_rcond=1e-5, cov_shift=5, cov_matrix_inv=None):
     snap1, snap2 = snap_ids_pair
@@ -158,7 +217,7 @@ def get_chi2(snap_ids_pair, P_ap_dict, P_sys_dict=None, sys_array=None, cov_sour
     chi2_array = np.zeros(shape=(P_ap_num,))
     P_ap_array_1 = P_ap_dict[snap1].reshape(-1,P_ap_size)
     P_ap_array_2 = P_ap_dict[snap2].reshape(-1,P_ap_size)
-    if sys_array is None:
+    if sys_array is None and P_sys_dict is not None:
         sys_array = P_sys_dict[snap1] - P_sys_dict[snap2]
     
     for i_ap in range(P_ap_num):
