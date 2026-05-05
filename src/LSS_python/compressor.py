@@ -7,6 +7,7 @@ PCA (Principal Component Analysis), KL (Karhunen-Loève transform), and MOPED
 
 import numpy as np
 from pathlib import Path
+from typing import List
 from scipy import linalg
 from scipy.linalg import eigh
 from sklearn.decomposition import PCA
@@ -51,7 +52,6 @@ class Compressor:
     >>> # MOPED compression with precomputed data (central differences)
     >>> compressor = Compressor(method='moped')
     >>> compressor.fit(
-    ...     fiducial_array=mu_fid,
     ...     precomputed_data=data,
     ...     delta=d,
     ...     cov_matrix=C
@@ -61,7 +61,6 @@ class Compressor:
     >>> # MOPED compression with Fisher matrix calculation
     >>> compressor = Compressor(method='moped')
     >>> compressor.fit(
-    ...     fiducial_array=mu_fid,
     ...     precomputed_data=data,
     ...     delta=d,
     ...     cov_matrix=C,
@@ -127,7 +126,7 @@ class Compressor:
             )
         return self._fisher_matrix
 
-    def fit(self, X_signal=None, *, n_components=None, X_noise=None, snr_threshold=None,
+    def fit(self, X_signal=None, *, n_components=None, pca_ratio_sum_max=None, X_noise=None, snr_threshold=None,
             fiducial_array=None, precomputed_data=None, delta=None, cov_matrix=None,
             best_fit=None):
         """Fit the compression model.
@@ -143,6 +142,12 @@ class Compressor:
             Number of components to keep. Required for PCA if X_noise is not
             provided. If None and X_noise is provided, automatically determine
             components using std_signal > std_noise criterion.
+        pca_ratio_sum_max : float, optional
+            Maximum cumulative explained variance ratio (between 0 and 1).
+            When provided, n_components is automatically determined to retain
+            all components whose cumulative explained variance ratio is less
+            than or equal to this value. If n_components is also provided,
+            a warning is issued and n_components is ignored.
         X_noise : ndarray, shape (n_samples_var, n_features), optional
             Noise/variance data for automatic component selection. Only used
             when n_components is None.
@@ -154,7 +159,8 @@ class Compressor:
 
         # MOPED-specific parameters
         fiducial_array : ndarray, shape (n_features,), optional
-            Fiducial/mean array for centering. Required for MOPED compression.
+            Fiducial array. Optional for MOPED compression; if provided,
+            used only for dimension tracking, not for centering.
         precomputed_data : dict, optional
             Precomputed function values for derivative calculation. Required
             for MOPED compression. Format:
@@ -189,6 +195,10 @@ class Compressor:
         >>> compressor = Compressor(method='pca')
         >>> compressor.fit(X_signal_train, X_noise=noise_train)
 
+        >>> # PCA compression with cumulative variance threshold
+        >>> compressor = Compressor(method='pca')
+        >>> compressor.fit(X_signal_train, pca_ratio_sum_max=0.95)
+
         >>> # KL compression
         >>> compressor = Compressor(method='kl')
         >>> compressor.fit(X_signal_train, X_noise=noise_train, snr_threshold=1.0)
@@ -196,7 +206,6 @@ class Compressor:
         >>> # MOPED compression
         >>> compressor = Compressor(method='moped')
         >>> compressor.fit(
-        ...     fiducial_array=mu_fid,
         ...     precomputed_data=data,
         ...     delta=d,
         ...     cov_matrix=C
@@ -205,7 +214,6 @@ class Compressor:
         >>> # MOPED compression with Fisher matrix
         >>> compressor = Compressor(method='moped')
         >>> compressor.fit(
-        ...     fiducial_array=mu_fid,
         ...     precomputed_data=data,
         ...     delta=d,
         ...     cov_matrix=C,
@@ -213,18 +221,29 @@ class Compressor:
         ... )
     >>> print(compressor.get_fisher_matrix())
     """
+        import warnings
+
+        # Handle pca_ratio_sum_max: if provided, n_components will be ignored with a warning
+        if pca_ratio_sum_max is not None and n_components is not None:
+            warnings.warn(
+                f"Both n_components ({n_components}) and pca_ratio_sum_max ({pca_ratio_sum_max}) "
+                f"are provided. n_components will be ignored; pca_ratio_sum_max takes precedence.",
+                UserWarning
+            )
+            n_components = None  # Override to let pca_ratio_sum_max control
+
         if self.method == 'moped':
-            # For MOPED, X_signal is ignored; require fiducial_array instead
-            if fiducial_array is None:
-                raise ValueError(
-                    "For MOPED compression, 'fiducial_array' parameter is required. "
-                    "This provides the theoretical model prediction used for centering."
-                )
-            self._mean = np.asarray(fiducial_array, dtype=np.float64)
-            if self._mean.ndim != 1:
-                raise ValueError(
-                    f"fiducial_array must be 1D, got shape {self._mean.shape}"
-                )
+            # For MOPED, X_signal is ignored; fiducial_array is optional
+            # (provided for compatibility but not used for centering)
+            if fiducial_array is not None:
+                self._mean = np.asarray(fiducial_array, dtype=np.float64)
+                if self._mean.ndim != 1:
+                    raise ValueError(
+                        f"fiducial_array must be 1D, got shape {self._mean.shape}"
+                    )
+            else:
+                # Use a placeholder mean for dimension tracking; MOPED does not center
+                self._mean = None
             # X_signal is ignored for MOPED
             X_signal = None
         else:
@@ -243,7 +262,7 @@ class Compressor:
 
         # Dispatch to method-specific fit
         if self.method == 'pca':
-            self._fit_pca(X_signal, n_components=n_components, X_noise=X_noise)
+            self._fit_pca(X_signal, n_components=n_components, pca_ratio_sum_max=pca_ratio_sum_max, X_noise=X_noise)
         elif self.method == 'kl':
             self._fit_kl(X_signal, X_noise=X_noise, snr_threshold=snr_threshold)
         elif self.method == 'moped':
@@ -300,16 +319,18 @@ class Compressor:
                 f"X has {X.shape[1]} features, but fitted with {n_features_expected} features"
             )
 
-        # Center the data
-        X_centered = X - self._mean
-
         # Apply method-specific transform
         if self.method == 'pca':
-            X_compressed = self._transform_pca(X)
+            # PCA: center the data first
+            X_centered = X - self._mean
+            X_compressed = self._transform_pca(X_centered)
         elif self.method == 'kl':
+            # KL: center the data first
+            X_centered = X - self._mean
             X_compressed = self._transform_kl(X_centered)
         elif self.method == 'moped':
-            X_compressed = self._transform_moped(X_centered)
+            # MOPED: no centering, apply directly to data
+            X_compressed = self._transform_moped(X)
         else:
             raise ValueError(f"Unknown method: {self.method}")
 
@@ -341,7 +362,7 @@ class Compressor:
     # PCA implementation
     # =========================================================================
 
-    def _fit_pca(self, X_signal, n_components=None, X_noise=None):
+    def _fit_pca(self, X_signal, n_components=None, pca_ratio_sum_max=None, X_noise=None):
         """Fit PCA compression.
 
         Parameters
@@ -353,6 +374,11 @@ class Compressor:
             automatically determine the number of components using the criterion
             std_signal > std_noise. If an integer is provided, use that exact
             number of components from standard PCA (X_noise is ignored).
+        pca_ratio_sum_max : float, optional
+            Maximum cumulative explained variance ratio (between 0 and 1).
+            When provided, n_components is automatically determined to retain
+            all components whose cumulative explained variance ratio is less
+            than or equal to this value. Takes precedence over n_components.
         X_noise : ndarray, shape (n_samples_var, n_features), optional
             Noise/variance data containing cosmological variance information.
             The first dimension can differ from X_signal, but the second dimension
@@ -366,14 +392,44 @@ class Compressor:
 
         Notes
         -----
-        When n_components is explicitly provided, X_noise is ignored and
-        standard PCA is performed, selecting the top n_components by explained variance.
+        When n_components is explicitly provided (and pca_ratio_sum_max is None),
+        X_noise is ignored and standard PCA is performed, selecting the top
+        n_components by explained variance.
+
+        When pca_ratio_sum_max is provided, it takes precedence and n_components
+        is ignored (with a warning issued in the fit method).
 
         When n_components is None and X_noise is provided, the algorithm
         separately computes the covariance matrices for signal and noise data
         in the PCA space, then retains components where the signal standard
         deviation exceeds the noise standard deviation (std_signal > std_noise).
         """
+        # If pca_ratio_sum_max is specified, use cumulative variance ratio to determine n_components
+        if pca_ratio_sum_max is not None:
+            if not (0 < pca_ratio_sum_max <= 1):
+                raise ValueError(
+                    f"pca_ratio_sum_max must be in (0, 1], got {pca_ratio_sum_max}"
+                )
+            # Fit PCA with all components first to get explained variance ratios
+            self._pca = PCA(n_components=None)
+            self._pca.fit(X_signal)
+            # Get cumulative explained variance ratio
+            cum_ratio = np.cumsum(self._pca.explained_variance_ratio_)
+            # Find the number of components where cumulative ratio <= pca_ratio_sum_max
+            # Use searchsorted to find the first index where cum_ratio > pca_ratio_sum_max
+            n_selected = np.searchsorted(cum_ratio, pca_ratio_sum_max, side='right')
+            if n_selected == 0:
+                raise ValueError(
+                    f"pca_ratio_sum_max={pca_ratio_sum_max} is too small; "
+                    f"even the first component exceeds this threshold "
+                    f"(first component ratio: {cum_ratio[0]:.6f})"
+                )
+            # Retrain PCA with the selected number of components
+            self._pca = PCA(n_components=n_selected)
+            self._pca.fit(X_signal)
+            self.n_components = n_selected
+            return
+
         # If n_components is specified, ignore X_noise and use standard PCA
         if n_components is not None:
             if not isinstance(n_components, int) or n_components <= 0:
@@ -556,8 +612,9 @@ class Compressor:
         The compression coefficients are computed as:
             b_i = (∂μ/∂θ_i)^T @ C^{-1} / sqrt((∂μ/∂θ_i)^T @ C^{-1} @ (∂μ/∂θ_i))
 
-        Note: X_signal parameter is ignored for MOPED. The mean vector is
-        provided via `fiducial_array` in the fit() method.
+        Note: X_signal parameter is ignored for MOPED. The `fiducial_array`
+        parameter (provided in fit()) is optional and only used for dimension
+        tracking; it is NOT used for centering the data during transformation.
 
         Parameters
         ----------
@@ -606,10 +663,14 @@ class Compressor:
                     f"number of parameters {n_parameters}"
                 )
 
-        n_features = len(self._mean)
-
-        # Validate and use provided covariance matrix
+        # Determine n_features from cov_matrix (since fiducial_array is optional)
         cov_matrix = np.asarray(cov_matrix, dtype=np.float64)
+        n_features = cov_matrix.shape[0]
+        # Set mean for dimension tracking if not already set
+        if self._mean is None:
+            self._mean = np.zeros(n_features)
+
+        # Validate covariance matrix shape
         if cov_matrix.shape != (n_features, n_features):
             raise ValueError(
                 f"cov_matrix shape {cov_matrix.shape} doesn't match "
@@ -684,20 +745,20 @@ class Compressor:
                 precomputed_data, best_fit, delta, cov_matrix
             )
 
-    def _transform_moped(self, X_centered):
+    def _transform_moped(self, X):
         """Transform using fitted MOPED coefficients.
 
         Parameters
         ----------
-        X_centered : ndarray, shape (n_samples, n_features)
-            Centered data (X_signal - fiducial_array).
+        X : ndarray, shape (n_samples, n_features)
+            Data to compress. No centering is applied.
 
         Returns
         -------
         X_compressed : ndarray, shape (n_samples, n_parameters)
             Compressed data.
         """
-        return X_centered @ self._moped_coefficients
+        return X @ self._moped_coefficients
 
     # =========================================================================
     # Save and Load functionality
@@ -750,3 +811,62 @@ class Compressor:
         >>> X_compressed = compressor.transform(X_test)
         """
         return joblib.load(filepath)
+
+class CompressorSeries:
+    """Container for a series of compressors."""
+
+    def __init__(self, compressors: List[Compressor]):
+        if not isinstance(compressors, list) or len(compressors) == 0:
+            raise ValueError("compressors must be a non-empty list of Compressor instances")
+
+        for i, compressor in enumerate(compressors):
+            if not isinstance(compressor, Compressor):
+                raise TypeError(
+                    f"compressors[{i}] must be a Compressor instance, got "
+                    f"{type(compressor).__name__}"
+                )
+            if not compressor.is_fitted:
+                raise RuntimeError(
+                    f"compressors[{i}] is not fitted. Fit each Compressor before "
+                    "building a CompressorSeries."
+                )
+            if compressor._mean is None:
+                raise RuntimeError(
+                    f"compressors[{i}] has no fitted input feature definition (_mean is None)."
+                )
+            if compressor.n_components is None:
+                raise RuntimeError(
+                    f"compressors[{i}] has no fitted output dimension (n_components is None)."
+                )
+
+        for i in range(len(compressors) - 1):
+            output_dim = compressors[i].n_components
+            next_input_dim = len(compressors[i + 1]._mean)
+            if output_dim != next_input_dim:
+                raise ValueError(
+                    f"Dimension mismatch between compressors[{i}] and compressors[{i + 1}]: "
+                    f"output_dim={output_dim} != next_input_dim={next_input_dim}"
+                )
+
+        self.compressors = compressors
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        """Apply each compressor's transform sequentially."""
+        X_transformed = X
+        for compressor in self.compressors:
+            X_transformed = compressor.transform(X_transformed)
+        return X_transformed
+
+    def save(self, filepath: str):
+        """Save the compressor series to a file via joblib."""
+        joblib.dump(self, filepath)
+
+    @classmethod
+    def load(cls, filepath: str) -> 'CompressorSeries':
+        """Load a compressor series from a file via joblib."""
+        loaded = joblib.load(filepath)
+        if not isinstance(loaded, cls):
+            raise TypeError(
+                f"Loaded object is {type(loaded).__name__}, expected {cls.__name__}"
+            )
+        return loaded
