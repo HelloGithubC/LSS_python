@@ -224,8 +224,8 @@ class Mesh:
                     else:
                         to_mesh_numba(pos_e, weight_e, value_e, self.real_field, self.BoxSize, self.Nmesh, resampler=resampler, shift=0.0)
                 else:
-                    from .CPP.mesh import to_mesh_c_api
                     if not pybind:
+                        from .CPP.mesh import to_mesh_c_api
                         if interlaced:
                             to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real1, weight_e, value_e, resampler=resampler, shift=0.0, nthreads=nthreads)
                             to_mesh_c_api(pos_e, self.BoxSize, self.Nmesh, self.real2, weight_e, value_e, resampler=resampler, shift=0.5, nthreads=nthreads)
