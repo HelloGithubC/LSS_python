@@ -197,7 +197,7 @@ PYBIND11_MODULE(mesh_pybind, m){
             Run mesh interpolation with double precision.
             Same arguments as run_mesh_float but with float64 arrays.
           )pbdoc",
-          py::arg("pos"), py::arg("field"), py::arg("weights"), py::arg("values"),
+          py::arg("pos"), py::arg("field"), py::arg("weights") = py::none(), py::arg("values") = py::none(),
           py::arg("boxSize"), py::arg("ngrids"), py::arg("shift"), py::arg("type"), py::arg("nthreads"));
     
     m.def("do_compensation_float", &do_compensation<float>, 
