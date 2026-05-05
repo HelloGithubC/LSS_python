@@ -163,7 +163,7 @@ template <typename T>
 void cal_ps_from_ps_2d(
     py::array_t<std::complex<T>> ps_2d, py::array_t<double> k_2d,
     py::array_t<double> k_out_2d, py::object mu_out_2d,
-    py::array_t<std::complex<T>> ps_kmu, py::array_t<size_t> modes,
+    py::array_t<std::complex<double>> ps_kmu, py::array_t<size_t> modes,
     py::array_t<double> k_edge, py::object mu_edge, int nthreads)
 {
     auto buf_ps_2d = ps_2d.request();
@@ -180,7 +180,7 @@ void cal_ps_from_ps_2d(
     const std::complex<T>* ptr_ps_2d = static_cast<const std::complex<T>*>(buf_ps_2d.ptr);
     const double* ptr_k_2d = static_cast<const double*>(buf_k_2d.ptr);
     double* ptr_k_out_2d = static_cast<double*>(buf_k_out_2d.ptr);
-    std::complex<T>* ptr_ps_kmu = static_cast<std::complex<T>*>(buf_ps_kmu.ptr);
+    std::complex<double>* ptr_ps_kmu = static_cast<std::complex<double>*>(buf_ps_kmu.ptr);
     size_t* ptr_modes = static_cast<size_t*>(buf_modes.ptr);
     const double* ptr_k_edge = static_cast<const double*>(buf_k_edge.ptr);
 
@@ -202,7 +202,8 @@ void cal_ps_from_ps_2d(
         mubin = buf_mu_edge.shape[0] - 1;
     }
 
-    CalPSFromPS2D<T>(ptr_ps_2d, ptr_k_2d, ptr_k_out_2d, ptr_mu_out_2d, ptr_ps_kmu, ptr_modes,
+    CalPSFromPS2D<T>(ptr_ps_2d, ptr_k_2d, ptr_k_out_2d, ptr_mu_out_2d,
+                     ptr_ps_kmu, ptr_modes,
                      ptr_k_edge, ptr_mu_edge, kbin, mubin, k_perp_bin, k_parallel_bin, nthreads);
 }
 

@@ -40,15 +40,15 @@ def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0
     else:
         return complex_field
 
-def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, nthreads=1, c_api=True):
+def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, nthreads=1, c_api=True, dk=None):
     ps_factor = np.prod(mesh.attrs["BoxSize"])
     shotnoise = mesh.attrs["shotnoise"]
     if c_api:
         from .CPP.fftpower_pybind import cal_ps_2d_from_mesh as cal_ps_2d_from_mesh_cpp
-        return cal_ps_2d_from_mesh_cpp(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthreads)
+        return cal_ps_2d_from_mesh_cpp(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthreads, dk=dk)
     else:
         from .JIT.fftpower import cal_ps_2d_from_mesh as cal_ps_2d_from_mesh_numba
-        return cal_ps_2d_from_mesh_numba(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthreads)
+        return cal_ps_2d_from_mesh_numba(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthreads, dk=dk)
 
 class FFTPower:
     def __init__(self, Nmesh, BoxSize):
@@ -67,8 +67,6 @@ class FFTPower:
         }
         self.power = None
         self.removed_shotnoise = False
-        self.k_2d = None
-        self.ps_2d = None
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
     mode="1d", k_logarithmic=False, ps_3d_inplace=True, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=True, pybind=True):
@@ -289,7 +287,7 @@ class FFTPower:
         
         return self.power
     
-    def intergrate_fftpower(self, kmin=-1.0, kmax=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", easy_mu_array=False, norm=False, bin_pack=1):
+    def intergrate_fftpower(self, kmin=-1.0, kmax=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", use_fit_mu=False, norm=False, bin_pack=1):
         if not isinstance(bin_pack, int):
             bin_pack = int(bin_pack)
         if bin_pack > 1:
@@ -298,7 +296,7 @@ class FFTPower:
             do_pack = False
         power = self.power 
         k_array = np.nanmean(power["k"], axis=1)
-        if easy_mu_array:
+        if use_fit_mu:
             mu_array_edges = np.linspace(0.0, 1.0, self.attrs["Nmu"]+1)
             mu_array = (mu_array_edges[:-1] + mu_array_edges[1:]) / 2.0
         else:
@@ -366,18 +364,15 @@ class FFTPower:
         else:
             raise ValueError("integrate must be k or mu")
     
-    def save(self, filename, include_k_ps_2d=False):
+    def save(self, filename):
         import joblib
 
         save_dict = {
             "power": self.power,
             "attrs": self.attrs,
         }
-        if include_k_ps_2d:
-            save_dict["k_2d"] = self.k_2d
-            save_dict["ps_2d"] = self.ps_2d
         
-        dir_part, filename_part = os.path.split(filename)
+        dir_part = os.path.dirname(filename)
         if not os.path.exists(dir_part):
             os.makedirs(dir_part)
         joblib.dump(save_dict, filename)
@@ -393,8 +388,6 @@ class FFTPower:
         )
         self.power = load_dict["power"]
         self.attrs = load_dict["attrs"]
-        self.k_2d = load_dict.get("k_2d", None)
-        self.ps_2d = load_dict.get("ps_2d", None)
         return self
 
 class FFTPower2D(FFTPower):
@@ -410,7 +403,7 @@ class FFTPower2D(FFTPower):
         }
 
     def cal_ps_2d_from_mesh(
-        self, mesh, mesh_kernel=None, k_arrays=None, nthreads=1, device_id=-1, c_api=True,
+        self, mesh, mesh_kernel=None, k_arrays=None, nthreads=1, device_id=-1, c_api=True, dk=None,
         compensated=True, force_create_complex_field=False
     ):
         if device_id >= 0:
@@ -423,6 +416,7 @@ class FFTPower2D(FFTPower):
             k_arrays=k_arrays,
             nthreads=nthreads,
             c_api=c_api,
+            dk=dk
         )
         self.removed_shotnoise = True
         self.attrs["shotnoise"] = mesh.attrs["shotnoise"]
@@ -444,4 +438,37 @@ class FFTPower2D(FFTPower):
             mode=mode, k_logarithmic=k_logarithmic,
             nthreads=nthreads, c_api=c_api
         )
+        fftpower.power["modes_2d"] = self.modes_2d
         return fftpower
+
+    def save(self, filename):
+        import joblib
+
+        save_dict = {
+            "k_2d": self.k_2d,
+            "ps_2d": self.ps_2d,
+            "modes_2d": self.modes_2d,
+            "attrs": self.attrs,
+            "removed_shotnoise": self.removed_shotnoise,
+        }
+        
+        dir_part = os.path.dirname(filename)
+        if not os.path.exists(dir_part):
+            os.makedirs(dir_part)
+        joblib.dump(save_dict, filename)
+
+    @classmethod
+    def load(cls, filename):
+        import joblib
+
+        load_dict = joblib.load(filename)
+        self = cls(
+            load_dict["attrs"]["Nmesh"],
+            load_dict["attrs"]["BoxSize"],
+        )
+        self.k_2d = load_dict["k_2d"]
+        self.ps_2d = load_dict["ps_2d"]
+        self.modes_2d = load_dict["modes_2d"]
+        self.attrs = load_dict["attrs"]
+        self.removed_shotnoise = load_dict.get("removed_shotnoise", False)
+        return self

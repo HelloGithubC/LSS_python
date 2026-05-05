@@ -21,8 +21,8 @@ inline size_t GetBin(const T value, const T *array, const T array_diff, bool is_
 }
 
 template <typename T>
-void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d, 
-    double *k_out_2d, double *mu_out_2d, std::complex<T> *ps_kmu, size_t *modes,
+void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
+    double *k_out_2d, double *mu_out_2d, std::complex<double> *ps_kmu, size_t *modes,
     const double k_min, const double k_max, const double dk, const uint32_t Nmu,
     const size_t k_perp_bin, const size_t k_parallel_bin, int nthreads)
 {
@@ -33,7 +33,7 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
     omp_set_num_threads(nthreads);
     #pragma omp parallel default(shared)
     {
-        std::vector<std::vector<std::complex<T>>> ps_kmu_threads(kbin);
+        std::vector<std::vector<std::complex<double>>> ps_kmu_threads(kbin);
         std::vector<std::vector<size_t>> modes_threads(kbin);
         std::vector<std::vector<double>> k_out_2d_threads(kbin);
         std::vector<std::vector<double>> mu_out_2d_threads(kbin);
@@ -41,7 +41,7 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
         for (uint32_t k_i = 0; k_i < kbin; k_i++)
         {
             ps_kmu_threads[k_i].resize(mubin);
-            std::fill(ps_kmu_threads[k_i].begin(), ps_kmu_threads[k_i].end(), std::complex<T>(0.0, 0.0));
+            std::fill(ps_kmu_threads[k_i].begin(), ps_kmu_threads[k_i].end(), std::complex<double>(0.0, 0.0));
             modes_threads[k_i].resize(mubin);
             std::fill(modes_threads[k_i].begin(), modes_threads[k_i].end(), 0uL);
             k_out_2d_threads[k_i].resize(mubin);
@@ -61,7 +61,7 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
                 double k_perp = k_2d[0 + i_paral * 2 + i_perp * 2 * k_parallel_bin];
                 double k_parallel = k_2d[1 + i_paral * 2 + i_perp * 2 * k_parallel_bin];
                 double k = std::sqrt(k_perp * k_perp + k_parallel * k_parallel);
-                
+
                 size_t k_index = static_cast<size_t>((k - k_min) / dk);
                 if (k_index >= kbin)
                 {
@@ -76,7 +76,8 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
                 }
 
                 modes_threads[k_index][mu_index] += paral_factor;
-                ps_kmu_threads[k_index][mu_index] += ps_2d[index_2d] * static_cast<T>(paral_factor);
+                ps_kmu_threads[k_index][mu_index] += static_cast<double>(ps_2d[index_2d].real()) * static_cast<double>(paral_factor) +
+                                                      std::complex<double>(0.0, 1.0) * static_cast<double>(ps_2d[index_2d].imag()) * static_cast<double>(paral_factor);
                 k_out_2d_threads[k_index][mu_index] += k * static_cast<double>(paral_factor);
                 mu_out_2d_threads[k_index][mu_index] += mu * static_cast<double>(paral_factor);
             }
@@ -105,13 +106,13 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
             size_t index = j + i * mubin;
             if (modes[index] > 0)
             {
-                ps_kmu[index] /= static_cast<T>(modes[index]);
+                ps_kmu[index] /= static_cast<double>(modes[index]);
                 k_out_2d[index] /= static_cast<double>(modes[index]);
                 mu_out_2d[index] /= static_cast<double>(modes[index]);
             }
             else
             {
-                ps_kmu[index] = std::complex<T>(std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN());
+                ps_kmu[index] = std::complex<double>(std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN());
                 k_out_2d[index] = std::numeric_limits<double>::quiet_NaN();
                 mu_out_2d[index] = std::numeric_limits<double>::quiet_NaN();
             }
@@ -138,12 +139,26 @@ void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel,
     #pragma omp parallel default(shared)
     {
         size_t index_3d = 0uL;
-        size_t index_2d = 0uL;
         std::complex<T> kernel_temp;
         std::complex<T> value_temp;
         double k_perp = 0.0;
         size_t ik_perp = 0uL;
         size_t ik_parallel = 0uL;
+        
+        // Thread-local accumulators to avoid synchronization contention
+        // Layout: [k_perp][k_parallel] matches the output array (k_perp_bin, k_parallel_bin, 2)
+        std::vector<std::vector<std::complex<T>>> ps_2d_threads(k_perp_bin);
+        std::vector<std::vector<size_t>> modes_2d_threads(k_perp_bin);
+        std::vector<std::vector<double>> k_2d_threads(k_perp_bin);  // for k_perp accumulation
+        std::vector<std::vector<double>> k_2d_threads_par(k_perp_bin);  // for k_parallel accumulation
+        for (size_t i = 0; i < k_perp_bin; i++)
+        {
+            ps_2d_threads[i].resize(k_parallel_bin, std::complex<T>(0.0, 0.0));
+            modes_2d_threads[i].resize(k_parallel_bin, 0uL);
+            k_2d_threads[i].resize(k_parallel_bin, 0.0);
+            k_2d_threads_par[i].resize(k_parallel_bin, 0.0);
+        }
+        
         #pragma omp for schedule(static)
         for (size_t iz = 0; iz < nz; iz++)
         {
@@ -155,10 +170,6 @@ void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel,
             if (ik_parallel == k_parallel_bin)
             {
                 ik_parallel -= 1uL;
-            }
-            for (size_t i_perp = 0; i_perp < k_perp_bin; i_perp++)
-            {
-                k_2d[1 + ik_parallel * 2 + i_perp * 2 * k_parallel_bin] = kz_array[iz];
             }
             for (size_t ix = 0; ix < nx; ix++)
             {
@@ -179,22 +190,38 @@ void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel,
                         ik_perp -= 1uL;
                     }
 
-                    index_2d = ik_parallel + k_parallel_bin * ik_perp;
-                    #pragma omp atomic
-                    k_2d[0 + ik_parallel * 2 + ik_perp * 2 * k_parallel_bin] += k_perp;
-                    #pragma omp critical
-                    ps_2d[index_2d] += value_temp;
-                    #pragma omp atomic
-                    modes_2d[index_2d] += 1uL;
+                    // Accumulate to thread-local storage without synchronization
+                    ps_2d_threads[ik_perp][ik_parallel] += value_temp;
+                    modes_2d_threads[ik_perp][ik_parallel] += 1uL;
+                    k_2d_threads[ik_perp][ik_parallel] += k_perp;
+                    // Also accumulate k_parallel values for averaging (like k_perp)
+                    k_2d_threads_par[ik_perp][ik_parallel] += kz_array[iz];
                 } 
+            }
+        }
+        
+        // Merge thread-local results with reduced synchronization
+        for (size_t ik_per = 0; ik_per < k_perp_bin; ik_per++)
+        {
+            for (size_t ik_par = 0; ik_par < k_parallel_bin; ik_par++)
+            {
+                #pragma omp critical
+                {
+                    ps_2d[ik_par + k_parallel_bin * ik_per] += ps_2d_threads[ik_per][ik_par];
+                    // k_2d has two columns: [0] for k_perp (accumulated), [1] for k_parallel (accumulated for averaging)
+                    k_2d[0 + ik_par * 2 + ik_per * 2 * k_parallel_bin] += k_2d_threads[ik_per][ik_par];
+                    k_2d[1 + ik_par * 2 + ik_per * 2 * k_parallel_bin] += k_2d_threads_par[ik_per][ik_par];
+                }
+                #pragma omp atomic
+                modes_2d[ik_par + k_parallel_bin * ik_per] += modes_2d_threads[ik_per][ik_par];
             }
         }
     }
 }
 
 template <typename T>
-void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d, 
-    double *k_out_2d, double *mu_out_2d, std::complex<T> *ps_kmu, size_t *modes,
+void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
+    double *k_out_2d, double *mu_out_2d, std::complex<double> *ps_kmu, size_t *modes,
     const double* k_edge, const double* mu_edge, const size_t kbin, const size_t mubin,
     const size_t k_perp_bin, const size_t k_parallel_bin, int nthreads)
 {
@@ -211,7 +238,7 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
     omp_set_num_threads(nthreads);
     #pragma omp parallel default(shared)
     {
-        std::vector<std::vector<std::complex<T>>> ps_kmu_threads(kbin);
+        std::vector<std::vector<std::complex<double>>> ps_kmu_threads(kbin);
         std::vector<std::vector<size_t>> modes_threads(kbin);
         std::vector<std::vector<double>> k_out_2d_threads(kbin);
         std::vector<std::vector<double>> mu_out_2d_threads(kbin);
@@ -219,19 +246,19 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
         for (uint32_t k_i = 0; k_i < kbin; k_i++)
         {
             ps_kmu_threads[k_i].resize(mubin);
-            std::fill(ps_kmu_threads[k_i].begin(), ps_kmu_threads[k_i].end(), std::complex<T>(0.0, 0.0));
+            std::fill(ps_kmu_threads[k_i].begin(), ps_kmu_threads[k_i].end(), std::complex<double>(0.0, 0.0));
             modes_threads[k_i].resize(mubin);
             std::fill(modes_threads[k_i].begin(), modes_threads[k_i].end(), 0uL);
             k_out_2d_threads[k_i].resize(mubin);
             std::fill(k_out_2d_threads[k_i].begin(), k_out_2d_threads[k_i].end(), 0.0);
-            
+
             if (use_mu)
             {
                 mu_out_2d_threads[k_i].resize(mubin);
                 std::fill(mu_out_2d_threads[k_i].begin(), mu_out_2d_threads[k_i].end(), 0.0);
             }
         }
-    
+
         size_t mu_index = 0uL;
         #pragma omp for schedule(static)
         for (size_t i_paral = 0; i_paral < k_parallel_bin; i_paral++)
@@ -243,15 +270,15 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
                 size_t index_2d = i_paral + k_parallel_bin * i_perp;
                 double k_perp = k_2d[0 + i_paral * 2 + i_perp * 2 * k_parallel_bin];
                 double k_parallel = k_2d[1 + i_paral * 2 + i_perp * 2 * k_parallel_bin];
-                
-                // 跳过无效的 k 值
+
+                // Skip invalid k values
                 if (std::isnan(k_perp) || std::isnan(k_parallel))
                 {
                     continue;
                 }
-                
+
                 double k = std::sqrt(k_perp * k_perp + k_parallel * k_parallel);
-                
+
                 if (k < k_edge[0] || k > k_edge[kbin])
                 {
                     continue;
@@ -277,12 +304,13 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
 
                     mu_out_2d_threads[k_index][mu_index] += mu * static_cast<double>(paral_factor);
                 }
-                else 
+                else
                 {
                     mu_index = 0uL;
                 }
                 modes_threads[k_index][mu_index] += paral_factor;
-                ps_kmu_threads[k_index][mu_index] += ps_2d[index_2d] * static_cast<T>(paral_factor);
+                ps_kmu_threads[k_index][mu_index] += static_cast<double>(ps_2d[index_2d].real()) * static_cast<double>(paral_factor) +
+                                                      std::complex<double>(0.0, 1.0) * static_cast<double>(ps_2d[index_2d].imag()) * static_cast<double>(paral_factor);
                 k_out_2d_threads[k_index][mu_index] += k * static_cast<double>(paral_factor);
             }
         }

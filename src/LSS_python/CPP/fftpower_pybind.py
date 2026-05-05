@@ -88,10 +88,13 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthre
 
     index_zero = (modes_2d == 0)
     k_perp_temp = k_2d[:, :, 0]
+    k_paral_temp = k_2d[:, :, 1]
     k_perp_temp[index_zero] = np.nan 
+    k_paral_temp[index_zero] = np.nan
     ps_2d[index_zero] = np.nan
     index_zero_not = np.logical_not(index_zero)
     k_perp_temp[index_zero_not] = k_perp_temp[index_zero_not] / modes_2d[index_zero_not]
+    k_paral_temp[index_zero_not] = k_paral_temp[index_zero_not] / modes_2d[index_zero_not]
     ps_2d[index_zero_not] = ps_2d[index_zero_not] / modes_2d[index_zero_not]
 
     return k_2d, ps_2d, modes_2d
@@ -116,10 +119,9 @@ def cal_pkmu_from_ps_2d(ps_2d, k_2d, k_edge, mu_edge, k_logarithmic=False, nthre
         mubin = 1
         use_mu = False
 
-    ps_dtype = np.complex64 if ps_2d.dtype == np.complex64 else np.complex128
     k_out_2d = np.zeros(shape=(kbin, mubin), dtype=np.float64)
     mu_out_2d = np.zeros(shape=(kbin, mubin), dtype=np.float64) if use_mu else None
-    ps_kmu = np.zeros(shape=(kbin, mubin), dtype=ps_dtype)
+    ps_kmu = np.zeros(shape=(kbin, mubin), dtype=np.complex128)
     modes = np.zeros(shape=(kbin, mubin), dtype=np.uint64)
 
     if ps_2d.dtype == np.complex64:
