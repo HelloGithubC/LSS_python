@@ -2,32 +2,16 @@ import numpy as np
 import os 
 import ctypes 
 
-from .base import c_double_complex, c_float_complex
+from .base import c_double_complex, c_float_complex, normalize_mesh_inputs
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 mesh_lib = ctypes.CDLL(os.path.join(script_dir + "/lib", "mesh_ctype.so"))
 def to_mesh_c_api(pos, boxsize, ngrids, field, weights=None, values=None, resampler = "CIC", shift=0.0, nthreads=1):
     global mesh_lib
-    dtype = pos.dtype 
-    if dtype == np.float32 or dtype == np.float64:
-        pass 
-    else:
-        print(f"Warning: pos is not float32 or float64 ({dtype}). Now try converting to float32")
-        try:
-            pos = pos.astype(np.float32)
-            dtype = np.float32
-        except:
-            raise ValueError("Positions must be float32 or float64, or other types that can be cast to float32")
-        
-    if not pos.flags.c_contiguous:
-        pos = np.ascontiguousarray(pos)
+    pos, boxsize_array, ngrids_array, field, weights, values, dtype = normalize_mesh_inputs(
+        pos, boxsize, ngrids, field, weights=weights, values=values
+    )
 
-    if weights is not None and not weights.flags.c_contiguous:
-        weights = np.ascontiguousarray(weights)
-
-    if values is not None and not values.flags.c_contiguous:
-        values = np.ascontiguousarray(values)
-        
     if resampler == "CIC":
         to_mesh_float = mesh_lib.run_cic_float
         to_mesh_double = mesh_lib.run_cic_double 
@@ -42,39 +26,10 @@ def to_mesh_c_api(pos, boxsize, ngrids, field, weights=None, values=None, resamp
         to_mesh_double = mesh_lib.run_pcs_double 
     else:
         raise ValueError("Method must be CIC, NGP, TSC or PCS")
-    
-    if weights is not None:
-        if weights.shape[0] != pos.shape[0]:
-            raise ValueError(f"Weights must have the same number of particles as positions ({weights.shape[0]:d} != {pos.shape[0]:d})")
-        if weights.dtype != dtype:
-            weights = weights.astype(dtype)
-    if values is not None:
-        if values.shape[0] != pos.shape[0]:
-            raise ValueError(f"Values must have the same number of particles as positions ({values.shape[0]:d} != {pos.shape[0]:d})")
-        if values.dtype != dtype:
-            values = values.astype(dtype)
-
-    try:
-        length = len(boxsize)
-    except TypeError:
-        boxsize_array = np.array([boxsize] * 3, dtype=dtype)
-    else:
-        boxsize_array = np.array(boxsize, dtype=dtype)
-    try: 
-        length = len(ngrids)
-    except TypeError:
-        ngrids_array = np.array([ngrids] * 3, dtype=np.uint64)
-    else:
-        ngrids_array = np.array(ngrids, dtype=np.uint64)
 
     ngrids_ptr = ngrids_array.ctypes.data_as(ctypes.POINTER(ctypes.c_uint64))
     nparticle = pos.shape[0]
     ctypes_ptr = ctypes.c_float if dtype == np.float32 else ctypes.c_double
-    
-    if field.shape != tuple(ngrids_array):
-        raise ValueError(f"Output field must have the same shape as ngrids ({field.shape} != {tuple(ngrids_array)})")
-    if field.dtype != dtype:
-        raise ValueError(f"Output field must have the same dtype as positions ({field.dtype} != {dtype})")
 
     pos_ptr = pos.ctypes.data_as(ctypes.POINTER(ctypes_ptr))
     field_ptr = field.ctypes.data_as(ctypes.POINTER(ctypes_ptr))
@@ -113,7 +68,7 @@ def do_compensation_c_api(complex_field, k_arrays=None, resampler="CIC", interla
         do_compensation_float = None 
         if resampler == "NGP":
             return complex_field
-    else:    
+    else:
         if resampler == "CIC":
             do_compensation_float = mesh_lib.do_compensation_cic_float
             do_compensation_double = mesh_lib.do_compensation_cic_double
@@ -128,6 +83,8 @@ def do_compensation_c_api(complex_field, k_arrays=None, resampler="CIC", interla
         else:
             raise ValueError("Method must be CIC, NGP, TSC or PCS")
 
+    if k_arrays is None:
+        raise ValueError("k_arrays must be provided")
     kx_array, ky_array, kz_array = k_arrays
     kx_array = kx_array.astype(np.float64, copy=False)
     ky_array = ky_array.astype(np.float64, copy=False)
@@ -145,6 +102,7 @@ def do_compensation_c_api(complex_field, k_arrays=None, resampler="CIC", interla
 
     if not interlaced:
         if dtype == np.complex64:
+            assert do_compensation_float is not None
             do_compensation_float(complex_field_ptr, ngrids_ptr, kx_array_ptr, ky_array_ptr, kz_array_ptr, nthreads)
         else:
             do_compensation_double(complex_field_ptr, ngrids_ptr, kx_array_ptr, ky_array_ptr, kz_array_ptr, nthreads)
@@ -167,8 +125,8 @@ def do_compensation_c_api(complex_field, k_arrays=None, resampler="CIC", interla
 
 def do_interlacing_c_api(c1, c2, boxsize, Nmesh, k_arrays, nthreads=1):
     H = boxsize / Nmesh
-    try: 
-        length = len(H)
+    try:
+        len(H)
     except TypeError:
         H_array = np.array([H] * 3, dtype=np.float64)
     else:

@@ -29,12 +29,14 @@ def cal_ps_pybind(ps_3d, k_arrays_list, k_array, mu_array = None, k_logarithmic=
     kbin = k_array.shape[0] - 1
     if mu_array is None:
         use_mu = False
+        mubin = 1
+        mu_array = None
     else:
         use_mu = True
         if mu_array[0] > mu_array[1]:
             mu_array = np.copy(mu_array[::-1])
-    mu_array = mu_array.astype(np.float64, copy=False) if use_mu else None
-    mubin = mu_array.shape[0] - 1 if use_mu else 1
+        mu_array = mu_array.astype(np.float64, copy=False)
+        mubin = mu_array.shape[0] - 1 
 
     power = np.zeros(shape=(kbin, mubin), dtype=np.complex128)
     power_k = np.zeros(shape=(kbin, mubin), dtype=np.float64)
@@ -48,7 +50,7 @@ def cal_ps_pybind(ps_3d, k_arrays_list, k_array, mu_array = None, k_logarithmic=
 
     return power_k, power_mu, power, power_modes
 
-def cal_ps_2d_from_mesh(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthreads=1, return_modes=False):
+def cal_ps_2d_from_mesh(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthreads=1, dk=None):
     if mesh.complex_field is None:
         raise ValueError("Complex field is not set.")
     complex_field = mesh.complex_field
@@ -62,14 +64,17 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthre
     else:
         k_x_array, k_y_array, k_z_array = k_arrays
 
+    if dk is None:
+        dk = (k_z_array[1] - k_z_array[0]) * 2.0
+
     k_perp_source = np.sqrt(k_x_array**2 + k_y_array**2)
     k_perp_min = np.min(k_perp_source)
     k_perp_max = np.max(k_perp_source)
-    dk_perp = k_z_array[1] - k_z_array[0]
-    k_perp_edge = np.arange(k_perp_min, k_perp_max + dk_perp, dk_perp)
-
+    k_perp_edge = np.arange(k_perp_min, k_perp_max + dk, dk)
     k_perp_bin = len(k_perp_edge) - 1 
-    k_parallel_bin = len(k_z_array) # No edge, not need -1
+
+    k_parallel_edge = np.arange(k_z_array[0], k_z_array[-1] + dk, dk)
+    k_parallel_bin = len(k_parallel_edge) - 1
     k_2d = np.zeros(shape=(k_perp_bin, k_parallel_bin, 2), dtype=np.float64)
 
     ps_dtype = np.complex64 if complex_field.dtype == np.complex64 else np.complex128
@@ -77,9 +82,9 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthre
     modes_2d = np.zeros(shape=(k_perp_bin, k_parallel_bin), dtype=np.uint64)
 
     if complex_field.dtype == np.complex64:
-        cal_ps_2d_from_mesh_float(complex_field, kernel, ps_2d, k_2d, modes_2d, k_perp_edge, k_x_array, k_y_array, k_z_array, ps_factor, shotnoise, nthreads)
+        cal_ps_2d_from_mesh_float(complex_field, kernel, ps_2d, k_2d, modes_2d, k_perp_edge, k_parallel_edge, k_x_array, k_y_array, k_z_array, ps_factor, shotnoise, nthreads)
     else:
-        cal_ps_2d_from_mesh_double(complex_field, kernel, ps_2d, k_2d, modes_2d, k_perp_edge, k_x_array, k_y_array, k_z_array, ps_factor, shotnoise, nthreads)
+        cal_ps_2d_from_mesh_double(complex_field, kernel, ps_2d, k_2d, modes_2d, k_perp_edge, k_parallel_edge, k_x_array, k_y_array, k_z_array, ps_factor, shotnoise, nthreads)
 
     index_zero = (modes_2d == 0)
     k_perp_temp = k_2d[:, :, 0]
@@ -88,10 +93,8 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthre
     index_zero_not = np.logical_not(index_zero)
     k_perp_temp[index_zero_not] = k_perp_temp[index_zero_not] / modes_2d[index_zero_not]
     ps_2d[index_zero_not] = ps_2d[index_zero_not] / modes_2d[index_zero_not]
-    if return_modes:
-        return k_2d, ps_2d, modes_2d
-    else:
-        return k_2d, ps_2d
+
+    return k_2d, ps_2d, modes_2d
 
 def cal_pkmu_from_ps_2d(ps_2d, k_2d, k_edge, mu_edge, k_logarithmic=False, nthreads=1):
     if not ps_2d.flags.contiguous:

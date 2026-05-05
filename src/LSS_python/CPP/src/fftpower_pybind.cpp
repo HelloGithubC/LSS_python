@@ -109,7 +109,7 @@ template <typename T>
 void cal_ps_2d_from_mesh( 
     py::array_t<std::complex<T>> complex_field, py::object kernel, 
     py::array_t<std::complex<T>> ps_2d, py::array_t<double> k_2d, py::array_t<size_t> modes_2d,
-    py::array_t<double> k_perp_edge,
+    py::array_t<double> k_perp_edge, py::array_t<double> k_parallel_edge,
     py::array_t<double> kx_array, py::array_t<double> ky_array, py::array_t<double> kz_array,
     T ps_3d_factor, T shotnoise, int nthreads)
 {
@@ -119,6 +119,7 @@ void cal_ps_2d_from_mesh(
     auto buf_k_2d = k_2d.request();
     auto buf_modes_2d = modes_2d.request();
     auto buf_k_perp_edge = k_perp_edge.request();
+    auto buf_k_parallel_edge = k_parallel_edge.request();
     auto buf_kx_array = kx_array.request();
     auto buf_ky_array = ky_array.request();
     auto buf_kz_array = kz_array.request();
@@ -138,11 +139,13 @@ void cal_ps_2d_from_mesh(
     double* ptr_k_2d = static_cast<double*>(buf_k_2d.ptr);
     size_t* ptr_modes_2d = static_cast<size_t*>(buf_modes_2d.ptr);
     double* ptr_k_perp_edge = static_cast<double*>(buf_k_perp_edge.ptr);
+    double* ptr_k_parallel_edge = static_cast<double*>(buf_k_parallel_edge.ptr);
     const double* ptr_kx_array = static_cast<const double*>(buf_kx_array.ptr);
     const double* ptr_ky_array = static_cast<const double*>(buf_ky_array.ptr);
     const double* ptr_kz_array = static_cast<const double*>(buf_kz_array.ptr);
 
     size_t k_perp_bin = buf_k_perp_edge.shape[0] - 1uL;
+    size_t k_parallel_bin = buf_k_parallel_edge.shape[0] - 1uL;
     size_t ngrids[ndim];
     for (int i = 0; i < ndim; i++) {
         ngrids[i] = buf_complex_field.shape[i];
@@ -151,7 +154,7 @@ void cal_ps_2d_from_mesh(
     // 4. 调用核心 C++ 函数
     CalPS2D<T>(
         ptr_complex_field, ptr_kernel, ptr_ps_2d, ptr_k_2d, ptr_modes_2d,
-        ptr_k_perp_edge, k_perp_bin, ptr_kx_array, ptr_ky_array, ptr_kz_array, ngrids,
+        ptr_k_perp_edge, ptr_k_parallel_edge, k_perp_bin, k_parallel_bin, ptr_kx_array, ptr_ky_array, ptr_kz_array, ngrids,
         ps_3d_factor, shotnoise, nthreads
     );
 }
@@ -283,7 +286,7 @@ PYBIND11_MODULE(fftpower_pybind, m){
                 k_2d (complex): A complex number parameter.
                 modes_2d (np.ndarray): Array for mode counts.
                 k_perp_edge (np.ndarray): Array for perpendicular k edges.
-                k_perp_bin (int): Number of k_perp bins.
+                k_parallel_edge (np.ndarray): Array for parallel k edges.
                 kx_array (np.ndarray): Array of kx values.
                 ky_array (np.ndarray): Array of ky values.
                 kz_array (np.ndarray): Array of kz values.
@@ -294,7 +297,7 @@ PYBIND11_MODULE(fftpower_pybind, m){
                 k_perp_logarithmic (bool): Whether k_perp bins are logarithmic.
           )pbdoc",
           py::arg("complex_field"), py::arg("kernel") = py::none(), py::arg("ps_2d"), py::arg("k_2d"),
-          py::arg("modes_2d"), py::arg("k_perp_edge"),
+          py::arg("modes_2d"), py::arg("k_perp_edge"), py::arg("k_parallel_edge"),
           py::arg("kx_array"), py::arg("ky_array"), py::arg("kz_array"), 
           py::arg("ps_3d_factor"), py::arg("shotnoise"), py::arg("nthreads"));
 
@@ -304,7 +307,7 @@ PYBIND11_MODULE(fftpower_pybind, m){
             Same arguments as cal_ps2d_float but with double precision
           )pbdoc",
           py::arg("complex_field"), py::arg("kernel") = py::none(), py::arg("ps_2d"), py::arg("k_2d"),
-          py::arg("modes_2d"), py::arg("k_perp_edge"),
+          py::arg("modes_2d"), py::arg("k_perp_edge"), py::arg("k_parallel_edge"),
           py::arg("kx_array"), py::arg("ky_array"), py::arg("kz_array"),
           py::arg("ps_3d_factor"), py::arg("shotnoise"), py::arg("nthreads"));
 

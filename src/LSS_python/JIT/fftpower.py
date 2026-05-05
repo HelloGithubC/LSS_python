@@ -20,7 +20,7 @@ def deal_ps_3d_single(ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0)
                 ps_3d[ix, iy, iz] = (ps_3d[ix, iy, iz] * np.conj(ps_3d[ix, iy, iz]) * ps_3d_factor - shotnoise) * kernel_element
     return
 
-def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, ps_factor=1.0, shotnoise=0.0, nthreads=1, return_modes=False):
+def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, ps_factor=1.0, shotnoise=0.0, nthreads=1):
     if mesh.complex_field is None:
         raise ValueError("Complex field is not set.")
     complex_field = mesh.complex_field
@@ -42,10 +42,7 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, ps_factor=1.0, sh
 
     k_2d, ps_2d, modes_2d = cal_ps_2d_core(complex_field, kernel, [k_x_array, k_y_array, k_z_array], k_perp_edge, ps_factor, shotnoise, nthreads)
 
-    if return_modes:
-        return k_2d, ps_2d, modes_2d
-    else:
-        return k_2d, ps_2d
+    return k_2d, ps_2d, modes_2d
 
 @njit(parallel=True)
 def cal_ps_2d_core(complex_field, kernel, k_arrays, k_perp_edge, ps_factor, shotnoise, nthreads=1):

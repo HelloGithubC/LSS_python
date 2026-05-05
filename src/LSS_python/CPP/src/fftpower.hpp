@@ -123,7 +123,7 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
 template <typename T>
 void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel, 
     std::complex<T> *ps_2d, double* k_2d, size_t* modes_2d, 
-    double* k_perp_edge, size_t k_perp_bin, 
+    double* k_perp_edge, double* k_parallel_edge, size_t k_perp_bin, size_t k_parallel_bin, 
     const double *kx_array, const double *ky_array, const double *kz_array, size_t *ngrids, 
     T ps_3d_factor, T shotnoise, int nthreads)
 {
@@ -132,6 +132,7 @@ void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel,
     size_t nz = ngrids[2];
 
     double k_perp_diff = k_perp_edge[1] - k_perp_edge[0];
+    double k_parallel_diff = k_parallel_edge[1] - k_parallel_edge[0];
 
     omp_set_num_threads(nthreads);
     #pragma omp parallel default(shared)
@@ -142,12 +143,22 @@ void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel,
         std::complex<T> value_temp;
         double k_perp = 0.0;
         size_t ik_perp = 0uL;
+        size_t ik_parallel = 0uL;
         #pragma omp for schedule(static)
         for (size_t iz = 0; iz < nz; iz++)
         {
+            if (kz_array[iz] < k_parallel_edge[0] || kz_array[iz] > k_parallel_edge[k_parallel_bin])
+            {
+                continue;
+            }
+            ik_parallel = GetBin(kz_array[iz], k_parallel_edge, k_parallel_diff, false);
+            if (ik_parallel == k_parallel_bin)
+            {
+                ik_parallel -= 1uL;
+            }
             for (size_t i_perp = 0; i_perp < k_perp_bin; i_perp++)
             {
-                k_2d[1 + iz * 2 + i_perp * 2 * nz] = kz_array[iz];
+                k_2d[1 + ik_parallel * 2 + i_perp * 2 * k_parallel_bin] = kz_array[iz];
             }
             for (size_t ix = 0; ix < nx; ix++)
             {
@@ -168,10 +179,12 @@ void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel,
                         ik_perp -= 1uL;
                     }
 
-                    index_2d = iz + nz * ik_perp;
-                    k_2d[0 + iz * 2 + ik_perp * 2 * nz] += k_perp;
+                    index_2d = ik_parallel + k_parallel_bin * ik_perp;
+                    #pragma omp atomic
+                    k_2d[0 + ik_parallel * 2 + ik_perp * 2 * k_parallel_bin] += k_perp;
+                    #pragma omp critical
                     ps_2d[index_2d] += value_temp;
-
+                    #pragma omp atomic
                     modes_2d[index_2d] += 1uL;
                 } 
             }
@@ -456,4 +469,3 @@ void CalculatePS(const std::complex<T> *ps_3d, const size_t *ngrids, const doubl
         }
     }
 }
-

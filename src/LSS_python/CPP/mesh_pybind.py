@@ -1,12 +1,15 @@
 import numpy as np 
 
+from .base import normalize_mesh_inputs
 from .lib.mesh_pybind import run_mesh_float, run_mesh_double # type: ignore
 from .lib.mesh_pybind import do_compensation_float, do_compensation_double # type: ignore
 from .lib.mesh_pybind import do_compensation_interlaced_float, do_compensation_interlaced_double # type: ignore
 from .lib.mesh_pybind import do_interlace_float, do_interlace_double # type: ignore
 
-def to_mesh_pybind(pos, boxsize, ngrids, field, weights, values, shift, resampler, nthreads=1):
-    pos = np.ascontiguousarray(pos)
+def to_mesh_pybind(pos, boxsize, ngrids, field, weights=None, values=None, shift=0.0, resampler="CIC", nthreads=1):
+    pos, boxsize, ngrids, field, weights, values, dtype = normalize_mesh_inputs(
+        pos, boxsize, ngrids, field, weights=weights, values=values
+    )
     if resampler == "NGP":
         mesh_type = 0
     elif resampler == "CIC":
@@ -17,7 +20,7 @@ def to_mesh_pybind(pos, boxsize, ngrids, field, weights, values, shift, resample
         mesh_type = 3
     else:
         raise ValueError(f"Invalid resampler: {resampler}")
-    if pos.dtype == np.float32:
+    if dtype == np.float32:
         run_mesh_float(pos, field, weights, values, boxsize, ngrids, shift, mesh_type, nthreads)
     else:
         run_mesh_double(pos, field, weights, values, boxsize, ngrids, shift, mesh_type, nthreads)
@@ -51,8 +54,8 @@ def do_compensation_pybind(complex_field, ngrids, k_arrays, resampler, do_interl
     
 def do_interlace_pybind(c1, c2, boxsize, Nmesh, k_arrays, nthreads):
     H = boxsize / Nmesh
-    try: 
-        length = len(H)
+    try:
+        len(H)
     except TypeError:
         H = np.array([H] * 3, dtype=np.float64)
     else:
