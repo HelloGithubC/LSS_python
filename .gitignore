@@ -14,4 +14,4 @@ src/LSS_python/CPP/lib/*.so
 # IDE settings
 ############################
 .codebuddy/
-.codex/
+.codex
