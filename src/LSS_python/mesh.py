@@ -345,9 +345,7 @@ class Mesh:
             np.fft.fftfreq(n=self.Nmesh[1], d=1.0)
             * 2.0
             * np.pi,
-            np.fft.fftfreq(n=self.Nmesh[2], d=1.0)[
-                : k_z_length
-            ]
+            np.fft.rfftfreq(n=self.Nmesh[2], d=1.0)
             * 2.0
             * np.pi,
         ]
@@ -366,7 +364,9 @@ class Mesh:
                     do_compensation_c_api(self.complex_field, k_arrays, resampler=self.attrs["resampler"], interlaced=self.attrs["interlaced"], nthreads=nthreads)
                 else:
                     from .CPP.mesh_pybind import do_compensation_pybind
-                    do_compensation_pybind(self.complex_field, self.Nmesh, k_arrays, self.attrs["resampler"], do_interlaced=self.attrs["interlaced"], nthreads=nthreads)
+                    # Generate ngrids from k_arrays shapes to match actual array dimensions
+                    ngrids = np.array([len(k_arrays[0]), len(k_arrays[1]), len(k_arrays[2])], dtype=np.uint64)
+                    do_compensation_pybind(self.complex_field, ngrids, k_arrays, self.attrs["resampler"], do_interlaced=self.attrs["interlaced"], nthreads=nthreads)
             else:
                 do_compensation_from_numba(self.complex_field, k_arrays, resampler=self.attrs["resampler"], interlace=self.attrs["interlaced"], nthreads=nthreads)
 

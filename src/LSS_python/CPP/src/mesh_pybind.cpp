@@ -3,27 +3,25 @@
 #include <vector>
 #include <complex>
 #include <iostream>
+#include <sstream>
 
 #include "mesh.hpp"
 
 namespace py = pybind11;
+
 template <typename T>
 void run_mesh(const py::array_t<T>& pos,
-                     const py::array_t<T>& field,
-                     py::object weights,
-                     py::object values,
-                     const py::array_t<T>& boxSize,
-                     const py::array_t<size_t>& ngrids,
-                     T shift,
-                     int type,
-                     int nthreads
-                    ) {
+              py::array_t<T>& field,
+              py::object weights,
+              py::object values,
+              const py::array_t<T>& boxSize,
+              const py::array_t<size_t>& ngrids,
+              T shift,
+              int type,
+              int nthreads
+             ) {
 
-    if (!(field.flags() & py::array::c_style) || !field.writeable())  {
-        throw std::runtime_error("Field must be C-contiguous and writeable");
-    }
-
-    // 获取数据指针
+    // Get raw pointers.
     auto pos_buf = pos.request(false);
     auto field_buf = field.request(false);
     auto boxSize_buf = boxSize.request(false);
@@ -37,132 +35,134 @@ void run_mesh(const py::array_t<T>& pos,
     const T* weights_ptr = nullptr;
     const T* values_ptr = nullptr;
 
-    // 处理 weights
+    // Handle weights.
     if (!weights.is_none()) {
-        // 确保传入的是正确的 numpy 数组类型
         if (!py::isinstance<py::array_t<T>>(weights)) {
             throw std::runtime_error("weights must be a numpy array of the correct dtype or None");
         }
         auto weights_arr = weights.cast<py::array_t<T>>();
-        
         auto weights_buf = weights_arr.request();
         weights_ptr = static_cast<const T*>(weights_buf.ptr);
     }
 
-    // 处理 values
+    // Handle values.
     if (!values.is_none()) {
         if (!py::isinstance<py::array_t<T>>(values)) {
             throw std::runtime_error("values must be a numpy array of the correct dtype or None");
         }
         auto values_arr = values.cast<py::array_t<T>>();
-
         auto values_buf = values_arr.request();
         values_ptr = static_cast<const T*>(values_buf.ptr);
     }
 
     size_t np = pos_buf.shape[0];
 
-    // 构造固定大小的数组传给原函数
     T c_boxSize[ndim];
     size_t c_ngrids[ndim];
-    
-    for(int i=0; i<ndim; ++i) {
+
+    for (int i = 0; i < ndim; ++i) {
         c_boxSize[i] = boxSize_ptr[i];
         c_ngrids[i] = ngrids_ptr[i];
     }
 
-    // 调用原始模板函数
     if (type == 0) run_ngp<T>(pos_ptr, field_ptr, np, c_boxSize, c_ngrids, weights_ptr, values_ptr, shift, nthreads);
     else if (type == 1) run_cic<T>(pos_ptr, field_ptr, np, c_boxSize, c_ngrids, weights_ptr, values_ptr, shift, nthreads);
     else if (type == 2) run_tsc<T>(pos_ptr, field_ptr, np, c_boxSize, c_ngrids, weights_ptr, values_ptr, shift, nthreads);
     else if (type == 3) run_pcs<T>(pos_ptr, field_ptr, np, c_boxSize, c_ngrids, weights_ptr, values_ptr, shift, nthreads);
-
 }
 
 template <typename T>
-void do_compensation(const py::array_t<std::complex<T>>& complex_field,
-                    const py::array_t<size_t>& ngrids,
-                    const py::array_t<double>& kx_array,
-                    const py::array_t<double>& ky_array,
-                    const py::array_t<double>& kz_array,
-                    int type,
-                    int nthreads)
+void do_compensation(py::array_t<std::complex<T>> complex_field,
+                     py::array_t<size_t> ngrids,
+                     py::array_t<double> kx_array,
+                     py::array_t<double> ky_array,
+                     py::array_t<double> kz_array,
+                     int type,
+                     int nthreads)
 {
-    auto buf_field = complex_field.request(false);
-    auto buf_ngrids = ngrids.request(false);
-    auto buf_kx = kx_array.request(false);
-    auto buf_ky = ky_array.request(false);
-    auto buf_kz = kz_array.request(false);
 
-    std::complex<T>* ptr_field = static_cast<std::complex<T>*>(buf_field.ptr);
-    size_t* ptr_ngrids = static_cast<size_t*>(buf_ngrids.ptr);
-    double* ptr_kx = static_cast<double*>(buf_kx.ptr);
-    double* ptr_ky = static_cast<double*>(buf_ky.ptr);
-    double* ptr_kz = static_cast<double*>(buf_kz.ptr);
+   auto buf_field = complex_field.request(false);
+   auto buf_ngrids = ngrids.request(false);
+   auto buf_kx = kx_array.request(false);
+   auto buf_ky = ky_array.request(false);
+   auto buf_kz = kz_array.request(false);
 
-    if (type == 1) DoCompensationCIC<T>(ptr_field, ptr_ngrids, ptr_kx, ptr_ky, ptr_kz, nthreads);
-    else if (type == 2) DoCompensationTSC<T>(ptr_field, ptr_ngrids, ptr_kx, ptr_ky, ptr_kz, nthreads);
-    else if (type == 3) DoCompensationPCS<T>(ptr_field, ptr_ngrids, ptr_kx, ptr_ky, ptr_kz, nthreads);
+
+   std::complex<T>* ptr_field = static_cast<std::complex<T>*>(buf_field.ptr);
+   size_t* ptr_ngrids = static_cast<size_t*>(buf_ngrids.ptr);
+   double* ptr_kx = static_cast<double*>(buf_kx.ptr);
+   double* ptr_ky = static_cast<double*>(buf_ky.ptr);
+   double* ptr_kz = static_cast<double*>(buf_kz.ptr);
+
+   if (type == 1) DoCompensationCIC<T>(ptr_field, ptr_ngrids, ptr_kx, ptr_ky, ptr_kz, nthreads);
+   else if (type == 2) DoCompensationTSC<T>(ptr_field, ptr_ngrids, ptr_kx, ptr_ky, ptr_kz, nthreads);
+   else if (type == 3) DoCompensationPCS<T>(ptr_field, ptr_ngrids, ptr_kx, ptr_ky, ptr_kz, nthreads);
 }
 
 template<typename T>
-void do_compensation_interlaced(const py::array_t<std::complex<T>>& complex_field,
-                               const py::array_t<size_t>& ngrids,
-                               const py::array_t<double>& kx_array,
-                               const py::array_t<double>& ky_array,
-                               const py::array_t<double>& kz_array,
-                               int p,
-                               int nthreads)
+void do_compensation_interlaced(py::array_t<std::complex<T>> complex_field,
+                                py::array_t<size_t> ngrids,
+                                py::array_t<double> kx_array,
+                                py::array_t<double> ky_array,
+                                py::array_t<double> kz_array,
+                                int p,
+                                int nthreads)
 {
-    auto buf_field = complex_field.request(false);
-    auto buf_ngrids = ngrids.request(false);
-    auto buf_kx = kx_array.request(false);
-    auto buf_ky = ky_array.request(false);
-    auto buf_kz = kz_array.request(false);
 
-    std::complex<T>* ptr_field = static_cast<std::complex<T>*>(buf_field.ptr);
-    size_t* ptr_ngrids = static_cast<size_t*>(buf_ngrids.ptr);
-    double* ptr_kx = static_cast<double*>(buf_kx.ptr);
-    double* ptr_ky = static_cast<double*>(buf_ky.ptr);
-    double* ptr_kz = static_cast<double*>(buf_kz.ptr);
+   auto buf_field = complex_field.request(false);
+   auto buf_ngrids = ngrids.request(false);
+   auto buf_kx = kx_array.request(false);
+   auto buf_ky = ky_array.request(false);
+   auto buf_kz = kz_array.request(false);
 
-    DoCompensationInterlaced<T>(ptr_field, ptr_ngrids, ptr_kx, ptr_ky, ptr_kz, p, nthreads);
+
+   std::complex<T>* ptr_field = static_cast<std::complex<T>*>(buf_field.ptr);
+   size_t* ptr_ngrids = static_cast<size_t*>(buf_ngrids.ptr);
+   double* ptr_kx = static_cast<double*>(buf_kx.ptr);
+   double* ptr_ky = static_cast<double*>(buf_ky.ptr);
+   double* ptr_kz = static_cast<double*>(buf_kz.ptr);
+
+   DoCompensationInterlaced<T>(ptr_field, ptr_ngrids, ptr_kx, ptr_ky, ptr_kz, p, nthreads);
 }
 
 template<typename T>
-void do_interlace(const py::array_t<std::complex<T>>& c1,
-                  const py::array_t<std::complex<T>>& c2,
-                  const py::array_t<double>& H,
-                  const py::array_t<size_t>& ngrids,
-                  const py::array_t<double>& kx_array,
-                  const py::array_t<double>& ky_array,
-                  const py::array_t<double>& kz_array,
+void do_interlace(py::array_t<std::complex<T>> c1,
+                  py::array_t<std::complex<T>> c2,
+                  py::array_t<double> H,
+                  py::array_t<size_t> ngrids,
+                  py::array_t<double> kx_array,
+                  py::array_t<double> ky_array,
+                  py::array_t<double> kz_array,
                   int nthreads)
 {
-    auto buf_c1 = c1.request(false);
-    auto buf_c2 = c2.request(false);
-    auto buf_H = H.request(false);
-    auto buf_ngrids = ngrids.request(false);
-    auto buf_kx = kx_array.request(false);
-    auto buf_ky = ky_array.request(false);
-    auto buf_kz = kz_array.request(false);
+   if (!(c2.flags() & py::array::c_style)) {
+       throw std::runtime_error("c2 must be C-contiguous");
+   }
 
-    std::complex<T>* ptr_c1 = static_cast<std::complex<T>*>(buf_c1.ptr);
-    std::complex<T>* ptr_c2 = static_cast<std::complex<T>*>(buf_c2.ptr);
-    double* ptr_H = static_cast<double*>(buf_H.ptr);
-    size_t* ptr_ngrids = static_cast<size_t*>(buf_ngrids.ptr);
-    double* ptr_kx = static_cast<double*>(buf_kx.ptr);
-    double* ptr_ky = static_cast<double*>(buf_ky.ptr);
-    double* ptr_kz = static_cast<double*>(buf_kz.ptr);
+   auto buf_c1 = c1.request(false);
+   auto buf_c2 = c2.request(false);
+   auto buf_H = H.request(false);
+   auto buf_ngrids = ngrids.request(false);
+   auto buf_kx = kx_array.request(false);
+   auto buf_ky = ky_array.request(false);
+   auto buf_kz = kz_array.request(false);
 
-    DoInterlace<T>(ptr_c1, ptr_c2, ptr_H, ptr_ngrids, ptr_kx, ptr_ky, ptr_kz, nthreads);
+   std::complex<T>* ptr_c1 = static_cast<std::complex<T>*>(buf_c1.ptr);
+   std::complex<T>* ptr_c2 = static_cast<std::complex<T>*>(buf_c2.ptr);
+   double* ptr_H = static_cast<double*>(buf_H.ptr);
+   size_t* ptr_ngrids = static_cast<size_t*>(buf_ngrids.ptr);
+   double* ptr_kx = static_cast<double*>(buf_kx.ptr);
+   double* ptr_ky = static_cast<double*>(buf_ky.ptr);
+   double* ptr_kz = static_cast<double*>(buf_kz.ptr);
+
+   DoInterlace<T>(ptr_c1, ptr_c2, ptr_H, ptr_ngrids, ptr_kx, ptr_ky, ptr_kz, nthreads);
 }
 
 
 PYBIND11_MODULE(mesh_pybind, m){
     m.doc() = "Mesh based on pybind11";
 
-    // 绑定 float 版本
+    // Bind the float implementation.
     m.def("run_mesh_float", &run_mesh<float>, 
           R"pbdoc(
             Run mesh interpolation with float precision.
@@ -191,7 +191,7 @@ PYBIND11_MODULE(mesh_pybind, m){
           py::arg("pos"), py::arg("field"), py::arg("weights") = py::none(), py::arg("values") = py::none(),
           py::arg("boxSize"), py::arg("ngrids"), py::arg("shift"), py::arg("type"), py::arg("nthreads"));
 
-    // 绑定 double 版本
+    // Bind the double implementation.
     m.def("run_mesh_double", &run_mesh<double>, 
           R"pbdoc(
             Run mesh interpolation with double precision.
@@ -297,4 +297,5 @@ PYBIND11_MODULE(mesh_pybind, m){
           )pbdoc",
           py::arg("c1"), py::arg("c2"), py::arg("H"), py::arg("ngrids"), py::arg("kx_array"), py::arg("ky_array"), py::arg("kz_array"),
           py::arg("nthreads"));
-} 
+}
+ 

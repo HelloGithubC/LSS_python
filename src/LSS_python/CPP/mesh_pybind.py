@@ -28,6 +28,10 @@ def to_mesh_pybind(pos, boxsize, ngrids, field, weights=None, values=None, shift
 def do_compensation_pybind(complex_field, ngrids, k_arrays, resampler, do_interlaced=False, nthreads=1):
     if not complex_field.flags.contiguous:
         raise ValueError("complex_field must be contiguous")
+
+    # Convert ngrids to size_t type (uint64) to match C++ expectations
+    ngrids = np.asarray(ngrids, dtype=np.uint64)
+
     if resampler == "CIC":
         mesh_type = 1
         p = 2
@@ -39,9 +43,10 @@ def do_compensation_pybind(complex_field, ngrids, k_arrays, resampler, do_interl
         p = 4
     else:
         raise ValueError(f"Invalid resampler: {resampler}")
-    
+
     kx_array, ky_array, kz_array = k_arrays
-    if complex_field.dtype == np.float32:
+    # Fix: Check for complex64/complex128 instead of float32/float64
+    if complex_field.dtype == np.complex64:
         if do_interlaced:
             do_compensation_interlaced_float(complex_field, ngrids, kx_array, ky_array, kz_array, p, nthreads)
         else:
@@ -60,13 +65,14 @@ def do_interlace_pybind(c1, c2, boxsize, Nmesh, k_arrays, nthreads):
         H = np.array([H] * 3, dtype=np.float64)
     else:
         H = np.array(H, dtype=np.float64)
-    ngrids = Nmesh
+    # Convert ngrids to size_t type (uint64) to match C++ expectations
+    ngrids = np.asarray(Nmesh, dtype=np.uint64)
 
     if not c1.flags.contiguous:
         raise ValueError("c1 must be contiguous")
     c2 = np.ascontiguousarray(c2)
     kx_array, ky_array, kz_array = k_arrays
-    if c1.dtype == np.float32:
+    if c1.dtype == np.complex64:
         do_interlace_float(c1, c2, H, ngrids, kx_array, ky_array, kz_array, nthreads)
     else:
         do_interlace_double(c1, c2, H, ngrids, kx_array, ky_array, kz_array, nthreads)

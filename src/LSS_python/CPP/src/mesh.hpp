@@ -434,34 +434,49 @@ void DoCompensationInterlaced(std::complex<T>* complex_field, size_t* ngrids, do
         for (size_t ix = 0; ix < nx; ix++)
         {
             kx = kx_array[ix];
-            sinc_x = std::sin(kx/2.0) / (kx/2.0);
+            // Fix: handle kx=0 case before division to avoid NaN/inf
+            if (kx == 0.0) {
+                sinc_x = 1.0;
+            } else {
+                sinc_x = std::sin(kx/2.0) / (kx/2.0);
+            }
             for (int i = 1; i < p; i++)
             {
                 sinc_x *= sinc_x;
             }
-            w[0] = (kx == 0.0)? 1.0 : sinc_x;
+            w[0] = sinc_x;
             for (size_t iy = 0; iy < ny; iy++)
             {
                 ky = ky_array[iy];
-                sinc_y = std::sin(ky/2.0) / (ky/2.0);
+                // Fix: handle ky=0 case before division
+                if (ky == 0.0) {
+                    sinc_y = 1.0;
+                } else {
+                    sinc_y = std::sin(ky/2.0) / (ky/2.0);
+                }
                 for (int i = 1; i < p; i++)
                 {
                     sinc_y *= sinc_y;
                 }
-                w[1] = (ky == 0.0)? 1.0 : sinc_y;
+                w[1] = sinc_y;
                 for (size_t iz = 0; iz < nz; iz++)
                 {
                     kz = kz_array[iz];
-                    sinc_z = std::sin(kz/2.0) / (kz/2.0);
+                    // Fix: handle kz=0 case before division
+                    if (kz == 0.0) {
+                        sinc_z = 1.0;
+                    } else {
+                        sinc_z = std::sin(kz/2.0) / (kz/2.0);
+                    }
                     for (int i = 1; i < p; i++)
                     {
                         sinc_z *= sinc_z;
                     }
-                    w[2] = (kz == 0.0)? 1.0 : sinc_z;
+                    w[2] = sinc_z;
 
                     complex_field[iz + iy*nz + ix*nz*ny] /= w[0] * w[1] * w[2];
-                } 
-            } 
+                }
+            }
         }
     }
 }
