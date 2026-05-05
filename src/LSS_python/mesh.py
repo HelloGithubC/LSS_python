@@ -366,7 +366,7 @@ class Mesh:
                     do_compensation_c_api(self.complex_field, k_arrays, resampler=self.attrs["resampler"], interlaced=self.attrs["interlaced"], nthreads=nthreads)
                 else:
                     from .CPP.mesh_pybind import do_compensation_pybind
-                    do_compensation_pybind(self.complex_field, self.Nmesh, k_arrays, self.attrs["resampler"], interlaced=self.attrs["interlaced"], nthreads=nthreads)
+                    do_compensation_pybind(self.complex_field, self.Nmesh, k_arrays, self.attrs["resampler"], do_interlaced=self.attrs["interlaced"], nthreads=nthreads)
             else:
                 do_compensation_from_numba(self.complex_field, k_arrays, resampler=self.attrs["resampler"], interlace=self.attrs["interlaced"], nthreads=nthreads)
 
