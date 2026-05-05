@@ -1,7 +1,6 @@
 import numpy as np 
 from numba import njit
 from .corrfunc import call_DDsmu
-from .tpcf import xismu
 from tqdm import tqdm
 import time
 import os

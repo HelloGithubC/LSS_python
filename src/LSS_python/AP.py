@@ -3,12 +3,15 @@ from numba import njit
 import math
 
 from .base import Hz, DA, cal_HI_factor
+from .tpcf import xismu
 
-def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0,smin_mapping=3.0, smax_mapping=60.0):
+def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0,smin_mapping=3.0, smax_mapping=60.0) -> xismu | None:
     sbin = xismu.xis.shape[0]
     mubin = xismu.xis.shape[1]
 
     if abs(omega_mm - omega_mf) < 1e-8 and abs(w_m - w_f) < 1e-8 and abs(wa_m - wa_f) < 1e-8:
+        return assis_xismu
+    if redshift < 1e-5:
         return assis_xismu
 
     if convert_method == "dense":

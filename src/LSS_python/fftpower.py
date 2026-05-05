@@ -295,7 +295,7 @@ class FFTPower:
         
         return self.power
     
-    def intergrate_fftpower(self, kmin=-1, kmax=-1, mu_min=-1, mu_max=-1, integrate="k", easy_mu_array=False, norm=False, bin_pack=1):
+    def intergrate_fftpower(self, kmin=-1.0, kmax=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", easy_mu_array=False, norm=False, bin_pack=1):
         if not isinstance(bin_pack, int):
             bin_pack = int(bin_pack)
         if bin_pack > 1:

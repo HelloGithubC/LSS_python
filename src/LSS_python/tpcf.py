@@ -4,6 +4,7 @@ from Corrfunc.theory import DDsmu
 from Corrfunc.mocks import DDsmu_mocks
 
 from .base import Hz, DA, comov_dist, traz, edges_to_array
+from .compressor import Compressor
 
 def meannorm(X, axis=0):
     if len(X.shape) == 1:
@@ -84,13 +85,14 @@ class xismu(object):
             self.DDnorm, self.DRnorm, self.RRnorm = DDnorm, DRnorm, RRnorm
             self.S = S 
             self.Mu = Mu
-            self.DD = DD.reshape((self.sbin, self.mubin))
-            self.DR = DR.reshape((self.sbin, self.mubin))
-            self.RR = RR.reshape((self.sbin, self.mubin))
-            self.DD = self.DD / self.DDnorm
-            self.DR = self.DR / self.DRnorm
-            self.RR = self.RR / self.RRnorm
-            self.RR[self.RR == 0] = 1e-15
+            self.DD = DD.reshape((self.sbin, self.mubin)) if DD is not None else None 
+            self.DR = DR.reshape((self.sbin, self.mubin)) if DR is not None else None 
+            self.RR = RR.reshape((self.sbin, self.mubin)) if RR is not None else None 
+            self.DD = self.DD / self.DDnorm if self.DD is not None else None 
+            self.DR = self.DR / self.DRnorm if self.DR is not None else None 
+            self.RR = self.RR / self.RRnorm if self.RR is not None else None 
+            if self.RR is not None:
+                self.RR[self.RR == 0] = 1e-15
         self.xis = None
         
     @classmethod
@@ -202,11 +204,13 @@ class xismu(object):
         self.S, self.Mu = np.meshgrid(s_array, mu_array, indexing="ij")
 
     def get_xis(self):
+        if self.DD is None or self.DR is None or self.RR is None:
+            raise ValueError("DD, DR, RR must be set before getting xis")
         if self.xis is None:
             self.xis = (self.DD - 2.0 * self.DR + self.RR) / self.RR 
         return self.xis
     
-    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=True, remove_last_one=True):
+    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=True, remove_last_one=True) -> np.ndarray:
         """ A powerful function to integrate the tpcf
 
         Parameters
@@ -293,8 +297,6 @@ class xismu(object):
         if intximu:
             mu = mu_array[mumin_index: mumax_index]
             s = s_array[smin_index: smax_index]
-            if mupack > 1:
-                mu = packarray1d(mu, mupack)
             Xis_need = (DD_need - 2 * DR_need + RR_need) / RR_need
             if with_s2:
                 Xis_need = Xis_need * s[:,np.newaxis]**2
@@ -304,6 +306,7 @@ class xismu(object):
                 mu = mu[need_slice]
             if mupack > 1:
                 xis_mu = packarray1d(xis_mu, mupack)
+                mu = packarray1d(mu, mupack)
             result_dict["mu"] = mu
             result_dict["xis_mu"] = xis_mu
             if not s_xis and quick_return:
@@ -759,14 +762,29 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
 
     return result_dict
 
-def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6, shift=5, return_mu=False, mumax=0.97, remove_last_one=True, pca_model_list=None):
+def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, compressors_list=None, **kwargs) -> np.ndarray:
+    """
+    kwargs:
+        smin, smax: float, default 6.0, 40.0
+        mumax: float, default 0.97
+        mupack: int, default 6
+        remove_last_one: bool, default True
+        integrate_tpcf_func: function, default None and use integrate_tpcf. If not None, it will use this function to integrate tpcf and use integrate_tpcf_kwargs to pass kwargs to this function. The first parameter of this function must be xismu.
+        integrate_tpcf_kwargs: dict, default None and use {}
+    """
+    integrate_tpcf_func = kwargs.get("integrate_tpcf_func", None)
+    if integrate_tpcf_func is None:
+        smin = kwargs.get("smin", 6.0)
+        smax = kwargs.get("smax", 40.0)
+        mupack = kwargs.get("mupack", 1)
+        remove_last_one = kwargs.get("remove_last_one", True)
+        mumax = kwargs.get("mumax", 0.97)
+    else:
+        integrate_tpcf_kwargs = kwargs.get("integrate_tpcf_kwargs", {})
     if isinstance(tpcf_dict_list, dict):
         tpcf_dict_list = [tpcf_dict_list, ]
-    # 若 snap_ids_list 只是一个列表或元组没有嵌套，则外层补上一个列表
-    if not isinstance(snap_ids_list[0], (list, tuple)):
-        snap_ids_list = [snap_ids_list, ]
-    snap1, snap2 = snap_ids_list[0][0], snap_ids_list[0][1]
-
+    snap1, snap2 = snap_ids[0], snap_ids[1]
+    
     # Ensure tpcf_dict_list[0][snap1] is a list, tuple, or array
     first_snap_data = tpcf_dict_list[0][snap1]
     if not isinstance(first_snap_data, (list, tuple, np.ndarray)):
@@ -780,46 +798,55 @@ def get_diff_array(tpcf_dict_list, snap_ids_list, smin=6.0, smax=40.0, mupack=6,
         shift = 0
     tpcf_diff_list_list = []
 
-    if pca_model_list is None:
-        is_pca = False 
+    if compressors_list is None:
+        use_compressor = False 
     else:
-        is_pca = True 
+        use_compressor  = True 
         mupack = 1
 
     for i_list in range(len(tpcf_dict_list)):
-        snap1, snap2 = snap_ids_list[i_list][0], snap_ids_list[i_list][1]
         tpcf_diff_list = []
         for i in range(size):
             i_shift = i + shift
             if i_shift >= size:
                 i_shift -= size
             xismu_first = tpcf_dict_list[i_list][snap1][i] if not single_xismu else tpcf_dict_list[i_list][snap1]
-            mu_temp_1, xi_mu_temp_1 = xismu_first.integrate_tpcf(smin=smin, smax=smax, intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
             xismu_second = tpcf_dict_list[i_list][snap2][i_shift] if not single_xismu else tpcf_dict_list[i_list][snap2]
-            mu_temp_2, xi_mu_temp_2 = xismu_second.integrate_tpcf(smin=smin, smax=smax,intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
+            if integrate_tpcf_func is not None:
+                mu_temp_1, xi_mu_temp_1 = integrate_tpcf_func(xismu_first, **integrate_tpcf_kwargs)
+                mu_temp_2, xi_mu_temp_2 = integrate_tpcf_func(xismu_second, **integrate_tpcf_kwargs)
+            else:
+                mu_temp_1, xi_mu_temp_1 = xismu_first.integrate_tpcf(smin=smin, smax=smax, intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
+                mu_temp_2, xi_mu_temp_2 = xismu_second.integrate_tpcf(smin=smin, smax=smax,intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
+                
             xi_mu_temp_diff = (xi_mu_temp_1 - xi_mu_temp_2)
             tpcf_diff_list.append(xi_mu_temp_diff)
         tpcf_diff_list_list.append(np.array(tpcf_diff_list))
 
 
     # Apply PCA transformation if needed
-    if is_pca and pca_model_list is not None:
-        if isinstance(pca_model_list, list):
-            # Multiple PCA models: transform each local segment separately
+    if use_compressor:
+        if isinstance(compressors_list, list):
+            # Multiple compressors: transform each local segment separately
             transformed_segments = []
             for i, local_array in enumerate(tpcf_diff_list_list):
                 # Each local_array shape: (size, n_bins), transform each sample
-                transformed = pca_model_list[i].transform(local_array)
+                transformed = compressors_list[i].transform(local_array)
                 transformed_segments.append(transformed)
             result_array = np.concatenate(transformed_segments, axis=1)
-        else:
+        elif isinstance(compressors_list, Compressor):
             result_array = np.concatenate(tpcf_diff_list_list, axis=1)
-            # Single PCA model: transform the whole concatenated array
-            result_array = pca_model_list.transform(result_array)
+            # Single compressor: transform the whole concatenated array
+            result_array = compressors_list.transform(result_array)
+        else:
+            raise ValueError("compressors_list must be a list of Compressor or a single Compressor")
     else:
         result_array = np.concatenate(tpcf_diff_list_list, axis=1)
+    
+    if len(result_array) == 1:
+        result_array = result_array[0]
 
     if return_mu:
-        return mu_temp_1, result_array
+        return np.vstack((mu_temp_1, result_array))
     else:
         return result_array
