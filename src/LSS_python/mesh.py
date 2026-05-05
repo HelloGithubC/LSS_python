@@ -267,7 +267,7 @@ class Mesh:
                 if interlaced:
                     self.real_field[...] = (self.real1 + self.real2) / 2.0
 
-    def r2c(self, compensated=False, k_arrays_interlace=None, device_id=-1, nthreads=1, c_api=False, pybind=False) -> None:
+    def r2c(self, compensated=False, k_arrays_interlace=None, device_id=-1, nthreads=1, c_api=True, pybind=True) -> None:
         self.attrs["compensated"] = compensated
         if device_id >= 0:
             from cupyx.scipy.fft import rfftn
@@ -313,7 +313,7 @@ class Mesh:
                 else:
                     self.complex_field = rfftn(self.real_field, workers=nthreads, norm="forward")
         if compensated:
-            self.do_compensation(device_id, nthreads, c_api)
+            self.do_compensation(device_id, nthreads, c_api, pybind=pybind)
 
     def c2r(self, device_id=-1):
         if device_id >= 0:
@@ -328,7 +328,7 @@ class Mesh:
             from scipy.fft import irfftn 
             self.real_field_inverse = irfftn(self.complex_field, norm="forward")
 
-    def do_compensation(self, device_id=-1, nthreads=1, c_api=False, pybind=False):
+    def do_compensation(self, device_id=-1, nthreads=1, c_api=True, pybind=True):
         if device_id >= 0:
             import cupy as cp 
             from .cuda.mesh import do_compensation_from_cuda
