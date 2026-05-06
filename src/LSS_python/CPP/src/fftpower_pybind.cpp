@@ -161,13 +161,14 @@ void cal_ps_2d_from_mesh(
 
 template <typename T>
 void cal_ps_from_ps_2d(
-    py::array_t<std::complex<T>> ps_2d, py::array_t<double> k_2d,
+    py::array_t<std::complex<T>> ps_2d, py::array_t<double> k_2d, py::array_t<size_t> modes_2d,
     py::array_t<double> k_out_2d, py::object mu_out_2d,
     py::array_t<std::complex<double>> ps_kmu, py::array_t<size_t> modes,
     py::array_t<double> k_edge, py::object mu_edge, int nthreads)
 {
     auto buf_ps_2d = ps_2d.request();
     auto buf_k_2d = k_2d.request();
+    auto buf_modes_2d = modes_2d.request();
     auto buf_k_out_2d = k_out_2d.request();
     auto buf_ps_kmu = ps_kmu.request();
     auto buf_modes = modes.request();
@@ -183,6 +184,7 @@ void cal_ps_from_ps_2d(
     std::complex<double>* ptr_ps_kmu = static_cast<std::complex<double>*>(buf_ps_kmu.ptr);
     size_t* ptr_modes = static_cast<size_t*>(buf_modes.ptr);
     const double* ptr_k_edge = static_cast<const double*>(buf_k_edge.ptr);
+    const size_t* ptr_modes_2d = static_cast<const size_t*>(buf_modes_2d.ptr);
 
     // Handle mu_out_2d and mu_edge parameters
     double* ptr_mu_out_2d = nullptr;
@@ -202,7 +204,8 @@ void cal_ps_from_ps_2d(
         mubin = buf_mu_edge.shape[0] - 1;
     }
 
-    CalPSFromPS2D<T>(ptr_ps_2d, ptr_k_2d, ptr_k_out_2d, ptr_mu_out_2d,
+    CalPSFromPS2D<T>(ptr_ps_2d, ptr_k_2d, ptr_modes_2d,
+                     ptr_k_out_2d, ptr_mu_out_2d,
                      ptr_ps_kmu, ptr_modes,
                      ptr_k_edge, ptr_mu_edge, kbin, mubin, k_perp_bin, k_parallel_bin, nthreads);
 }
@@ -319,6 +322,7 @@ PYBIND11_MODULE(fftpower_pybind, m){
             Args:
                 ps_2d (np.ndarray): Input 2D power spectrum array.
                 k_2d (np.ndarray): 2D k-value array with shape (k_perp_bin, k_parallel_bin, 2).
+                modes_2d (np.ndarray): 2D mode counts array with shape (k_perp_bin, k_parallel_bin).
                 k_out_2d (np.ndarray): Output array for k values.
                 mu_out_2d (np.ndarray, optional): Output array for mu values. Default None.
                 ps_kmu (np.ndarray): Output array for power spectrum.
@@ -327,7 +331,7 @@ PYBIND11_MODULE(fftpower_pybind, m){
                 mu_edge (np.ndarray, optional): mu bin edges array. Default None.
                 nthreads (int): Number of threads for computation.
           )pbdoc",
-          py::arg("ps_2d"), py::arg("k_2d"), py::arg("k_out_2d"), py::arg("mu_out_2d") = py::none(),
+          py::arg("ps_2d"), py::arg("k_2d"), py::arg("modes_2d"), py::arg("k_out_2d"), py::arg("mu_out_2d") = py::none(),
           py::arg("ps_kmu"), py::arg("modes"), py::arg("k_edge"), py::arg("mu_edge") = py::none(),
           py::arg("nthreads"));
 
@@ -336,7 +340,7 @@ PYBIND11_MODULE(fftpower_pybind, m){
             Calculate power spectrum from 2D power spectrum (double precision).
             Same arguments as cal_ps_from_ps_2d_float but with double precision
           )pbdoc",
-          py::arg("ps_2d"), py::arg("k_2d"), py::arg("k_out_2d"), py::arg("mu_out_2d") = py::none(),
+          py::arg("ps_2d"), py::arg("k_2d"), py::arg("modes_2d"), py::arg("k_out_2d"), py::arg("mu_out_2d") = py::none(),
           py::arg("ps_kmu"), py::arg("modes"), py::arg("k_edge"), py::arg("mu_edge") = py::none(),
           py::arg("nthreads"));
 }

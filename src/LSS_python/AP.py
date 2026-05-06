@@ -59,8 +59,8 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh
         use_new_kernel: Default False.
         ps_3d_kernel: 
         Nmesh: Default 1024
-        k_min: Default 0.01
-        k_max: Default 3.0
+        kmin: Default 0.01
+        kmax: Default 3.0
         dk: Default 0.01
         Nmu: Default 30
         mode: Default '2d'
@@ -83,8 +83,8 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh
     Nmesh = kargs.get("Nmesh", 1024)
 
     Nmesh_array = Nmesh * np.ones(3)
-    k_min = kargs.get("k_min", 0.01)
-    k_max = kargs.get("k_max", 3.0)
+    kmin = kargs.get("kmin", 0.01)
+    kmax = kargs.get("kmax", 3.0)
     dk = kargs.get("dk", 0.01)
     Nmu = kargs.get("Nmu", 30)
     mode = kargs.get("mode", "2d")
@@ -95,8 +95,8 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh
     fftpower_new.is_run_ps_3d = True
     _ = fftpower_new.cal_ps_from_3d(
             ps_3d_need,
-            k_min,
-            k_max,
+            kmin,
+            kmax,
             dk,
             Nmu=Nmu,
             mode=mode,

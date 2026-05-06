@@ -65,7 +65,7 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthre
         k_x_array, k_y_array, k_z_array = k_arrays
 
     if dk is None:
-        dk = (k_z_array[1] - k_z_array[0]) * 2.0
+        dk = k_z_array[1] - k_z_array[0]
 
     k_perp_source = np.sqrt(k_x_array**2 + k_y_array**2)
     k_perp_min = np.min(k_perp_source)
@@ -99,7 +99,7 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthre
 
     return k_2d, ps_2d, modes_2d
 
-def cal_pkmu_from_ps_2d(ps_2d, k_2d, k_edge, mu_edge, k_logarithmic=False, nthreads=1):
+def cal_pkmu_from_ps_2d(ps_2d, k_2d, modes_2d, k_edge, mu_edge, k_logarithmic=False, nthreads=1):
     if not ps_2d.flags.contiguous:
         raise ValueError("ps_2d must be contiguous")
     if not k_2d.flags.contiguous:
@@ -125,8 +125,8 @@ def cal_pkmu_from_ps_2d(ps_2d, k_2d, k_edge, mu_edge, k_logarithmic=False, nthre
     modes = np.zeros(shape=(kbin, mubin), dtype=np.uint64)
 
     if ps_2d.dtype == np.complex64:
-        cal_ps_from_ps_2d_float(ps_2d, k_2d, k_out_2d, mu_out_2d, ps_kmu, modes, k_edge, mu_edge, nthreads)
+        cal_ps_from_ps_2d_float(ps_2d, k_2d, modes_2d, k_out_2d, mu_out_2d, ps_kmu, modes, k_edge, mu_edge, nthreads)
     else:
-        cal_ps_from_ps_2d_double(ps_2d, k_2d, k_out_2d, mu_out_2d, ps_kmu, modes, k_edge, mu_edge, nthreads)
+        cal_ps_from_ps_2d_double(ps_2d, k_2d, modes_2d, k_out_2d, mu_out_2d, ps_kmu, modes, k_edge, mu_edge, nthreads)
 
     return k_out_2d, mu_out_2d, ps_kmu, modes

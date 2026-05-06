@@ -35,7 +35,7 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, ps_factor=1.0, sh
         k_x_array, k_y_array, k_z_array = k_arrays
 
     if dk is None:
-        dk = (k_z_array[1] - k_z_array[0]) * 2.0
+        dk = k_z_array[1] - k_z_array[0]
 
     k_perp_source = np.sqrt(k_x_array**2 + k_y_array**2)
     k_perp_min = np.min(k_perp_source)
@@ -101,7 +101,7 @@ def cal_ps_2d_core(complex_field, kernel, k_arrays, k_perp_edge, k_parallel_edge
     return k_2d, ps_2d, modes_2d
 
 @njit(parallel=True)
-def cal_pkmu_from_ps_2d(ps_2d, k_2d, k_edge, mu_edge, k_logarithmic=False, nthreads=1):
+def cal_pkmu_from_ps_2d(ps_2d, k_2d, modes_2d, k_edge, mu_edge, k_logarithmic=False, nthreads=1):
     """
     Calculate power spectrum from pre-computed 2D power spectrum.
     
@@ -154,40 +154,43 @@ def cal_pkmu_from_ps_2d(ps_2d, k_2d, k_edge, mu_edge, k_logarithmic=False, nthre
     
     k_perp_size = k_2d.shape[0]
     k_parallel_size = k_2d.shape[1]
-    
+
     # 外层循环使用并行
     for i_paral in prange(k_parallel_size):
         if i_paral == 0:
             paral_factor = 1
         else:
             paral_factor = 2
-            
+
         # 内层循环不需要并行，因为外层已经并行
         for i_perp in range(k_perp_size):
             k_perp = k_2d[i_perp, i_paral, 0]
             k_parallel = k_2d[i_perp, i_paral, 1]
-            
+
             # 跳过无效的 k 值
             if np.isnan(k_perp) or np.isnan(k_parallel):
                 continue
-                
+
+            # 计算权重：paral_factor * modes_2d[i_perp, i_paral]
+            weight = paral_factor * modes_2d[i_perp, i_paral]
+
             # 计算总波数 k 和 mu
             k = np.sqrt(k_perp ** 2 + k_parallel ** 2)
-            
+
             # 跳过无效的 k 值
             if k < k_min or k > k_max:
                 continue
-                
+
             # 计算 k bin 索引
             if k_logarithmic:
                 k_i = int((np.log(k) - k_min_log) / k_diff)
             else:
                 k_i = int((k - k_min) / k_diff)
-            
+
             # 处理边界情况
             if k_i == kbin:
                 k_i -= 1
-                
+
             # 计算 mu bin 索引
             if use_mu:
                 mu = k_parallel / k
@@ -199,14 +202,14 @@ def cal_pkmu_from_ps_2d(ps_2d, k_2d, k_edge, mu_edge, k_logarithmic=False, nthre
             else:
                 mu = 0.0
                 mu_i = 0
-                
+
             # 使用线程安全的索引计算
             thread_id = get_thread_id()
             if thread_id < nthreads:
-                Pkmu_threads[thread_id, k_i, mu_i] += ps_2d[i_perp, i_paral] * paral_factor
-                k_mesh_threads[thread_id, k_i, mu_i] += k * paral_factor
-                mu_mesh_threads[thread_id, k_i, mu_i] += mu * paral_factor
-                count_threads[thread_id, k_i, mu_i] += paral_factor
+                Pkmu_threads[thread_id, k_i, mu_i] += ps_2d[i_perp, i_paral] * weight
+                k_mesh_threads[thread_id, k_i, mu_i] += k * weight
+                mu_mesh_threads[thread_id, k_i, mu_i] += mu * weight
+                count_threads[thread_id, k_i, mu_i] += weight
     
     # 合并线程结果
     Pkmu = np.sum(Pkmu_threads, axis=0)

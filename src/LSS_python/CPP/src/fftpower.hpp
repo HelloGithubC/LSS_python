@@ -22,6 +22,7 @@ inline size_t GetBin(const T value, const T *array, const T array_diff, bool is_
 
 template <typename T>
 void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
+    const size_t *modes_2d,
     double *k_out_2d, double *mu_out_2d, std::complex<double> *ps_kmu, size_t *modes,
     const double k_min, const double k_max, const double dk, const uint32_t Nmu,
     const size_t k_perp_bin, const size_t k_parallel_bin, int nthreads)
@@ -62,6 +63,9 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
                 double k_parallel = k_2d[1 + i_paral * 2 + i_perp * 2 * k_parallel_bin];
                 double k = std::sqrt(k_perp * k_perp + k_parallel * k_parallel);
 
+                // Calculate weight: paral_factor * modes_2d[i_perp, i_paral]
+                size_t weight = paral_factor * modes_2d[i_perp + k_perp_bin * i_paral];
+
                 size_t k_index = static_cast<size_t>((k - k_min) / dk);
                 if (k_index >= kbin)
                 {
@@ -75,11 +79,11 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
                     continue;
                 }
 
-                modes_threads[k_index][mu_index] += paral_factor;
-                ps_kmu_threads[k_index][mu_index] += static_cast<double>(ps_2d[index_2d].real()) * static_cast<double>(paral_factor) +
-                                                      std::complex<double>(0.0, 1.0) * static_cast<double>(ps_2d[index_2d].imag()) * static_cast<double>(paral_factor);
-                k_out_2d_threads[k_index][mu_index] += k * static_cast<double>(paral_factor);
-                mu_out_2d_threads[k_index][mu_index] += mu * static_cast<double>(paral_factor);
+                modes_threads[k_index][mu_index] += weight;
+                ps_kmu_threads[k_index][mu_index] += static_cast<double>(ps_2d[index_2d].real()) * static_cast<double>(weight) +
+                                                      std::complex<double>(0.0, 1.0) * static_cast<double>(ps_2d[index_2d].imag()) * static_cast<double>(weight);
+                k_out_2d_threads[k_index][mu_index] += k * static_cast<double>(weight);
+                mu_out_2d_threads[k_index][mu_index] += mu * static_cast<double>(weight);
             }
         }
 
@@ -221,6 +225,7 @@ void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel,
 
 template <typename T>
 void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
+    const size_t *modes_2d,
     double *k_out_2d, double *mu_out_2d, std::complex<double> *ps_kmu, size_t *modes,
     const double* k_edge, const double* mu_edge, const size_t kbin, const size_t mubin,
     const size_t k_perp_bin, const size_t k_parallel_bin, int nthreads)
@@ -289,6 +294,9 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
                     k_index -= 1uL;
                 }
 
+                // Calculate weight: paral_factor * modes_2d[i_perp, i_paral]
+                size_t weight = paral_factor * modes_2d[i_perp + k_perp_bin * i_paral];
+
                 if (use_mu)
                 {
                     double mu = k_parallel / k;
@@ -302,16 +310,16 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
                         mu_index -= 1uL;
                     }
 
-                    mu_out_2d_threads[k_index][mu_index] += mu * static_cast<double>(paral_factor);
+                    mu_out_2d_threads[k_index][mu_index] += mu * static_cast<double>(weight);
                 }
                 else
                 {
                     mu_index = 0uL;
                 }
-                modes_threads[k_index][mu_index] += paral_factor;
-                ps_kmu_threads[k_index][mu_index] += static_cast<double>(ps_2d[index_2d].real()) * static_cast<double>(paral_factor) +
-                                                      std::complex<double>(0.0, 1.0) * static_cast<double>(ps_2d[index_2d].imag()) * static_cast<double>(paral_factor);
-                k_out_2d_threads[k_index][mu_index] += k * static_cast<double>(paral_factor);
+                modes_threads[k_index][mu_index] += weight;
+                ps_kmu_threads[k_index][mu_index] += static_cast<double>(ps_2d[index_2d].real()) * static_cast<double>(weight) +
+                                                      std::complex<double>(0.0, 1.0) * static_cast<double>(ps_2d[index_2d].imag()) * static_cast<double>(weight);
+                k_out_2d_threads[k_index][mu_index] += k * static_cast<double>(weight);
             }
         }
 

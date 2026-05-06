@@ -218,7 +218,7 @@ class FFTPower:
         return self.power
     
     def cal_pkmu_from_ps_2d(
-        self, ps_2d, k_2d,
+        self, ps_2d, k_2d, modes_2d,
         kmin, kmax, dk, Nmu=None,
         mode="2d", k_logarithmic=False,
         nthreads=1, c_api=True
@@ -264,12 +264,12 @@ class FFTPower:
         if c_api:
             from .CPP.fftpower_pybind import cal_pkmu_from_ps_2d as cal_pkmu_from_ps_2d_cpp
             power_k, power_mu, power, power_modes = cal_pkmu_from_ps_2d_cpp(
-                ps_2d, k_2d, k_array, mu_array, k_logarithmic, nthreads
+                ps_2d, k_2d, modes_2d, k_array, mu_array, k_logarithmic, nthreads
             )
         else:
             from .JIT.fftpower import cal_pkmu_from_ps_2d as cal_pkmu_from_ps_2d_jit
             power_k, power_mu, power, power_modes = cal_pkmu_from_ps_2d_jit(
-                ps_2d, k_2d, k_array, mu_array, k_logarithmic, nthreads
+                ps_2d, k_2d, modes_2d, k_array, mu_array, k_logarithmic, nthreads
             )
         
         # Handle NaN values and averaging
@@ -442,8 +442,8 @@ class FFTPower2D(FFTPower):
         fftpower.removed_shotnoise = self.removed_shotnoise
         fftpower.attrs["shotnoise"] = 0.0 if self.removed_shotnoise else self.attrs["shotnoise"]
         power_temp = fftpower.cal_pkmu_from_ps_2d(
-            self.ps_2d, self.k_2d,
-            kmin=kmin, kmax=kmax, dk=dk, Nmu=Nmu, 
+            self.ps_2d, self.k_2d, self.modes_2d,
+            kmin=kmin, kmax=kmax, dk=dk, Nmu=Nmu,
             mode=mode, k_logarithmic=k_logarithmic,
             nthreads=nthreads, c_api=c_api
         )
