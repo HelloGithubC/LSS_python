@@ -40,7 +40,10 @@ def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0
     else:
         return complex_field
 
-def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, nthreads=1, c_api=True, dk=None):
+def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, nthreads=1, c_api=True, dk=-1):
+    if dk is not None and dk < 0:
+        dk = None
+        print("Warning (cal_ps_2d_from_mesh): dk < 0, dk is set to None (auto).")
     ps_factor = np.prod(mesh.attrs["BoxSize"])
     shotnoise = mesh.attrs["shotnoise"]
     if c_api:
@@ -343,29 +346,50 @@ class FFTPower:
                 mu_max_index = mu_max_index_source[0]
 
         Pkmu_select = np.real(power["Pkmu"][k_min_index:k_max_index, mu_min_index:mu_max_index])
+        modes_select = power["modes"][k_min_index:k_max_index, mu_min_index:mu_max_index]
         mu_need = mu_array[mu_min_index: mu_max_index]
         k_need = k_array[k_min_index:k_max_index]
         if integrate == "k":
-            Pkmu_integrate = np.nanmean(Pkmu_select, axis=0)
+            # Weighted average based on mode counts, handling NaN values in Pkmu_select
+            weights = np.where(modes_select > 0, modes_select, 0.0)
+            weight_sum = np.sum(weights, axis=0)
+            # Avoid division by zero
+            safe_weight_sum = np.where(weight_sum > 0, weight_sum, 1.0)
+            # Use nansum to handle NaN values in Pkmu_select
+            Pkmu_integrate = np.nansum(Pkmu_select * weights, axis=0) / safe_weight_sum
+            # Set NaN where no valid modes
+            Pkmu_integrate = np.where(weight_sum > 0, Pkmu_integrate, np.nan)
             # Apply normalization before remove_last_bin to ensure it's computed on full data
             if norm:
-                Pkmu_integrate = Pkmu_integrate / np.nanmean(Pkmu_integrate)
+                norm_factor = np.nanmean(Pkmu_integrate)
+                if norm_factor > 0:
+                    Pkmu_integrate = Pkmu_integrate / norm_factor
             # Apply remove_last_bin after normalization
                 if remove_last_bin:
                     Pkmu_integrate = Pkmu_integrate[:-1]
                     mu_need = mu_need[:-1]
-            # Apply bin_pack to 1D arrays after nanmean
+            # Apply bin_pack to 1D arrays after weighted average
             if do_pack:
                 mu_need = packarray(mu_need, bin_pack=bin_pack, axis=0)
                 Pkmu_integrate = packarray(Pkmu_integrate, bin_pack=bin_pack, axis=0)
             return mu_need, Pkmu_integrate
         elif integrate == "mu":
-            Pkmu_integrate = np.nanmean(Pkmu_select, axis=1)
+            # Weighted average based on mode counts, handling NaN values in Pkmu_select
+            weights = np.where(modes_select > 0, modes_select, 0.0)
+            weight_sum = np.sum(weights, axis=1)
+            # Avoid division by zero
+            safe_weight_sum = np.where(weight_sum > 0, weight_sum, 1.0)
+            # Use nansum to handle NaN values in Pkmu_select
+            Pkmu_integrate = np.nansum(Pkmu_select * weights, axis=1) / safe_weight_sum
+            # Set NaN where no valid modes
+            Pkmu_integrate = np.where(weight_sum > 0, Pkmu_integrate, np.nan)
             # Apply normalization before remove_last_bin to ensure it's computed on full data
             if norm:
-                Pkmu_integrate = Pkmu_integrate / np.nanmean(Pkmu_integrate)
+                norm_factor = np.nanmean(Pkmu_integrate)
+                if norm_factor > 0:
+                    Pkmu_integrate = Pkmu_integrate / norm_factor
             # Note: remove_last_bin is not applicable for mu integration in current implementation
-            # Apply bin_pack to 1D arrays after nanmean
+            # Apply bin_pack to 1D arrays after weighted average
             if do_pack:
                 k_need = packarray(k_need, bin_pack=bin_pack, axis=0)
                 Pkmu_integrate = packarray(Pkmu_integrate, bin_pack=bin_pack, axis=0)
@@ -412,7 +436,7 @@ class FFTPower2D(FFTPower):
         }
 
     def cal_ps_2d_from_mesh(
-        self, mesh, mesh_kernel=None, k_arrays=None, nthreads=1, device_id=-1, c_api=True, dk=None,
+        self, mesh, mesh_kernel=None, k_arrays=None, nthreads=1, device_id=-1, c_api=True, dk=-1,
         compensated=True, force_create_complex_field=False
     ):
         if device_id >= 0:

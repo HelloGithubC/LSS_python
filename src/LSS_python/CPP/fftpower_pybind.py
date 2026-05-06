@@ -89,13 +89,16 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthre
     index_zero = (modes_2d == 0)
     k_perp_temp = k_2d[:, :, 0]
     k_paral_temp = k_2d[:, :, 1]
-    k_perp_temp[index_zero] = np.nan 
+    k_perp_temp[index_zero] = np.nan
     k_paral_temp[index_zero] = np.nan
     ps_2d[index_zero] = np.nan
     index_zero_not = np.logical_not(index_zero)
     k_perp_temp[index_zero_not] = k_perp_temp[index_zero_not] / modes_2d[index_zero_not]
     k_paral_temp[index_zero_not] = k_paral_temp[index_zero_not] / modes_2d[index_zero_not]
     ps_2d[index_zero_not] = ps_2d[index_zero_not] / modes_2d[index_zero_not]
+
+    # Note: paral_factor is already applied in the C++ implementation (CalPS2D function) during mode counting
+    # No need to apply it again here to avoid double counting
 
     return k_2d, ps_2d, modes_2d
 

@@ -46,7 +46,7 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, ps_factor=1.0, sh
     k_parallel_edge = np.arange(k_z_array[0], k_z_array[-1] + dk, dk)
     k_parallel_bin = len(k_parallel_edge) - 1
 
-    k_2d, ps_2d, modes_2d = cal_ps_2d_core(complex_field, kernel, [k_x_array, k_y_array, k_z_array], k_perp_edge, k_parallel_edge, ps_factor, shotnoise, nthreads)
+    k_2d, ps_2d, modes_2d = cal_ps_2d_core(complex_field, kernel, (k_x_array, k_y_array, k_z_array), k_perp_edge, k_parallel_edge, ps_factor, shotnoise, nthreads)
 
     return k_2d, ps_2d, modes_2d
 
@@ -58,12 +58,14 @@ def cal_ps_2d_core(complex_field, kernel, k_arrays, k_perp_edge, k_parallel_edge
     dk_perp = k_perp_edge[1] - k_perp_edge[0]
     dk_parallel = k_parallel_edge[1] - k_parallel_edge[0]
 
-    k_2d = np.zeros((k_perp_size, k_parallel_size, 2), dtype=np.float32)
-    ps_2d = np.zeros((k_perp_size, k_parallel_size), dtype=np.complex64)
+    k_2d = np.zeros((k_perp_size, k_parallel_size, 2), dtype=np.float64)
+    ps_2d = np.zeros((k_perp_size, k_parallel_size), dtype=np.complex128)
     modes_2d = np.zeros((k_perp_size, k_parallel_size), dtype=np.uint64)
 
+    has_kernel = kernel is not None
+
     set_num_threads(nthreads)
-    for i_z in range(len(k_z_array)):
+    for i_z in prange(len(k_z_array)):
         k_z = k_z_array[i_z]
         # Determine k_parallel index
         if k_z < k_parallel_edge[0] or k_z > k_parallel_edge[-1]:
@@ -72,8 +74,9 @@ def cal_ps_2d_core(complex_field, kernel, k_arrays, k_perp_edge, k_parallel_edge
         if k_parallel_index == k_parallel_size:
             k_parallel_index -= 1
 
-        modes = np.zeros(k_perp_size, dtype=np.int32)
-        k_2d[:, k_parallel_index, 1] = k_z
+        mode_int = 1 if i_z == 0 else 2
+        mode = 1.0 if i_z == 0 else 2.0
+
         for i_x in range(len(k_x_array)):
             k_x = k_x_array[i_x]
             for i_y in range(len(k_y_array)):
@@ -84,19 +87,25 @@ def cal_ps_2d_core(complex_field, kernel, k_arrays, k_perp_edge, k_parallel_edge
                 k_perp_index = int((k_perp - k_perp_edge[0]) / dk_perp)
                 if k_perp_index == k_perp_size:
                     k_perp_index -= 1
-                else:
-                    kernel_value = 1.0 if kernel is None else kernel[i_x, i_y, i_z]
-                    modes[k_perp_index] += 1
-                    k_2d[k_perp_index, k_parallel_index, 0] += k_perp
-                    ps_2d[k_perp_index, k_parallel_index] += ((complex_field[i_x, i_y, i_z] * np.conjugate(complex_field[i_x, i_y, i_z]) * ps_factor) - shotnoise) * kernel_value
-        for i in range(k_perp_size):
-            if modes[i] > 0:
-                k_2d[i, k_parallel_index, 0] /= modes[i]
-                ps_2d[i, k_parallel_index] /= modes[i]
+
+                modes_2d[k_perp_index, k_parallel_index] += mode_int
+                k_2d[k_perp_index, k_parallel_index, 0] += k_perp * mode
+                k_2d[k_perp_index, k_parallel_index, 1] += k_z * mode
+                power_val = complex_field[i_x, i_y, i_z] * np.conjugate(complex_field[i_x, i_y, i_z])
+                power_val = power_val * ps_factor - shotnoise
+                if has_kernel:
+                    power_val = power_val * kernel[i_x, i_y, i_z]
+                power_val = power_val * mode
+                ps_2d[k_perp_index, k_parallel_index] = ps_2d[k_perp_index, k_parallel_index] + power_val
+    for i_perp in prange(k_perp_size):
+        for i_paral in range(k_parallel_size):
+            if modes_2d[i_perp, i_paral] > 0:
+                k_2d[i_perp, i_paral] /= modes_2d[i_perp, i_paral]
+                ps_2d[i_perp, i_paral] /= modes_2d[i_perp, i_paral]
             else:
-                k_2d[i, k_parallel_index, 0] = np.nan
-                ps_2d[i, k_parallel_index] = np.nan
-        modes_2d[:, k_parallel_index] += modes
+                k_2d[i_perp, i_paral] = np.nan
+                k_2d[i_perp, i_paral] = np.nan
+
     return k_2d, ps_2d, modes_2d
 
 @njit(parallel=True)
@@ -147,7 +156,7 @@ def cal_pkmu_from_ps_2d(ps_2d, k_2d, modes_2d, k_edge, mu_edge, k_logarithmic=Fa
     
     # 初始化线程安全的数组
     Pkmu_threads = np.zeros((nthreads, kbin, mubin), dtype=np.complex128)
-    count_threads = np.zeros((nthreads, kbin, mubin), dtype=np.uint32)
+    count_threads = np.zeros((nthreads, kbin, mubin), dtype=np.uint64)
     k_mesh_threads = np.zeros((nthreads, kbin, mubin), dtype=np.float64)
     mu_mesh_threads = np.zeros((nthreads, kbin, mubin), dtype=np.float64)
     
@@ -156,11 +165,6 @@ def cal_pkmu_from_ps_2d(ps_2d, k_2d, modes_2d, k_edge, mu_edge, k_logarithmic=Fa
 
     # 外层循环使用并行
     for i_paral in prange(k_parallel_size):
-        if i_paral == 0:
-            paral_factor = 1
-        else:
-            paral_factor = 2
-
         # 内层循环不需要并行，因为外层已经并行
         for i_perp in range(k_perp_size):
             k_perp = k_2d[i_perp, i_paral, 0]
@@ -170,8 +174,8 @@ def cal_pkmu_from_ps_2d(ps_2d, k_2d, modes_2d, k_edge, mu_edge, k_logarithmic=Fa
             if np.isnan(k_perp) or np.isnan(k_parallel):
                 continue
 
-            # 计算权重：paral_factor * modes_2d[i_perp, i_paral]
-            weight = paral_factor * modes_2d[i_perp, i_paral]
+            # Use modes_2d directly as weight (paral_factor already applied in cal_ps_2d_core during mode counting)
+            weight = modes_2d[i_perp, i_paral]
 
             # 计算总波数 k 和 mu
             k = np.sqrt(k_perp ** 2 + k_parallel ** 2)

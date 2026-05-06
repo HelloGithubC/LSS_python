@@ -54,8 +54,6 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
         #pragma omp for schedule(static)
         for (size_t i_paral = 0; i_paral < k_parallel_bin; i_paral++)
         {
-            size_t paral_factor = (i_paral == 0) ? 1uL : 2uL;
-
             for (size_t i_perp = 0; i_perp < k_perp_bin; i_perp++)
             {
                 size_t index_2d = i_paral + k_parallel_bin * i_perp;
@@ -63,8 +61,8 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
                 double k_parallel = k_2d[1 + i_paral * 2 + i_perp * 2 * k_parallel_bin];
                 double k = std::sqrt(k_perp * k_perp + k_parallel * k_parallel);
 
-                // Calculate weight: paral_factor * modes_2d[i_perp, i_paral]
-                size_t weight = paral_factor * modes_2d[i_perp + k_perp_bin * i_paral];
+                // Use modes_2d directly as weight (paral_factor already applied in CalPS2D during mode counting)
+                size_t weight = modes_2d[i_perp + k_perp_bin * i_paral];
 
                 size_t k_index = static_cast<size_t>((k - k_min) / dk);
                 if (k_index >= kbin)
@@ -148,6 +146,9 @@ void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel,
         double k_perp = 0.0;
         size_t ik_perp = 0uL;
         size_t ik_parallel = 0uL;
+
+        size_t mode_uint;
+        double mode;
         
         // Thread-local accumulators to avoid synchronization contention
         // Layout: [k_perp][k_parallel] matches the output array (k_perp_bin, k_parallel_bin, 2)
@@ -166,6 +167,9 @@ void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel,
         #pragma omp for schedule(static)
         for (size_t iz = 0; iz < nz; iz++)
         {
+            mode = (iz == 0uL)? 1.0: 2.0;
+            mode_uint = (iz == 0uL)? 1uL: 2uL;
+
             if (kz_array[iz] < k_parallel_edge[0] || kz_array[iz] > k_parallel_edge[k_parallel_bin])
             {
                 continue;
@@ -195,11 +199,11 @@ void CalPS2D(std::complex<T> *complex_field, std::complex<T> *kernel,
                     }
 
                     // Accumulate to thread-local storage without synchronization
-                    ps_2d_threads[ik_perp][ik_parallel] += value_temp;
-                    modes_2d_threads[ik_perp][ik_parallel] += 1uL;
-                    k_2d_threads[ik_perp][ik_parallel] += k_perp;
+                    ps_2d_threads[ik_perp][ik_parallel] += value_temp * static_cast<T>(mode);
+                    modes_2d_threads[ik_perp][ik_parallel] += mode_uint;
+                    k_2d_threads[ik_perp][ik_parallel] += k_perp * mode;
                     // Also accumulate k_parallel values for averaging (like k_perp)
-                    k_2d_threads_par[ik_perp][ik_parallel] += kz_array[iz];
+                    k_2d_threads_par[ik_perp][ik_parallel] += kz_array[iz] * mode;
                 } 
             }
         }
@@ -268,8 +272,6 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
         #pragma omp for schedule(static)
         for (size_t i_paral = 0; i_paral < k_parallel_bin; i_paral++)
         {
-            size_t paral_factor = (i_paral == 0) ? 1uL : 2uL;
-
             for (size_t i_perp = 0; i_perp < k_perp_bin; i_perp++)
             {
                 size_t index_2d = i_paral + k_parallel_bin * i_perp;
@@ -294,8 +296,8 @@ void CalPSFromPS2D(const std::complex<T> *ps_2d, const double *k_2d,
                     k_index -= 1uL;
                 }
 
-                // Calculate weight: paral_factor * modes_2d[i_perp, i_paral]
-                size_t weight = paral_factor * modes_2d[i_perp + k_perp_bin * i_paral];
+                // Use modes_2d directly as weight (paral_factor already applied in CalPS2D during mode counting)
+                size_t weight = modes_2d[index_2d];
 
                 if (use_mu)
                 {
