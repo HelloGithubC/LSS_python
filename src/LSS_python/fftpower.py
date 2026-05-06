@@ -293,7 +293,7 @@ class FFTPower:
         
         return self.power
     
-    def intergrate_fftpower(self, k_min=-1.0, k_max=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", use_fit_mu=False, norm=False, bin_pack=1, remove_last_bin=False):
+    def intergrate_fftpower(self, k_min=-1.0, k_max=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", use_fix_mu=False, norm=False, bin_pack=1, remove_last_bin=False, use_modes=False):
         from .base import packarray
         if not isinstance(bin_pack, int):
             bin_pack = int(bin_pack)
@@ -305,7 +305,7 @@ class FFTPower:
         if power is None:
             raise ValueError("power is None")
         k_array = np.nanmean(power["k"], axis=1)
-        if use_fit_mu:
+        if use_fix_mu:
             mu_array_edges = np.linspace(0.0, 1.0, self.attrs["Nmu"]+1)
             mu_array = (mu_array_edges[:-1] + mu_array_edges[1:]) / 2.0
         else:
@@ -350,15 +350,22 @@ class FFTPower:
         mu_need = mu_array[mu_min_index: mu_max_index]
         k_need = k_array[k_min_index:k_max_index]
         if integrate == "k":
-            # Weighted average based on mode counts, handling NaN values in Pkmu_select
-            weights = np.where(modes_select > 0, modes_select, 0.0)
-            weight_sum = np.sum(weights, axis=0)
-            # Avoid division by zero
-            safe_weight_sum = np.where(weight_sum > 0, weight_sum, 1.0)
-            # Use nansum to handle NaN values in Pkmu_select
-            Pkmu_integrate = np.nansum(Pkmu_select * weights, axis=0) / safe_weight_sum
-            # Set NaN where no valid modes
-            Pkmu_integrate = np.where(weight_sum > 0, Pkmu_integrate, np.nan)
+            if use_modes:
+                # Weighted average based on mode counts, handling NaN values in Pkmu_select
+                weights = np.where(modes_select > 0, modes_select, 0.0)
+                weight_sum = np.sum(weights, axis=0)
+                # Avoid division by zero
+                safe_weight_sum = np.where(weight_sum > 0, weight_sum, 1.0)
+                # Use nansum to handle NaN values in Pkmu_select
+                Pkmu_integrate = np.nansum(Pkmu_select * weights, axis=0) / safe_weight_sum
+                # Set NaN where no valid modes
+                Pkmu_integrate = np.where(weight_sum > 0, Pkmu_integrate, np.nan)
+            else:
+                # Equal-weight average (simple mean), handling NaN values
+                count = np.sum(~np.isnan(Pkmu_select), axis=0)
+                Pkmu_integrate = np.nansum(Pkmu_select, axis=0) / np.where(count > 0, count, 1.0)
+                # Set NaN where no valid data
+                Pkmu_integrate = np.where(count > 0, Pkmu_integrate, np.nan)
             # Apply normalization before remove_last_bin to ensure it's computed on full data
             if norm:
                 norm_factor = np.nanmean(Pkmu_integrate)
@@ -374,15 +381,22 @@ class FFTPower:
                 Pkmu_integrate = packarray(Pkmu_integrate, bin_pack=bin_pack, axis=0)
             return mu_need, Pkmu_integrate
         elif integrate == "mu":
-            # Weighted average based on mode counts, handling NaN values in Pkmu_select
-            weights = np.where(modes_select > 0, modes_select, 0.0)
-            weight_sum = np.sum(weights, axis=1)
-            # Avoid division by zero
-            safe_weight_sum = np.where(weight_sum > 0, weight_sum, 1.0)
-            # Use nansum to handle NaN values in Pkmu_select
-            Pkmu_integrate = np.nansum(Pkmu_select * weights, axis=1) / safe_weight_sum
-            # Set NaN where no valid modes
-            Pkmu_integrate = np.where(weight_sum > 0, Pkmu_integrate, np.nan)
+            if use_modes:
+                # Weighted average based on mode counts, handling NaN values in Pkmu_select
+                weights = np.where(modes_select > 0, modes_select, 0.0)
+                weight_sum = np.sum(weights, axis=1)
+                # Avoid division by zero
+                safe_weight_sum = np.where(weight_sum > 0, weight_sum, 1.0)
+                # Use nansum to handle NaN values in Pkmu_select
+                Pkmu_integrate = np.nansum(Pkmu_select * weights, axis=1) / safe_weight_sum
+                # Set NaN where no valid modes
+                Pkmu_integrate = np.where(weight_sum > 0, Pkmu_integrate, np.nan)
+            else:
+                # Equal-weight average (simple mean), handling NaN values
+                count = np.sum(~np.isnan(Pkmu_select), axis=1)
+                Pkmu_integrate = np.nansum(Pkmu_select, axis=1) / np.where(count > 0, count, 1.0)
+                # Set NaN where no valid data
+                Pkmu_integrate = np.where(count > 0, Pkmu_integrate, np.nan)
             # Apply normalization before remove_last_bin to ensure it's computed on full data
             if norm:
                 norm_factor = np.nanmean(Pkmu_integrate)
