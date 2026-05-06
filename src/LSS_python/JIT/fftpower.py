@@ -46,8 +46,7 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, ps_factor=1.0, sh
     k_parallel_edge = np.arange(k_z_array[0], k_z_array[-1] + dk, dk)
     k_parallel_bin = len(k_parallel_edge) - 1
 
-    k_2d, ps_2d, modes_2d = cal_ps_2d_core(complex_field, kernel, [k_x_array, k_y_array, k_z_array],
-                                            k_perp_edge, k_parallel_edge, ps_factor, shotnoise, nthreads)
+    k_2d, ps_2d, modes_2d = cal_ps_2d_core(complex_field, kernel, [k_x_array, k_y_array, k_z_array], k_perp_edge, k_parallel_edge, ps_factor, shotnoise, nthreads)
 
     return k_2d, ps_2d, modes_2d
 
