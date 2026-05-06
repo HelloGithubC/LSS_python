@@ -20,19 +20,16 @@ def deal_ps_3d_single(ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0)
                 ps_3d[ix, iy, iz] = (ps_3d[ix, iy, iz] * np.conj(ps_3d[ix, iy, iz]) * ps_3d_factor - shotnoise) * kernel_element
     return
 
-def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, ps_factor=1.0, shotnoise=0.0, nthreads=1, dk=None):
+def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, ps_factor=1.0, shotnoise=0.0, nthreads=1, dk=None):
     if mesh.complex_field is None:
         raise ValueError("Complex field is not set.")
     complex_field = mesh.complex_field
     kernel = mesh_kernel.complex_field if mesh_kernel is not None else None
-    if k_arrays is None:
-        BoxSize = mesh.attrs["BoxSize"]
-        Nmesh = mesh.attrs["Nmesh"]
-        k_x_array = np.fft.fftfreq(Nmesh[0], d=BoxSize[0] / Nmesh[0]) * 2.0 * np.pi
-        k_y_array = np.fft.fftfreq(Nmesh[1], d=BoxSize[1] / Nmesh[1]) * 2.0 * np.pi
-        k_z_array = np.fft.rfftfreq(Nmesh[2], d=BoxSize[2] / Nmesh[2]) * 2.0 * np.pi
-    else:
-        k_x_array, k_y_array, k_z_array = k_arrays
+    BoxSize = mesh.attrs["BoxSize"]
+    Nmesh = mesh.attrs["Nmesh"]
+    k_x_array = np.fft.fftfreq(Nmesh[0], d=BoxSize[0] / Nmesh[0]) * 2.0 * np.pi
+    k_y_array = np.fft.fftfreq(Nmesh[1], d=BoxSize[1] / Nmesh[1]) * 2.0 * np.pi
+    k_z_array = np.fft.rfftfreq(Nmesh[2], d=BoxSize[2] / Nmesh[2]) * 2.0 * np.pi
 
     if dk is None:
         dk = k_z_array[1] - k_z_array[0]

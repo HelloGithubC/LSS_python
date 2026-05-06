@@ -211,11 +211,13 @@ def ps_2d_convert_main(fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift, mesh
     z = redshift
     if w_af is None or w_am is None:
         if abs(omega_mm - omega_mf) < 1e-5 and abs(w_m - w_f) < 1e-5 or redshift < 1e-3:
+            print("Warning: omega_mm and w_m is too close to omega_mf and w_f, or redshift is too small, return fftpower_2d directly")
             return fftpower_2d
         Hz_f, Hz_m = Hz(z, omega_mf, w_f), Hz(z, omega_mm, w_m)
         DA_f, DA_m = DA(z, omega_mf, w_f), DA(z, omega_mm, w_m)
     else:
         if abs(omega_mm - omega_mf) < 1e-5 and abs(w_m - w_f) < 1e-5 and abs(w_am - w_af) < 1e-5 or redshift < 1e-3:
+            print("Warning: omega_mm, w_m and w_am is too close to omega_mf, w_f and w_af, or redshift is too small, return fftpower_2d directly")
             return fftpower_2d
         from .base import Hz_w0wa
         Hz_f, Hz_m = Hz_w0wa(z, omega_mf, w_f, w_af), Hz_w0wa(z, omega_mm, w_m, w_am)

@@ -40,7 +40,7 @@ def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0
     else:
         return complex_field
 
-def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, nthreads=1, c_api=True, dk=-1):
+def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, nthreads=1, c_api=True, dk=-1):
     if dk is not None and dk < 0:
         dk = None
         print("Warning (cal_ps_2d_from_mesh): dk < 0, dk is set to None (auto).")
@@ -48,10 +48,10 @@ def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, k_arrays=None, nthreads=1, c_api
     shotnoise = mesh.attrs["shotnoise"]
     if c_api:
         from .CPP.fftpower_pybind import cal_ps_2d_from_mesh as cal_ps_2d_from_mesh_cpp
-        return cal_ps_2d_from_mesh_cpp(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthreads, dk=dk)
+        return cal_ps_2d_from_mesh_cpp(mesh, mesh_kernel, ps_factor, shotnoise, nthreads, dk=dk)
     else:
         from .JIT.fftpower import cal_ps_2d_from_mesh as cal_ps_2d_from_mesh_numba
-        return cal_ps_2d_from_mesh_numba(mesh, mesh_kernel, k_arrays, ps_factor, shotnoise, nthreads, dk=dk)
+        return cal_ps_2d_from_mesh_numba(mesh, mesh_kernel, ps_factor, shotnoise, nthreads, dk=dk)
 
 class FFTPower:
     def __init__(self, Nmesh, BoxSize):
@@ -72,7 +72,7 @@ class FFTPower:
         self.removed_shotnoise = False
         self.is_run_ps_3d = False
 
-    def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None, k_arrays=None,
+    def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None,
     mode="1d", k_logarithmic=False, ps_3d_inplace=True, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=True, pybind=True):
         """
         Calculate power spectrum from a mesh.
@@ -107,11 +107,11 @@ class FFTPower:
         self.removed_shotnoise = True # Avoid shotnoise being removed twice
         self.attrs["shotnoise"] = shotnoise
 
-        return self.cal_ps_from_3d(ps_3d_need, kmin, kmax, dk, Nmu=Nmu, k_arrays=k_arrays, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
+        return self.cal_ps_from_3d(ps_3d_need, kmin, kmax, dk, Nmu=Nmu, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
 
     def cal_ps_from_3d(
         self, ps_3d,
-        kmin, kmax, dk, Nmu=None, k_arrays=None,
+        kmin, kmax, dk, Nmu=None,
         mode="1d", k_logarithmic=False, shotnoise=0.0,
         nthreads=1, device_id=-1, c_api=True, pybind=True
     ):
@@ -143,12 +143,9 @@ class FFTPower:
         if "shotnoise" not in self.attrs:
             self.attrs["shotnoise"] = shotnoise
 
-        if k_arrays is None:
-            k_x_array = np.fft.fftfreq(self.Nmesh[0], d=self.BoxSize[0] / self.Nmesh[0]) * 2.0 * np.pi
-            k_y_array = np.fft.fftfreq(self.Nmesh[1], d=self.BoxSize[1] / self.Nmesh[1]) * 2.0 * np.pi
-            k_z_array = np.fft.rfftfreq(self.Nmesh[2], d=self.BoxSize[2] / self.Nmesh[2]) * 2.0 * np.pi
-        else:
-            k_x_array, k_y_array, k_z_array = k_arrays
+        k_x_array = np.fft.fftfreq(self.Nmesh[0], d=self.BoxSize[0] / self.Nmesh[0]) * 2.0 * np.pi
+        k_y_array = np.fft.fftfreq(self.Nmesh[1], d=self.BoxSize[1] / self.Nmesh[1]) * 2.0 * np.pi
+        k_z_array = np.fft.rfftfreq(self.Nmesh[2], d=self.BoxSize[2] / self.Nmesh[2]) * 2.0 * np.pi
 
         if use_gpu:
             with cp.cuda.Device(device_id):
@@ -450,7 +447,7 @@ class FFTPower2D(FFTPower):
         }
 
     def cal_ps_2d_from_mesh(
-        self, mesh, mesh_kernel=None, k_arrays=None, nthreads=1, device_id=-1, c_api=True, dk=-1,
+        self, mesh, mesh_kernel=None, nthreads=1, device_id=-1, c_api=True, dk=-1,
         compensated=True, force_create_complex_field=False
     ):
         if device_id >= 0:
@@ -460,7 +457,6 @@ class FFTPower2D(FFTPower):
         self.k_2d, self.ps_2d, self.modes_2d = cal_ps_2d_from_mesh(
             mesh,
             mesh_kernel=mesh_kernel,
-            k_arrays=k_arrays,
             nthreads=nthreads,
             c_api=c_api,
             dk=dk
