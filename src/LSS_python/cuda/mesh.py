@@ -22,15 +22,9 @@ extern "C" {
         unsigned long pos_i[2][NDIM];
         double sub_boxsize[NDIM];
         double diff_ratio_temp[NDIM][2];
-        bool is_in_box = true;
 
         for (int i = 0; i < NDIM; i++)
         {
-            if (pos[index * NDIM + i] < 0.0 || pos[index * NDIM + i] > boxsize_array[i])
-            {
-                is_in_box = false;
-                break;
-            }
             sub_boxsize[i] = boxsize_array[i] / ngrids_array[i];
             pos_i_float = pos[index * NDIM + i] / sub_boxsize[i] + shift;
             pos_i_temp = static_cast<long long>(floor(pos_i_float));
@@ -40,11 +34,6 @@ extern "C" {
 
             pos_i[0][i] = static_cast<unsigned int>(pos_i_temp + ngrids_array[i]) % ngrids_array[i];
             pos_i[1][i] = (pos_i[0][i] + 1) % ngrids_array[i];
-        }
-
-        if (!is_in_box)
-        {
-            return;
         }
 
         float field_temp = weight_temp * value_temp;
@@ -81,32 +70,19 @@ extern "C" {
         double pos_i_float = 0.0;
         unsigned long pos_i[NDIM];
         double sub_boxsize[NDIM];
-        bool is_in_box = true;
 
         for (int i = 0; i < NDIM; i++)
         {
-            if (pos[index * NDIM + i] < 0.0 || pos[index * NDIM + i] > boxsize_array[i])
-            {
-                is_in_box = false;
-                break;
-            }
             sub_boxsize[i] = boxsize_array[i] / ngrids_array[i];
             pos_i_float = pos[index * NDIM + i] / sub_boxsize[i] + shift;
 
             pos_i[i] = (static_cast<unsigned int>(floor(pos_i_float + 0.5)) + ngrids_array[i]) % ngrids_array[i];
         }
 
-        if (!is_in_box)
-        {
-            return;
-        }
-
         unsigned int ny = ngrids_array[1];
         unsigned int nz = ngrids_array[2];
 
-
         float field_temp = weight_temp * value_temp;
-
 
         atomicAdd(&field[pos_i[2] + pos_i[1] * nz + pos_i[0] * nz * ny], field_temp);
     }
@@ -130,15 +106,9 @@ extern "C" {
         unsigned long pos_i[3][NDIM];
         double sub_boxsize[NDIM];
         double diff_ratio_temp[NDIM][3];
-        bool is_in_box = true;
 
         for (int i = 0; i < NDIM; i++)
         {
-            if (pos[index * NDIM + i] < 0.0 || pos[index * NDIM + i] > boxsize_array[i])
-            {
-                is_in_box = false;
-                break;
-            }
             sub_boxsize[i] = boxsize_array[i] / ngrids_array[i];
             pos_i_float = pos[index * NDIM + i] / sub_boxsize[i] + shift;
             pos_i_temp = static_cast<long long>(floor(pos_i_float - 0.5));
@@ -163,11 +133,6 @@ extern "C" {
             pos_i[0][i] = static_cast<unsigned int>(pos_i_temp + ngrids_array[i]) % ngrids_array[i];
             pos_i[1][i] = (pos_i[0][i] + 1) % ngrids_array[i];
             pos_i[2][i] = (pos_i[1][i] + 1) % ngrids_array[i];
-        }
-
-        if (!is_in_box)
-        {
-            return;
         }
 
         float field_temp = weight_temp * value_temp;
@@ -206,15 +171,9 @@ extern "C" {
         unsigned long pos_i[4][NDIM];
         double sub_boxsize[NDIM];
         double diff_ratio_temp[NDIM][4];
-        bool is_in_box = true;
 
         for (int i = 0; i < NDIM; i++)
         {
-            if (pos[index * NDIM + i] < 0.0 || pos[index * NDIM + i] > boxsize_array[i])
-            {
-                is_in_box = false;
-                break;
-            }
             sub_boxsize[i] = boxsize_array[i] / ngrids_array[i];
             pos_i_float = pos[index * NDIM + i] / sub_boxsize[i] + shift;
             pos_i_temp = static_cast<long long>(floor(pos_i_float - 1.0));
@@ -240,11 +199,6 @@ extern "C" {
             pos_i[1][i] = (pos_i[0][i] + 1) % ngrids_array[i];
             pos_i[2][i] = (pos_i[1][i] + 1) % ngrids_array[i];
             pos_i[3][i] = (pos_i[2][i] + 1) % ngrids_array[i];
-        }
-
-        if (!is_in_box)
-        {
-            return;
         }
 
         float field_temp = weight_temp * value_temp;

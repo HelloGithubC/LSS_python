@@ -177,6 +177,10 @@ class Mesh:
             if pos_e.dtype != np.float32 and pos_e.dtype != np.float64:
                 print(f"Waring:  pos is not float32 or float64 ({pos_e.dtype}). Now try converting to float32")
                 pos_e = pos_e.astype(np.float32)
+            
+            # Map all coordinates to [0, BoxSize) using modulo operation
+            pos_e = pos_e % self.BoxSize
+            
             weight_e = weights_list[i]
             if weight_e is not None:
                 if weight_e.dtype != pos_e.dtype:
@@ -258,8 +262,6 @@ class Mesh:
                 else:
                     self.real_field /= self.attrs["num_per_cell"]
         else:
-            self.real_field /= self.attrs["delta_V"]
-            self.attrs["shotnoise"] *= self.attrs["num_per_V"]**2
             if use_gpu:
                 if interlaced:
                     self.real_field_gpu[...] = (self.real1_gpu + self.real2_gpu) / 2.0

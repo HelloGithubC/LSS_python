@@ -28,26 +28,17 @@ void run_cic(const T *pos, T *field,  size_t np, T boxSize[ndim], size_t ngrids[
         double pos_i_float = 0.0;
         double diff_ratio_temp[ndim][2];
 
-        bool is_in_box = true;
         T pos_temp = static_cast<T>(0.0);
 
         #pragma omp for schedule(static)
         for (size_t i = 0; i < np; i++) 
         { 
-            is_in_box = true;
-
             double weight = (weights == nullptr)? 1.0 : weights[i];
             double value = (values == nullptr)? 1.0 : values[i];
 
             for (int j = 0; j < ndim; j++) 
             {
                 pos_temp = pos[i*ndim+j];
-                if (pos_temp < 0.0 || pos_temp > boxSize[j])
-                {
-                    is_in_box = false;
-                    // printf("Test log: i=%ld, j=%d; pos_temp = %f; boxSize = %f\n", i, j, pos_temp, boxSize[j]);
-                    break;
-                }
                 pos_i_float = pos_temp / sub_boxsize[j] + shift;
                 pos_i_temp = static_cast<long long>(std::floor(pos_i_float));
 
@@ -57,13 +48,6 @@ void run_cic(const T *pos, T *field,  size_t np, T boxSize[ndim], size_t ngrids[
                 pos_i[0][j] = static_cast<size_t>((pos_i_temp + ngrids[j]) % ngrids[j]);
                 pos_i[1][j] = (pos_i[0][j] + 1u) % ngrids[j];
             } 
-
-            // printf("Test log: i=%ld; field[2,2,2] = %f; is_in_box = %d\n", i, field[2 + 2 * nz + 2 * nz * ny], is_in_box);
-
-            if (!is_in_box)
-            {
-                continue;
-            }
             
             double mass_temp = weight * value;
             
@@ -100,30 +84,18 @@ void run_ngp(const T *pos, T *field,  size_t np, T boxSize[ndim], size_t ngrids[
     {
         size_t pos_i[ndim];
         double pos_i_float = 0.0;
-        bool is_in_box = true;
 
         #pragma omp for schedule(static)
         for (size_t i = 0; i < np; i++) 
         { 
-            is_in_box = true;
             double weight = (weights == nullptr)? 1.0 : weights[i];
             double value = (values == nullptr)? 1.0 : values[i];
 
             for (int j = 0; j < ndim; j++) 
             {
-                if (pos[i*ndim+j] < 0.0 || pos[i*ndim+j] > boxSize[j])
-                {
-                    is_in_box = false;
-                    break;
-                }
                 pos_i_float = pos[i*ndim + j] / sub_boxsize[j] + shift;
                 pos_i[j] = (static_cast<size_t>(std::floor(pos_i_float + 0.5)) + ngrids[j]) % ngrids[j];
             } 
-
-            if (!is_in_box)
-            {
-                continue;
-            }
             
             double mass_temp = weight * value;
 
@@ -152,23 +124,16 @@ void run_tsc(const T *pos, T *field,  size_t np, T boxSize[ndim], size_t ngrids[
         long long pos_i_temp = 0uL;
         double pos_i_float = 0.0;
         double diff_ratio_temp[ndim][3];
-        bool is_in_box = true;
 
         #pragma omp for schedule(static)
         for (size_t i = 0; i < np; i++) 
         { 
-            is_in_box = true;
 
             double weight = (weights == nullptr)? 1.0 : weights[i];
             double value = (values == nullptr)? 1.0 : values[i];
 
             for (int j = 0; j < ndim; j++) 
             {
-                if (pos[i*ndim+j] < 0.0 || pos[i*ndim+j] > boxSize[j])
-                {
-                    is_in_box = false;
-                    break;
-                }
                 pos_i_float = pos[i*ndim + j] / sub_boxsize[j] + shift;
                 pos_i_temp = static_cast<long long>(std::floor(pos_i_float - 0.5));
 
@@ -193,11 +158,6 @@ void run_tsc(const T *pos, T *field,  size_t np, T boxSize[ndim], size_t ngrids[
                 pos_i[1][j] = (pos_i[0][j] + 1uL) % ngrids[j];
                 pos_i[2][j] = (pos_i[1][j] + 1uL) % ngrids[j];
             } 
-
-            if (!is_in_box)
-            {
-                continue;
-            }
             
             double mass_temp = weight * value;
 
@@ -236,23 +196,16 @@ void run_pcs(const T *pos, T *field,  size_t np, T boxSize[ndim], size_t ngrids[
         long long pos_i_temp = 0uL;
         double pos_i_float = 0.0;
         double diff_ratio_temp[ndim][4];
-        bool is_in_box = true;
 
         #pragma omp for schedule(static)
         for (size_t i = 0; i < np; i++) 
         { 
-            is_in_box = true;
 
             double weight = (weights == nullptr)? 1.0 : weights[i];
             double value = (values == nullptr)? 1.0 : values[i];
 
             for (int j = 0; j < ndim; j++) 
             {
-                if (pos[i*ndim+j] < 0.0 || pos[i*ndim+j] > boxSize[j])
-                {
-                    is_in_box = false;
-                    break;
-                }
                 pos_i_float = pos[i*ndim + j] / sub_boxsize[j] + shift;
                 pos_i_temp = static_cast<long long>(std::floor(pos_i_float - 1.0));
 
@@ -278,11 +231,6 @@ void run_pcs(const T *pos, T *field,  size_t np, T boxSize[ndim], size_t ngrids[
                 pos_i[2][j] = (pos_i[1][j] + 1uL) % ngrids[j];
                 pos_i[3][j] = (pos_i[2][j] + 1uL) % ngrids[j];
             } 
-
-            if (!is_in_box)
-            {
-                continue;
-            }
             
             double mass_temp = weight * value;
 

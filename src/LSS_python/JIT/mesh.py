@@ -7,14 +7,9 @@ def run_cic_numba(pos, weight, value, field, BoxSize_array, Nmesh_array, shift=0
     pos_i = np.zeros((2, NDIM), dtype=np.uint32)
     for i in range(nparticle):
         sub_BoxSize = BoxSize_array / Nmesh_array
-        is_in_box = True
         
         diff_ratio_temp = np.zeros((NDIM,2), dtype=np.float64)
         for j in range(NDIM):
-            if pos[i, j] < 0.0 or pos[i, j] > BoxSize_array[j]:
-                is_in_box = False
-                break 
-
             pos_i_float = pos[i, j] / sub_BoxSize[j] + shift
             pos_i_temp = np.int64(np.floor(pos_i_float))
             diff_ratio_temp[j, 1] = pos_i_float - pos_i_temp
@@ -23,8 +18,6 @@ def run_cic_numba(pos, weight, value, field, BoxSize_array, Nmesh_array, shift=0
             pos_i[0, j] = (pos_i_temp + Nmesh_array[j]) % Nmesh_array[j]
             pos_i[1, j] = (pos_i[0, j] + 1) % Nmesh_array[j]
         
-        if not is_in_box:
-            continue
         weight_temp = weight[i] if weight is not None else 1.0
         value_temp = value[i] if value is not None else 1.0
         field_temp = value_temp * weight_temp
@@ -42,25 +35,18 @@ def run_ngp_numba(pos, weight, value, field, BoxSize_array, Nmesh_array, shift=0
     pos_i_float = np.zeros(NDIM, dtype=np.float64)
     for i in range(nparticle):
         sub_BoxSize = BoxSize_array / Nmesh_array  
-        is_in_box = True
         
         for j in range(NDIM):
-            if pos[i, j] < 0.0 or pos[i, j] > BoxSize_array[j]:
-                is_in_box = False
-                break
             pos_i_float[j] = pos[i, j] / sub_BoxSize[j] + shift
             pos_i_temp = np.int64(np.floor(pos_i_float[j] + 0.5))
 
             pos_i[j] = (pos_i_temp + Nmesh_array[j]) % Nmesh_array[j]
 
-        if not is_in_box:
-            continue
         x_i, y_i, z_i = pos_i 
 
         weight_temp = weight[i] if weight is not None else 1.0
         value_temp = value[i] if value is not None else 1.0
         field_temp = value_temp * weight_temp
-
 
         field[x_i, y_i, z_i] += field_temp
 
@@ -72,13 +58,8 @@ def run_tsc_numba(pos, weight, value, field, BoxSize_array, Nmesh_array, shift=0
     diff_ratio_temp = np.zeros((NDIM, 3), dtype=np.float64)
     for i in range(nparticle):
         sub_BoxSize = BoxSize_array / Nmesh_array
-        is_in_box = True
 
         for j in range(NDIM):
-            if pos[i, j] < 0.0 or pos[i, j] > BoxSize_array[j]:
-                is_in_box = False
-                break
-
             pos_i_float = pos[i, j] / sub_BoxSize[j] + shift 
             pos_i_temp = np.int64(np.floor(pos_i_float - 0.5))
             for k in range(3):
@@ -94,9 +75,6 @@ def run_tsc_numba(pos, weight, value, field, BoxSize_array, Nmesh_array, shift=0
             pos_i[1, j] = (pos_i[0,j] + 1) % Nmesh_array[j]
             pos_i[2, j] = (pos_i[1,j] + 1) % Nmesh_array[j]
         
-        if not is_in_box:
-            continue
-
         weight_temp = weight[i] if weight is not None else 1.0
         value_temp = value[i] if value is not None else 1.0
         field_temp = value_temp * weight_temp
@@ -114,13 +92,8 @@ def run_pcs_numba(pos, weight, value, field, BoxSize_array, Nmesh_array, shift=0
     diff_ratio_temp = np.zeros((NDIM, 4), dtype=np.float64)
     for i in range(nparticle):
         sub_BoxSize = BoxSize_array / Nmesh_array
-        is_in_box = True
 
         for j in range(NDIM):
-            if pos[i, j] < 0.0 or pos[i, j] > BoxSize_array[j]:
-                is_in_box = False
-                break
-
             pos_i_float = pos[i, j] / sub_BoxSize[j] + shift 
             pos_i_temp = np.int64(np.floor(pos_i_float - 1.0))
             for k in range(4):
@@ -137,9 +110,6 @@ def run_pcs_numba(pos, weight, value, field, BoxSize_array, Nmesh_array, shift=0
             pos_i[2, j] = (pos_i[1,j] + 1) % Nmesh_array[j]
             pos_i[3, j] = (pos_i[2,j] + 1) % Nmesh_array[j]
         
-        if not is_in_box:
-            continue
-
         weight_temp = weight[i] if weight is not None else 1.0
         value_temp = value[i] if value is not None else 1.0
         field_temp = value_temp * weight_temp
