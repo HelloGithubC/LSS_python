@@ -2,43 +2,44 @@ import numpy as np
 import os
 from .JIT.fftpower import deal_ps_3d_multithreads, deal_ps_3d_single, cal_ps_from_numba
 
-def deal_ps_3d_from_mesh(mesh, mesh_kernel=None, inplace=True, nthreads=1, device_id=-1, c_api=True, pybind=True):
+def deal_ps_3d_from_mesh(mesh, mesh_kernel=None, nthreads=1, device_id=-1, c_api=True, pybind=True):
+    """
+    Calculate 3D power spectrum from mesh's complex field.
+    Returns a new real array containing the power spectrum.
+    """
     complex_field = mesh.complex_field if device_id < 0 else mesh.complex_field_gpu
     if mesh_kernel is not None:
-        ps_3d_kernel = mesh_kernel.complex_field if device_id < 0 else mesh_kernel.complex_field_gpu
+        # Extract real part of kernel (kernel should be real-valued, stored in complex array)
+        ps_3d_kernel = mesh_kernel.complex_field.real if device_id < 0 else mesh_kernel.complex_field_gpu.real
     else:
         ps_3d_kernel = None
-    return deal_ps_3d(complex_field, ps_3d_kernel, np.prod(mesh.attrs["BoxSize"]), mesh.attrs["shotnoise"], inplace, nthreads, device_id, c_api, pybind)
+    return deal_ps_3d(complex_field, ps_3d_kernel, np.prod(mesh.attrs["BoxSize"]), mesh.attrs["shotnoise"], nthreads, device_id, c_api, pybind)
 
-def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, inplace=False, nthreads=1, device_id=-1, c_api=True, pybind=True):
-    if inplace:
-        ps_3d = complex_field
+def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1, device_id=-1, c_api=True, pybind=True):
+    """
+    Calculate 3D power spectrum from complex field.
+    Returns a new real array containing the power spectrum.
+    The input complex_field is NOT modified.
+    """
     if device_id >= 0:
         import cupy as cp
         from .cuda.fftpower import deal_ps_3d_from_cuda
-        if not inplace:
-            ps_3d = cp.copy(complex_field)
         with cp.cuda.Device(device_id):
-            deal_ps_3d_from_cuda(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise)
+            ps_3d = deal_ps_3d_from_cuda(complex_field, ps_3d_kernel, ps_3d_factor, shotnoise)
     else:
-        if not inplace:
-            ps_3d = np.copy(complex_field)
         if c_api:
             if not pybind:
                 from .CPP.fftpower import deal_ps_3d_c_api
-                deal_ps_3d_c_api(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+                ps_3d = deal_ps_3d_c_api(complex_field, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
             else:
                 from .CPP.fftpower_pybind import deal_ps_3d_pybind
-                deal_ps_3d_pybind(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+                ps_3d = deal_ps_3d_pybind(complex_field, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
         else:
             if nthreads > 1:
-                deal_ps_3d_multithreads(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+                ps_3d = deal_ps_3d_multithreads(complex_field, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
             else:
-                deal_ps_3d_single(ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise)
-    if not inplace:
-        return ps_3d
-    else:
-        return complex_field
+                ps_3d = deal_ps_3d_single(complex_field, ps_3d_kernel, ps_3d_factor, shotnoise)
+    return ps_3d
 
 def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, nthreads=1, c_api=True, dk=-1):
     if dk is not None and dk < 0:
@@ -73,41 +74,40 @@ class FFTPower:
         self.is_run_ps_3d = False
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None,
-    mode="1d", k_logarithmic=False, ps_3d_inplace=True, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=True, pybind=True):
+    mode="1d", k_logarithmic=False, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=True, pybind=True):
         """
         Calculate power spectrum from a mesh.
             Args:
                 compensated: only used when mesh.complex_field is None.
-                mesh_kernel: If set, its complex_field will be used to muliple the ps_3d.
+                mesh_kernel: If set, its complex_field.real will be used to muliple the ps_3d.
         """
         shotnoise = mesh.attrs["shotnoise"]
         if device_id >= 0:
             import cupy as cp
             if mesh.complex_field_gpu is None or force_create_complex_field:
                 mesh.r2c(compensated=compensated, nthreads=nthreads, device_id=device_id, c_api=c_api)
-            ps_3d_gpu = mesh.complex_field_gpu
-            ps_3d_need = ps_3d_gpu
+            complex_field = mesh.complex_field_gpu
             boxsize_prod = cp.prod(mesh.attrs["BoxSize"], dtype=cp.float32)
         else:
             if mesh.complex_field is None or force_create_complex_field:
                 mesh.r2c(compensated=compensated, nthreads=nthreads, device_id=device_id, c_api=c_api)
-            ps_3d = mesh.complex_field
-            ps_3d_need = ps_3d
+            complex_field = mesh.complex_field
             boxsize_prod = np.prod(mesh.attrs["BoxSize"], dtype=np.float32)
                       
-        if ps_3d_need is None:
+        if complex_field is None:
             raise ValueError("mesh.complex_field(_gpu) is None. Please check if you have run the r2c or converted it to correct device.")
         
         if mesh_kernel is not None:
-            ps_3d_kernel_need = mesh_kernel.complex_field_gpu if device_id >= 0 else mesh_kernel.complex_field
+            # Extract real part of kernel (kernel should be real-valued, stored in complex array)
+            ps_3d_kernel = mesh_kernel.complex_field_gpu.real if device_id >= 0 else mesh_kernel.complex_field.real
         else:
-            ps_3d_kernel_need = None
+            ps_3d_kernel = None
             
-        ps_3d_need = deal_ps_3d(ps_3d_need, ps_3d_kernel=ps_3d_kernel_need, ps_3d_factor=float(boxsize_prod), shotnoise=shotnoise, inplace=ps_3d_inplace, nthreads=nthreads, c_api=c_api, pybind=pybind)
+        ps_3d = deal_ps_3d(complex_field, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=float(boxsize_prod), shotnoise=shotnoise, nthreads=nthreads, c_api=c_api, pybind=pybind)
         self.removed_shotnoise = True # Avoid shotnoise being removed twice
         self.attrs["shotnoise"] = shotnoise
 
-        return self.cal_ps_from_3d(ps_3d_need, kmin, kmax, dk, Nmu=Nmu, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, c_api=c_api)
+        return self.cal_ps_from_3d(ps_3d, kmin, kmax, dk, Nmu=Nmu, mode=mode, k_logarithmic=k_logarithmic, nthreads=nthreads, device_id=device_id, c_api=c_api, pybind=pybind)
 
     def cal_ps_from_3d(
         self, ps_3d,
@@ -117,8 +117,6 @@ class FFTPower:
     ):
         self.removed_shotnoise = True
         if device_id >= 0:
-            import cupy as cp
-            from .cuda.fftpower import cal_ps_from_cuda
             use_gpu = True 
         else:
             use_gpu = False 
@@ -148,6 +146,8 @@ class FFTPower:
         k_z_array = np.fft.rfftfreq(self.Nmesh[2], d=self.BoxSize[2] / self.Nmesh[2]) * 2.0 * np.pi
 
         if use_gpu:
+            import cupy as cp
+            from .cuda.fftpower import cal_ps_from_cuda
             with cp.cuda.Device(device_id):
                 k_x_array_gpu = cp.asarray(k_x_array, dtype=cp.float64)
                 k_y_array_gpu = cp.asarray(k_y_array, dtype=cp.float64)
@@ -342,7 +342,7 @@ class FFTPower:
             else:
                 mu_max_index = mu_max_index_source[0]
 
-        Pkmu_select = np.real(power["Pkmu"][k_min_index:k_max_index, mu_min_index:mu_max_index])
+        Pkmu_select = power["Pkmu"][k_min_index:k_max_index, mu_min_index:mu_max_index]
         modes_select = power["modes"][k_min_index:k_max_index, mu_min_index:mu_max_index]
         mu_need = mu_array[mu_min_index: mu_max_index]
         k_need = k_array[k_min_index:k_max_index]
@@ -434,7 +434,7 @@ class FFTPower:
         self.attrs = load_dict["attrs"]
         return self
 
-class FFTPower2D(FFTPower):
+class FFTPower2D:
     def __init__(self, Nmesh, BoxSize):
         self.k_2d = None
         self.ps_2d = None

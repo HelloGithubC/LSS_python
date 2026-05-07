@@ -10,12 +10,12 @@ namespace py = pybind11;
 const int ndim = 3;
 
 template <typename T>
-void deal_ps_3d(py::array_t<std::complex<T>> complex_field, 
-                py::object kernel,  
-                T ps_3d_factor, T shotnoise, int nthreads)
+py::array_t<T> deal_ps_3d(py::array_t<std::complex<T>> complex_field, 
+                          py::object kernel,  
+                          T ps_3d_factor, T shotnoise, int nthreads)
 {
-    if (!(complex_field.flags() & py::array::c_style) || !complex_field.writeable())  {
-        throw std::runtime_error("Field must be C-contiguous and writeable");
+    if (!(complex_field.flags() & py::array::c_style)) {
+        throw std::runtime_error("Field must be C-contiguous");
     }
 
     auto complex_field_buf = complex_field.request();
@@ -24,29 +24,36 @@ void deal_ps_3d(py::array_t<std::complex<T>> complex_field,
         ngrids[i] = complex_field_buf.shape[i];
     }
     
-    std::complex<T>* complex_field_ptr = static_cast<std::complex<T>*>(complex_field_buf.ptr);
+    const std::complex<T>* complex_field_ptr = static_cast<const std::complex<T>*>(complex_field_buf.ptr);
     
-    std::complex<T>* kernel_ptr = nullptr;
+    const T* kernel_ptr = nullptr;
     if (!kernel.is_none()) {
-        if (!py::isinstance<py::array_t<std::complex<T>>>(kernel)) {
-            throw std::runtime_error("Kernel must be a numpy complex array");
+        if (!py::isinstance<py::array_t<T>>(kernel)) {
+            throw std::runtime_error("Kernel must be a numpy real array matching complex_field precision");
         }
-        auto kernel_array = kernel.cast<py::array_t<std::complex<T>>>();
+        auto kernel_array = kernel.cast<py::array_t<T>>();
         auto kernel_buf = kernel_array.request();
-        kernel_ptr = static_cast<std::complex<T>*>(kernel_buf.ptr);
+        kernel_ptr = static_cast<const T*>(kernel_buf.ptr);
     }
     
-    DealPS3D(complex_field_ptr, kernel_ptr, ngrids, ps_3d_factor, shotnoise, nthreads);
+    // Create output real array for ps_3d
+    py::array_t<T> ps_3d = py::array_t<T>(complex_field_buf.size);
+    auto ps_3d_buf = ps_3d.request();
+    T* ps_3d_ptr = static_cast<T*>(ps_3d_buf.ptr);
+    
+    DealPS3D(complex_field_ptr, kernel_ptr, ps_3d_ptr, ngrids, ps_3d_factor, shotnoise, nthreads);
+    
+    return ps_3d;
 }
 
 template <typename T>
-void cal_ps(py::array_t<std::complex<T>> ps_3d, 
+void cal_ps(py::array_t<T> ps_3d, 
             py::array_t<double> kx_array, 
             py::array_t<double> ky_array, 
             py::array_t<double> kz_array, 
             py::array_t<double> k_array, 
             py::object mu_array, 
-            py::array_t<std::complex<double>> Pkmu, 
+            py::array_t<double> Pkmu, 
             py::array_t<size_t> count, 
             py::array_t<double> k_mesh, 
             py::object mu_mesh,
@@ -93,12 +100,12 @@ void cal_ps(py::array_t<std::complex<T>> ps_3d,
         mu_mesh_ptr = static_cast<double*>(mu_mesh_buf.ptr);
     }
     
-    std::complex<T>* ps_3d_ptr = static_cast<std::complex<T>*>(ps_3d_buf.ptr);
+    const T* ps_3d_ptr = static_cast<const T*>(ps_3d_buf.ptr);
     double* kx_array_ptr = static_cast<double*>(kx_array_buf.ptr);
     double* ky_array_ptr = static_cast<double*>(ky_array_buf.ptr);
     double* kz_array_ptr = static_cast<double*>(kz_array_buf.ptr);
     double* k_array_ptr = static_cast<double*>(k_array_buf.ptr);
-    std::complex<double>* Pkmu_ptr = static_cast<std::complex<double>*>(Pkmu_buf.ptr);
+    double* Pkmu_ptr = static_cast<double*>(Pkmu_buf.ptr);
     size_t* count_ptr = static_cast<size_t*>(count_buf.ptr);
     double* k_mesh_ptr = static_cast<double*>(k_mesh_buf.ptr);
 
@@ -106,9 +113,9 @@ void cal_ps(py::array_t<std::complex<T>> ps_3d,
 }
 
 template <typename T>
-void cal_ps_2d_from_mesh( 
-    py::array_t<std::complex<T>> complex_field, py::object kernel, 
-    py::array_t<std::complex<T>> ps_2d, py::array_t<double> k_2d, py::array_t<size_t> modes_2d,
+void cal_ps_2d_from_mesh(
+    py::array_t<std::complex<T>> complex_field, py::object kernel,
+    py::array_t<double> ps_2d, py::array_t<double> k_2d, py::array_t<size_t> modes_2d,
     py::array_t<double> k_perp_edge, py::array_t<double> k_parallel_edge,
     py::array_t<double> kx_array, py::array_t<double> ky_array, py::array_t<double> kz_array,
     T ps_3d_factor, T shotnoise, int nthreads)
@@ -126,16 +133,16 @@ void cal_ps_2d_from_mesh(
 
     // 2. 提取指针
     std::complex<T>* ptr_complex_field = static_cast<std::complex<T>*>(buf_complex_field.ptr);
-    std::complex<T>* ptr_kernel = nullptr; // 初始化为空指针
+    T* ptr_kernel = nullptr; // 初始化为空指针
     if (!kernel.is_none()) {
-        // 确保传入的是正确的 numpy 数组类型
-        if (!py::isinstance<py::array_t<std::complex<T>>>(kernel)) {
-            throw std::runtime_error("kernel must be a numpy array of complex type matching complex_field, or None");
+        // 确保传入的是正确的 numpy 数组类型（实数类型匹配复数精度）
+        if (!py::isinstance<py::array_t<T>>(kernel)) {
+            throw std::runtime_error("kernel must be a numpy real array matching complex_field precision, or None");
         }
         // 重新获取非空 kernel 的 buffer info 和指针
-        ptr_kernel = static_cast<std::complex<T>*>(kernel.cast<py::array_t<std::complex<T>>>().request().ptr);
+        ptr_kernel = static_cast<T*>(kernel.cast<py::array_t<T>>().request().ptr);
     }
-    std::complex<T>* ptr_ps_2d = static_cast<std::complex<T>*>(buf_ps_2d.ptr);
+    double* ptr_ps_2d = static_cast<double*>(buf_ps_2d.ptr);
     double* ptr_k_2d = static_cast<double*>(buf_k_2d.ptr);
     size_t* ptr_modes_2d = static_cast<size_t*>(buf_modes_2d.ptr);
     double* ptr_k_perp_edge = static_cast<double*>(buf_k_perp_edge.ptr);
@@ -159,11 +166,10 @@ void cal_ps_2d_from_mesh(
     );
 }
 
-template <typename T>
 void cal_ps_from_ps_2d(
-    py::array_t<std::complex<T>> ps_2d, py::array_t<double> k_2d, py::array_t<size_t> modes_2d,
+    py::array_t<double> ps_2d, py::array_t<double> k_2d, py::array_t<size_t> modes_2d,
     py::array_t<double> k_out_2d, py::object mu_out_2d,
-    py::array_t<std::complex<double>> ps_kmu, py::array_t<size_t> modes,
+    py::array_t<double> ps_kmu, py::array_t<size_t> modes,
     py::array_t<double> k_edge, py::object mu_edge, int nthreads)
 {
     auto buf_ps_2d = ps_2d.request();
@@ -178,10 +184,10 @@ void cal_ps_from_ps_2d(
     size_t k_parallel_bin = buf_ps_2d.shape[1];
     size_t kbin = buf_k_edge.shape[0] - 1;
 
-    const std::complex<T>* ptr_ps_2d = static_cast<const std::complex<T>*>(buf_ps_2d.ptr);
+    const double* ptr_ps_2d = static_cast<const double*>(buf_ps_2d.ptr);
     const double* ptr_k_2d = static_cast<const double*>(buf_k_2d.ptr);
     double* ptr_k_out_2d = static_cast<double*>(buf_k_out_2d.ptr);
-    std::complex<double>* ptr_ps_kmu = static_cast<std::complex<double>*>(buf_ps_kmu.ptr);
+    double* ptr_ps_kmu = static_cast<double*>(buf_ps_kmu.ptr);
     size_t* ptr_modes = static_cast<size_t*>(buf_modes.ptr);
     const double* ptr_k_edge = static_cast<const double*>(buf_k_edge.ptr);
     const size_t* ptr_modes_2d = static_cast<const size_t*>(buf_modes_2d.ptr);
@@ -204,10 +210,10 @@ void cal_ps_from_ps_2d(
         mubin = buf_mu_edge.shape[0] - 1;
     }
 
-    CalPSFromPS2D<T>(ptr_ps_2d, ptr_k_2d, ptr_modes_2d,
-                     ptr_k_out_2d, ptr_mu_out_2d,
-                     ptr_ps_kmu, ptr_modes,
-                     ptr_k_edge, ptr_mu_edge, kbin, mubin, k_perp_bin, k_parallel_bin, nthreads);
+    CalPSFromPS2D(ptr_ps_2d, ptr_k_2d, ptr_modes_2d,
+                  ptr_k_out_2d, ptr_mu_out_2d,
+                  ptr_ps_kmu, ptr_modes,
+                  ptr_k_edge, ptr_mu_edge, kbin, mubin, k_perp_bin, k_parallel_bin, nthreads);
 }
 
 PYBIND11_MODULE(fftpower_pybind, m){
@@ -258,7 +264,7 @@ PYBIND11_MODULE(fftpower_pybind, m){
     mu_array : numpy.ndarray 
         mu_array. Default None
     Pkmu : numpy.ndarray 
-        Pkmu
+        Pkmu (real, float64)
     count : numpy.ndarray
         count
     k_mesh: numpy.ndarray
@@ -274,8 +280,8 @@ PYBIND11_MODULE(fftpower_pybind, m){
 
     m.def("cal_ps_double", &cal_ps<double>,
     R"pbdoc(
-        cal_ps function with float precision
-        Same arguments as cal_ps_float but with double precision
+        cal_ps function with double precision
+        Same arguments as cal_ps_float but with double precision input
     )pbdoc",
     py::arg("ps_3d"), py::arg("kx_array"), py::arg("ky_array"), py::arg("kz_array"), py::arg("k_array"), py::arg("mu_array") = py::none(), py::arg("Pkmu"), py::arg("count"), py::arg("k_mesh"), py::arg("mu_mesh") = py::none(), py::arg("nthreads"), py::arg("k_logarithmic"));
 
@@ -315,9 +321,9 @@ PYBIND11_MODULE(fftpower_pybind, m){
           py::arg("kx_array"), py::arg("ky_array"), py::arg("kz_array"),
           py::arg("ps_3d_factor"), py::arg("shotnoise"), py::arg("nthreads"));
 
-    m.def("cal_ps_from_ps_2d_float", &cal_ps_from_ps_2d<float>,
+    m.def("cal_ps_from_ps_2d", &cal_ps_from_ps_2d,
           R"pbdoc(
-            Calculate power spectrum from 2D power spectrum (float precision).
+            Calculate power spectrum from 2D power spectrum.
 
             Args:
                 ps_2d (np.ndarray): Input 2D power spectrum array.
@@ -330,15 +336,6 @@ PYBIND11_MODULE(fftpower_pybind, m){
                 k_edge (np.ndarray): k bin edges array.
                 mu_edge (np.ndarray, optional): mu bin edges array. Default None.
                 nthreads (int): Number of threads for computation.
-          )pbdoc",
-          py::arg("ps_2d"), py::arg("k_2d"), py::arg("modes_2d"), py::arg("k_out_2d"), py::arg("mu_out_2d") = py::none(),
-          py::arg("ps_kmu"), py::arg("modes"), py::arg("k_edge"), py::arg("mu_edge") = py::none(),
-          py::arg("nthreads"));
-
-    m.def("cal_ps_from_ps_2d_double", &cal_ps_from_ps_2d<double>,
-          R"pbdoc(
-            Calculate power spectrum from 2D power spectrum (double precision).
-            Same arguments as cal_ps_from_ps_2d_float but with double precision
           )pbdoc",
           py::arg("ps_2d"), py::arg("k_2d"), py::arg("modes_2d"), py::arg("k_out_2d"), py::arg("mu_out_2d") = py::none(),
           py::arg("ps_kmu"), py::arg("modes"), py::arg("k_edge"), py::arg("mu_edge") = py::none(),

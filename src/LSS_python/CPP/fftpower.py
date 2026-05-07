@@ -13,35 +13,49 @@ def deal_ps_3d_c_api(complex_field, kernel=None, ps_3d_factor=1.0, shotnoise=0.0
         print(f"Warning: complex_field({complex_field.dtype}) not complex128 or complex64. Tring to convert to complex64")
         complex_field = complex_field.astype(np.complex64)
     if kernel is not None:
-        if kernel.dtype != complex_field.dtype:
-            print("Warning: the dtype of kernel does not match the dtype of complex_field. Trying to convert kernel to match complex_field")
-            kernel = kernel.astype(complex_field.dtype)
+        # Extract real part of kernel (kernel should be real-valued)
+        kernel = kernel.real
+        # Match precision: complex64 -> float32, complex128 -> float64
+        expected_dtype = np.float32 if complex_field.dtype == np.complex64 else np.float64
+        if kernel.dtype != expected_dtype:
+            print(f"Warning: the dtype of kernel ({kernel.dtype}) does not match expected ({expected_dtype}). Converting kernel")
+            kernel = kernel.astype(expected_dtype)
 
     ngrids = np.array(complex_field.shape, dtype=np.uint64)
 
-    complex_dtype = c_double_complex if complex_field.dtype == np.complex128 else c_float_complex
-    complex_field_ptr = complex_field.ctypes.data_as(ctypes.POINTER(complex_dtype))
-    kernel_ptr = kernel.ctypes.data_as(ctypes.POINTER(complex_dtype)) if kernel is not None else ctypes.POINTER(complex_dtype)()
+    # Determine real dtype for ps_3d output
+    real_dtype = ctypes.c_double if complex_field.dtype == np.complex128 else ctypes.c_float
+    np_real_dtype = np.float64 if complex_field.dtype == np.complex128 else np.float32
+    
+    # Create output real array for ps_3d
+    ps_3d = np.empty(complex_field.shape, dtype=np_real_dtype)
+    
+    complex_field_ptr = complex_field.ctypes.data_as(ctypes.POINTER(c_double_complex if complex_field.dtype == np.complex128 else c_float_complex))
+    kernel_ptr = kernel.ctypes.data_as(ctypes.POINTER(real_dtype)) if kernel is not None else ctypes.POINTER(real_dtype)()
+    ps_3d_ptr = ps_3d.ctypes.data_as(ctypes.POINTER(real_dtype))
     ngrids_ptr = ngrids.ctypes.data_as(ctypes.POINTER(ctypes.c_uint64))
 
     nthreads = ctypes.c_int(nthreads)
     if complex_field.dtype == np.complex128:
         ps_3d_factor = ctypes.c_double(ps_3d_factor)
         shotnoise = ctypes.c_double(shotnoise)
-        fftpower_lib.DealPS3D_double(complex_field_ptr, kernel_ptr, ngrids_ptr, ps_3d_factor, shotnoise, nthreads)
+        fftpower_lib.DealPS3D_double(complex_field_ptr, kernel_ptr, ps_3d_ptr, ngrids_ptr, ps_3d_factor, shotnoise, nthreads)
     else:
         ps_3d_factor = ctypes.c_float(ps_3d_factor)
         shotnoise = ctypes.c_float(shotnoise)
-        fftpower_lib.DealPS3D_float(complex_field_ptr, kernel_ptr, ngrids_ptr, ps_3d_factor, shotnoise, nthreads)
+        fftpower_lib.DealPS3D_float(complex_field_ptr, kernel_ptr, ps_3d_ptr, ngrids_ptr, ps_3d_factor, shotnoise, nthreads)
+    
+    return ps_3d
     
 
 def cal_ps_c_api(ps_3d, k_arrays_list, k_array, mu_array = None, k_logarithmic=False, nthreads=1):
-    if ps_3d.dtype != np.complex128 and ps_3d.dtype != np.complex64:
-        print("Warning: ps_3d not complex128 or complex64. Tring to convert to complex64")
+    # ps_3d is now a real array (float32 or float64)
+    if ps_3d.dtype != np.float64 and ps_3d.dtype != np.float32:
+        print("Warning: ps_3d not float64 or float32. Trying to convert to float32")
         try:
-            ps_3d = ps_3d.astype(np.complex64)
+            ps_3d = ps_3d.astype(np.float32)
         except ValueError:
-            raise ValueError("ps_3d must be complex64 or complex128, or convertable to complex64")
+            raise ValueError("ps_3d must be float32 or float64, or convertible to float32")
     
     kx_array, ky_array, kz_array = k_arrays_list
     kx_array = kx_array.astype(np.float64, copy=False)
@@ -61,14 +75,15 @@ def cal_ps_c_api(ps_3d, k_arrays_list, k_array, mu_array = None, k_logarithmic=F
     mu_array = mu_array.astype(np.float64, copy=False) if use_mu else None
     mubin = mu_array.shape[0] - 1 if use_mu else 1
 
-    power = np.zeros(shape=(kbin, mubin), dtype=np.complex128)
+    # Use float64 for power (real power spectrum output)
+    power = np.zeros(shape=(kbin, mubin), dtype=np.float64)
     power_k = np.zeros(shape=(kbin, mubin), dtype=np.float64)
     power_mu = np.zeros(shape=(kbin, mubin), dtype=np.float64) if use_mu else None
     power_modes = np.zeros(shape=(kbin, mubin), dtype=np.uint64)
     ngrids = np.array(ps_3d.shape, dtype=np.uint64)
 
-    complex_dtype = c_double_complex if ps_3d.dtype == np.complex128 else c_float_complex
-    ps_3d_ptr = ps_3d.ctypes.data_as(ctypes.POINTER(complex_dtype))
+    real_dtype = ctypes.c_double if ps_3d.dtype == np.float64 else ctypes.c_float
+    ps_3d_ptr = ps_3d.ctypes.data_as(ctypes.POINTER(real_dtype))
     ngrids_ptr = ngrids.ctypes.data_as(ctypes.POINTER(ctypes.c_uint64))
     kx_array_ptr = kx_array.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     ky_array_ptr = ky_array.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
@@ -78,7 +93,7 @@ def cal_ps_c_api(ps_3d, k_arrays_list, k_array, mu_array = None, k_logarithmic=F
     k_bin = ctypes.c_uint32(kbin)
     mu_bin = ctypes.c_uint32(mubin)
 
-    power_ptr = power.ctypes.data_as(ctypes.POINTER(complex_dtype))
+    power_ptr = power.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     power_k_ptr = power_k.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     power_mu_ptr = power_mu.ctypes.data_as(ctypes.POINTER(ctypes.c_double)) if use_mu else ctypes.POINTER(ctypes.c_double)()
     power_modes_ptr = power_modes.ctypes.data_as(ctypes.POINTER(ctypes.c_uint64))
@@ -86,7 +101,7 @@ def cal_ps_c_api(ps_3d, k_arrays_list, k_array, mu_array = None, k_logarithmic=F
     nthreads = ctypes.c_int(nthreads)
     k_logarithmic = ctypes.c_bool(k_logarithmic)
 
-    if ps_3d.dtype == np.complex128:
+    if ps_3d.dtype == np.float64:
         cal_func = fftpower_lib.CalculatePS_double
     else:
         cal_func = fftpower_lib.CalculatePS_float
