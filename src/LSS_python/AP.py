@@ -5,9 +5,12 @@ import math
 from .base import Hz, DA, cal_HI_factor
 from .tpcf import xismu
 
-def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0,smin_mapping=3.0, smax_mapping=60.0) -> xismu | None:
-    sbin = xismu.xis.shape[0]
-    mubin = xismu.xis.shape[1]
+def tpcf_convert_main(xismu:xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0,smin_mapping=3.0, smax_mapping=60.0, c_api=True) -> xismu | None:
+    if xismu.xis is not None:
+        sbin = xismu.xis.shape[0]
+        mubin = xismu.xis.shape[1]
+    else:
+        raise ValueError("xismu.xis is None")
 
     if abs(omega_mm - omega_mf) < 1e-8 and abs(w_m - w_f) < 1e-8 and abs(wa_m - wa_f) < 1e-8:
         return assis_xismu
@@ -29,6 +32,7 @@ def tpcf_convert_main(xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_met
             wawrong = wa_m,
             smin_mapping=smin_mapping, 
             smax_mapping=smax_mapping,
+            c_api = c_api
         )
         xismu_new.s_array = np.nanmean(assis_xismu.S, axis=1)
         xismu_new.mu_array = np.nanmean(assis_xismu.Mu, axis=0)
@@ -122,86 +126,6 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh
         fftpower_new.power[key_str] *= 1.0 / np.prod(convert_array)
 
     return fftpower_new
-
-# def ps_2d_convert_main_bak(fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift, mesh_done_norm=True, w_af=None, w_am=None, **kargs):
-#     """
-#     fftpower_2d: The FFTPower2D object
-
-#     kargs:
-#         Nmesh: Default 1024
-#         kmin: Default 0.01
-#         kmax: Default 3.0
-#         dk: Default 0.01
-#         Nmu: Default 30
-#         mode: Default '2d'
-#         nthreads: Default 1
-#         c_api: Default False.
-#     """
-    # from .fftpower import FFTPower
-    # z = redshift
-    # if w_af is None or w_am is None:
-    #     Hz_f, Hz_m = Hz(z, omega_mf, w_f), Hz(z, omega_mm, w_m)
-    #     DA_f, DA_m = DA(z, omega_mf, w_f), DA(z, omega_mm, w_m)
-    # else:
-    #     from .base import Hz_w0wa
-    #     Hz_f, Hz_m = Hz_w0wa(z, omega_mf, w_f, w_af), Hz_w0wa(z, omega_mm, w_m, w_am)
-    #     DA_f, DA_m = DA(z, omega_mf, w_f, w_af), DA(z, omega_mm, w_m, w_am)
-    # perp_convert_factor = DA_m / DA_f
-    # parallel_convert_factor = Hz_f / Hz_m
-
-    # k_2d = fftpower_2d.k_2d
-    # ps_2d = fftpower_2d.ps_2d
-    # boxsize = fftpower_2d.attrs["BoxSize"]
-
-    # kmin = kargs.get("kmin", 0.1)
-    # kmax = kargs.get("kmax", 2.1)
-    # dk = kargs.get("dk", 0.01)
-    # Nmu = kargs.get("Nmu", 30)
-    # mode = kargs.get("mode", "2d")
-    # nthreads = kargs.get("nthreads", 1)
-    # c_api = kargs.get("c_api", True)
-
-    # Transform k_2d coordinates for AP effect
-    # k_2d_converted = np.copy(k_2d)
-    # k_2d_converted[..., 0] *= 1.0 / perp_convert_factor   # k_perp
-    # k_2d_converted[..., 1] *= 1.0 / parallel_convert_factor  # k_parallel
-
-    # boxsize_array = boxsize * np.ones(3) if isinstance(boxsize, (float, int)) else np.array(boxsize, dtype=float)
-    # Nmesh = kargs.get("Nmesh", 1024)
-    # Nmesh_array = Nmesh * np.ones(3) if isinstance(Nmesh, (int, float)) else np.array(Nmesh, dtype=np.int32)
-
-    # fftpower_new = FFTPower(Nmesh=Nmesh_array, BoxSize=boxsize_array)
-    # fftpower_new.is_run_ps_3d = True
-    # _ = fftpower_new.cal_pkmu_from_ps_2d(
-    #     ps_2d,
-    #     k_2d_converted,
-    #     kmin,
-    #     kmax,
-    #     dk,
-    #     Nmu=Nmu,
-    #     mode=mode,
-    #     k_logarithmic=False,
-    #     nthreads=nthreads,
-    #     c_api=c_api,
-    # )
-
-    # if fftpower_new.power is None:
-    #     raise RuntimeError("FFTPower.cal_pkmu_from_ps_2d failed")
-
-    # if mode == "1d":
-    #     key_str = "Pk"
-    # else:
-    #     key_str = "Pkmu"
-
-    # convert_prod = perp_convert_factor**2 * parallel_convert_factor
-    # if mesh_done_norm:
-    #     fftpower_new.attrs["mesh_done_norm"] = True
-    #     fftpower_new.power[key_str] *= convert_prod
-    # else:
-    #     fftpower_new.attrs["mesh_done_norm"] = False
-    #     fftpower_new.power[key_str] *= 1.0 / convert_prod
-
-    # return fftpower_new
 
 def ps_2d_convert_main(fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift, mesh_done_norm=True, w_af=None, w_am=None):
     """

@@ -2,6 +2,7 @@
 CXX := g++
 CXXFLAGS := -O2 -Wall -shared -std=c++11 -fPIC -fopenmp
 CXXFLAGS_DEBUG := -O0 -Wall -shared -std=c++11 -fPIC -fopenmp -g
+CXXFLAGS_AP := -O2 -Wall -shared -std=c++17 -fPIC -fopenmp  # AP_pybind requires C++17
 
 # 目录设置
 SRC_DIR := src/LSS_python/CPP/src
@@ -15,7 +16,7 @@ INCLUDES := $(PYTHON_INCLUDES) $(PYBIND11_INCLUDES)
 EXT_SUFFIX := $(shell python3 -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
 # 目标文件设置
-TARGETS := $(LIB_DIR)/fftpower.so $(LIB_DIR)/mesh.so mesh_pybind fftpower_pybind
+TARGETS := $(LIB_DIR)/fftpower.so $(LIB_DIR)/mesh.so mesh_pybind fftpower_pybind AP_pybind
 
 # 默认目标
 all: $(TARGETS)
@@ -36,6 +37,11 @@ mesh_pybind: $(SRC_DIR)/mesh_pybind.cpp
 fftpower_pybind: $(SRC_DIR)/fftpower_pybind.cpp
 	@mkdir -p $(LIB_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -o $(LIB_DIR)/fftpower_pybind$(EXT_SUFFIX)
+
+# 编译AP_pybind (requires C++17)
+AP_pybind: $(SRC_DIR)/AP_pybind.cpp $(SRC_DIR)/AP.hpp
+	@mkdir -p $(LIB_DIR)
+	$(CXX) $(CXXFLAGS_AP) $(INCLUDES) $< -o $(LIB_DIR)/AP_pybind$(EXT_SUFFIX)
 
 # 清理目标
 clean:

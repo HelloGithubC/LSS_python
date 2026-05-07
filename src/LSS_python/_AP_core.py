@@ -49,8 +49,8 @@ def mapping_smudata_to_another_cosmology_simple(
     Hnew,
     deltamu=1.0 / 120.0,
     max_mubin=120,
-    smin_mapping=3,
-    smax_mapping=60,
+    smin_mapping=3.0,
+    smax_mapping=60.0,
 ):
     assert smin_mapping >= 0 and smin_mapping < smutabstd.shape[0]
     assert smax_mapping > smin_mapping and smax_mapping <= smutabstd.shape[0]
@@ -161,7 +161,7 @@ def mapping_smudata_to_another_cosmology_DenseToSparse(
     else:
         return smutab2
 
-@njit(cache=True) 
+@njit
 def mapping_smudata_dense(
     smutabstd,
     cosmos_tuple,

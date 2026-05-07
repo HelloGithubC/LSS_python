@@ -63,8 +63,6 @@ def cal_convert_factor(n, rat):
 
     return convert_matrix
 
-    return convert_matrix
-
 class xismu(object):
     def __init__(
         self,
@@ -94,6 +92,21 @@ class xismu(object):
             if self.RR is not None:
                 self.RR[self.RR == 0] = 1e-15
         self.xis = None
+        self.s_array = None 
+        self.mu_array = None
+
+        self.filename = None
+        self.data_type = None
+
+    def _check_data_not_None(self, types=["s_mu_array", "pairs"]):
+        if "s_mu_array" in types:
+            if self.s_array is None or self.mu_array is None:
+                raise ValueError("s_array and mu_array must be set")
+        if "pairs" in types:
+            if self.DD is None or self.DR is None or self.RR is None:
+                raise ValueError("DD, DR, RR must be set")
+            if self.DDnorm is None or self.DRnorm is None or self.RRnorm is None:
+                raise ValueError("DDnorm, DRnorm, RRnorm must be set")
         
     @classmethod
     def load(cls, filename, data_type="BINARY", smax=150, sbin=150, mubin=120, deal_with_0s0mu=True):
@@ -107,15 +120,19 @@ class xismu(object):
             self._read_from_CUTE(filename, self.sbin, self.mubin)
         elif self.data_type == "BINARY":
             self._read_from_BINARY(filename, deal_with_0s0mu)
+            if self.DD is None:
+                raise ValueError("DD is None")
             if self.DD.shape[0] != self.sbin or self.DD.shape[1] != self.mubin:
                 raise ValueError("sbin or mubin is not equal to the data")
         else:
             raise ValueError("data_type must be CUTE or BINARY")
         
-        self.DD = self.DD / self.DDnorm
-        self.DR = self.DR / self.DRnorm
-        self.RR = self.RR / self.RRnorm
-        self.RR[self.RR == 0.0] = 1e-15
+        self._check_data_not_None(types=["pairs", ])
+        self.DD = self.DD / self.DDnorm 
+        self.DR = self.DR / self.DRnorm 
+        self.RR = self.RR / self.RRnorm 
+        if self.RR is not None: 
+            self.RR[self.RR == 0.0] = 1e-15
 
         if self.S is None or self.Mu is None:
             raise ValueError("S and Mu must be included in the data when using load")
@@ -124,14 +141,15 @@ class xismu(object):
     def save(self, filename, with_weight=True):
         result_dict = {}
         result_dict["with_weight"] = with_weight
+        self._check_data_not_None(types=["pairs", ])
         if with_weight:
             result_dict["DDwpairs"] = self.DD * self.DDnorm 
-            result_dict["RRwpairs"] = self.RR * self.RRnorm
-            result_dict["DRwpairs"] = self.DR * self.DRnorm
+            result_dict["RRwpairs"] = self.RR * self.RRnorm 
+            result_dict["DRwpairs"] = self.DR * self.DRnorm 
         else:
-            result_dict["DDnpairs"] = self.DD * self.DDnorm
-            result_dict["RRnpairs"] = self.RR * self.RRnorm
-            result_dict["DRnpairs"] = self.DR * self.DRnorm
+            result_dict["DDnpairs"] = self.DD * self.DDnorm 
+            result_dict["RRnpairs"] = self.RR * self.RRnorm 
+            result_dict["DRnpairs"] = self.DR * self.DRnorm 
         # result_dict["tpCF"] = self.xis 
         result_dict["norm_d1d2"] = self.DDnorm 
         result_dict["norm_d1r2"] = self.DRnorm
@@ -210,7 +228,7 @@ class xismu(object):
             self.xis = (self.DD - 2.0 * self.DR + self.RR) / self.RR 
         return self.xis
     
-    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=True, remove_last_one=True) -> np.ndarray:
+    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=True, remove_last_one=True) -> dict | tuple:
         """ A powerful function to integrate the tpcf
 
         Parameters
@@ -242,12 +260,19 @@ class xismu(object):
         if hasattr(self, "s_array"):
             s_array = self.s_array
         else:
+            if self.S is None:
+                raise ValueError("S must be set before getting s_array")
             s_array = np.mean(self.S, axis=1)
         
         if hasattr(self, "mu_array"):
             mu_array = self.mu_array
         else:
+            if self.Mu is None:
+                raise ValueError("Mu must be set before getting mu_array")
             mu_array = np.mean(self.Mu, axis=0)
+
+        if s_array is None or mu_array is None:
+            raise ValueError("s_array and mu_array must be set before getting xis")
         
         smin_index_source = np.where(s_array >= smin)[0]
         if len(smin_index_source) == 0:
@@ -275,6 +300,9 @@ class xismu(object):
             need_slice = slice(None, -1, None)
         else:
             need_slice = slice(None, None, None)
+
+        if self.DD is None or self.DR is None or self.RR is None:
+            raise ValueError("DD, DR, RR must be set before getting xis")
         
         DD_need = self.DD[smin_index: smax_index, mumin_index: mumax_index]
         DR_need = self.DR[smin_index: smax_index, mumin_index: mumax_index]
@@ -446,6 +474,7 @@ class xismu(object):
         assistant_xismu=None, 
         wastd=0.0,
         wawrong=0.0,
+        c_api=False,
     ):
         from ._AP_core import mapping_smudata_to_another_cosmology_DenseToSparse, mapping_smudata_dense
         from .base import Hz_w0wa_jit, DA_jit
@@ -469,13 +498,23 @@ class xismu(object):
             axis=2,
         )
         # if test_mode:
-        new_data = mapping_smudata_dense(
-            data, 
-            (Hstd, Hnew, DAstd, DAnew),
-            (self.sbin, sbin2, self.mubin, mubin2), 
-            (0.0, 150.0, 0.0, 1.0),
-            (smin_mapping, smax_mapping, 0.0, 1.0),
-        )
+        if c_api:
+            from .CPP.AP import mapping_smudata_dense_cpp
+            new_data = mapping_smudata_dense_cpp(
+                data,
+                (Hstd, Hnew, DAstd, DAnew),
+                (self.sbin, sbin2, self.mubin, mubin2),
+                (0.0, 150.0, 0.0, 1.0),
+                (smin_mapping, smax_mapping, 0.0, 1.0),
+            )
+        else:
+            new_data = mapping_smudata_dense(
+                data, 
+                (Hstd, Hnew, DAstd, DAnew),
+                (self.sbin, sbin2, self.mubin, mubin2), 
+                (0.0, 150.0, 0.0, 1.0),
+                (smin_mapping, smax_mapping, 0.0, 1.0),
+            )
         # else:
         #     new_data = mapping_smudata_to_another_cosmology_DenseToSparse(
         #         data,
