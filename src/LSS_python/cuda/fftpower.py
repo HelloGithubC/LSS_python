@@ -116,20 +116,40 @@ kernel_module = cp.RawModule(code=kernel_code)
 deal_ps_core_kernel = kernel_module.get_function('deal_ps_core')
 cal_ps_3d_core_kernel = kernel_module.get_function('cal_ps_3d_core')
 
-def deal_ps_3d_from_cuda(complex_field_gpu, ps_kernel_3d_gpu=None, ps_3d_factor=1.0, shotnoise=0.0):
+def deal_ps_3d_from_cuda(complex_field_gpu, ps_3d_gpu=None, ps_kernel_3d_gpu=None, ps_3d_factor=1.0, shotnoise=0.0):
     """
     Calculate 3D power spectrum from complex field on GPU.
-    Returns a new real array containing the power spectrum.
+    
+    Args:
+        complex_field_gpu: Input complex field array on GPU (complex64 or complex128)
+        ps_3d_gpu: Optional pre-allocated array on GPU for output. If provided, it will be 
+                   COMPLETELY OVERWRITTEN with new results. If None, a new array will be created.
+        ps_kernel_3d_gpu: Optional kernel array on GPU (must match complex_field precision)
+        ps_3d_factor: Factor for power spectrum normalization
+        shotnoise: Shot noise to subtract
+    
+    Returns:
+        ps_3d_gpu: 3D power spectrum array on GPU (same object if ps_3d_gpu was provided)
     """
     if ps_kernel_3d_gpu is None:
         ps_kernel_3d_gpu = 0
     nx, ny, nz = complex_field_gpu.shape
     
-    # Create output real array with matching precision
-    if complex_field_gpu.dtype == np.complex64:
-        ps_3d_gpu = cp.zeros((nx, ny, nz), dtype=cp.float32)
+    # Determine expected dtype for ps_3d_gpu
+    expected_dtype = cp.float32 if complex_field_gpu.dtype == np.complex64 else cp.float64
+    
+    # Handle ps_3d_gpu parameter
+    if ps_3d_gpu is None:
+        # Create new array (backward compatible behavior)
+        ps_3d_gpu = cp.zeros((nx, ny, nz), dtype=expected_dtype)
     else:
-        ps_3d_gpu = cp.zeros((nx, ny, nz), dtype=cp.float64)
+        # Validate provided ps_3d_gpu array
+        if not isinstance(ps_3d_gpu, cp.ndarray):
+            raise TypeError(f"ps_3d_gpu must be a cupy.ndarray or None, got {type(ps_3d_gpu)}")
+        if ps_3d_gpu.dtype != expected_dtype:
+            raise TypeError(f"ps_3d_gpu dtype must be {expected_dtype} for complex_field_gpu dtype {complex_field_gpu.dtype}, got {ps_3d_gpu.dtype}")
+        if ps_3d_gpu.shape != complex_field_gpu.shape:
+            raise ValueError(f"ps_3d_gpu shape {ps_3d_gpu.shape} must match complex_field_gpu shape {complex_field_gpu.shape}")
     
     deal_ps_core_kernel((nx,ny), (nz,), (complex_field_gpu, ps_kernel_3d_gpu, ps_3d_gpu, nx, ny, nz, ps_3d_factor, shotnoise))
     return ps_3d_gpu

@@ -10,21 +10,39 @@ namespace py = pybind11;
 const int ndim = 3;
 
 template <typename T>
-py::array_t<T> deal_ps_3d(py::array_t<std::complex<T>> complex_field, 
-                          py::object kernel,  
-                          T ps_3d_factor, T shotnoise, int nthreads)
+void deal_ps_3d(py::array_t<std::complex<T>> complex_field, 
+                py::array_t<T> ps_3d,
+                py::object kernel,  
+                T ps_3d_factor, T shotnoise, int nthreads)
 {
     if (!(complex_field.flags() & py::array::c_style)) {
         throw std::runtime_error("Field must be C-contiguous");
     }
+    
+    if (!(ps_3d.flags() & py::array::c_style)) {
+        throw std::runtime_error("ps_3d must be C-contiguous");
+    }
 
     auto complex_field_buf = complex_field.request();
+    auto ps_3d_buf = ps_3d.request();
+    
+    // Check shape consistency
+    if (ps_3d_buf.ndim != ndim) {
+        throw std::runtime_error("ps_3d must be 3-dimensional");
+    }
+    for (int i = 0; i < ndim; i++) {
+        if (ps_3d_buf.shape[i] != complex_field_buf.shape[i]) {
+            throw std::runtime_error("ps_3d shape must match complex_field shape");
+        }
+    }
+    
     size_t ngrids[ndim];
     for (int i = 0; i < ndim; i++) {
         ngrids[i] = complex_field_buf.shape[i];
     }
     
     const std::complex<T>* complex_field_ptr = static_cast<const std::complex<T>*>(complex_field_buf.ptr);
+    T* ps_3d_ptr = static_cast<T*>(ps_3d_buf.ptr);
     
     const T* kernel_ptr = nullptr;
     if (!kernel.is_none()) {
@@ -36,14 +54,7 @@ py::array_t<T> deal_ps_3d(py::array_t<std::complex<T>> complex_field,
         kernel_ptr = static_cast<const T*>(kernel_buf.ptr);
     }
     
-    // Create output real array for ps_3d
-    py::array_t<T> ps_3d = py::array_t<T>(complex_field_buf.size);
-    auto ps_3d_buf = ps_3d.request();
-    T* ps_3d_ptr = static_cast<T*>(ps_3d_buf.ptr);
-    
     DealPS3D(complex_field_ptr, kernel_ptr, ps_3d_ptr, ngrids, ps_3d_factor, shotnoise, nthreads);
-    
-    return ps_3d;
 }
 
 template <typename T>
@@ -227,6 +238,9 @@ PYBIND11_MODULE(fftpower_pybind, m){
     ----------
     complex_field : numpy.ndarray 
         complex_field
+    ps_3d : numpy.ndarray
+        Output array for 3D power spectrum. Will be COMPLETELY OVERWRITTEN.
+        Must have the same shape as complex_field.
     kernel : numpy.ndarray or None
         kernel
     ps_3d_factor : float
@@ -236,14 +250,14 @@ PYBIND11_MODULE(fftpower_pybind, m){
     nthreads : int
         nthreads
     )pbdoc",
-    py::arg("complex_field"), py::arg("kernel") = py::none(), py::arg("ps_3d_factor"), py::arg("shotnoise"), py::arg("nthreads"));
+    py::arg("complex_field"), py::arg("ps_3d"), py::arg("kernel") = py::none(), py::arg("ps_3d_factor"), py::arg("shotnoise"), py::arg("nthreads"));
 
     m.def("deal_ps_3d_double", &deal_ps_3d<double>, 
     R"pbdoc(
         deal_ps_3d function with double precision
         Same arguments as deal_ps_3d_float but with double precision
     )pbdoc",
-    py::arg("complex_field"), py::arg("kernel") = py::none(), py::arg("ps_3d_factor"), py::arg("shotnoise"), py::arg("nthreads"));
+    py::arg("complex_field"), py::arg("ps_3d"), py::arg("kernel") = py::none(), py::arg("ps_3d_factor"), py::arg("shotnoise"), py::arg("nthreads"));
 
     m.def("cal_ps_float", &cal_ps<float>, 
     R"pbdoc(

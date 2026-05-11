@@ -2,10 +2,24 @@ import numpy as np
 import os
 from .JIT.fftpower import deal_ps_3d_multithreads, deal_ps_3d_single, cal_ps_from_numba
 
-def deal_ps_3d_from_mesh(mesh, mesh_kernel=None, nthreads=1, device_id=-1, c_api=True, pybind=True):
+def deal_ps_3d_from_mesh(mesh, mesh_kernel=None, ps_3d=None, nthreads=1, device_id=-1, c_api=True, pybind=True):
     """
     Calculate 3D power spectrum from mesh's complex field.
-    Returns a new real array containing the power spectrum.
+    
+    Args:
+        mesh: Input mesh object with complex_field attribute
+        mesh_kernel: Optional kernel mesh
+        ps_3d: Optional pre-allocated array for output. If provided, it will be 
+               COMPLETELY OVERWRITTEN with new results. Use np.empty() for best 
+               performance (no initialization needed). If None, a new array will 
+               be created automatically. Useful for memory reuse in repeated calls.
+        nthreads: Number of threads for parallel computation
+        device_id: GPU device ID (-1 for CPU)
+        c_api: Whether to use C API
+        pybind: Whether to use pybind11
+    
+    Returns:
+        ps_3d: 3D power spectrum array (same object if ps_3d was provided)
     """
     complex_field = mesh.complex_field if device_id < 0 else mesh.complex_field_gpu
     if mesh_kernel is not None:
@@ -13,32 +27,67 @@ def deal_ps_3d_from_mesh(mesh, mesh_kernel=None, nthreads=1, device_id=-1, c_api
         ps_3d_kernel = mesh_kernel.complex_field.real if device_id < 0 else mesh_kernel.complex_field_gpu.real
     else:
         ps_3d_kernel = None
-    return deal_ps_3d(complex_field, ps_3d_kernel, np.prod(mesh.attrs["BoxSize"]), mesh.attrs["shotnoise"], nthreads, device_id, c_api, pybind)
+    return deal_ps_3d(complex_field, ps_3d=ps_3d, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=np.prod(mesh.attrs["BoxSize"]), shotnoise=mesh.attrs["shotnoise"], nthreads=nthreads, device_id=device_id, c_api=c_api, pybind=pybind)
 
-def deal_ps_3d(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1, device_id=-1, c_api=True, pybind=True):
+def deal_ps_3d(complex_field, ps_3d=None, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1, device_id=-1, c_api=True, pybind=True):
     """
     Calculate 3D power spectrum from complex field.
-    Returns a new real array containing the power spectrum.
-    The input complex_field is NOT modified.
+    
+    Args:
+        complex_field: Input complex field array (complex64 or complex128)
+        ps_3d: Optional pre-allocated array for output. If provided, it will be 
+               COMPLETELY OVERWRITTEN with new results. Use np.empty() for best 
+               performance (no initialization needed). If None, a new array will 
+               be created automatically. Useful for memory reuse in repeated calls.
+        ps_3d_kernel: Optional kernel array (must match complex_field precision)
+        ps_3d_factor: Factor for power spectrum normalization
+        shotnoise: Shot noise to subtract
+        nthreads: Number of threads for parallel computation
+        device_id: GPU device ID (-1 for CPU)
+        c_api: Whether to use C API
+        pybind: Whether to use pybind11
+    
+    Returns:
+        ps_3d: 3D power spectrum array (same object if ps_3d was provided)
+    
+    Example:
+        # Memory reuse for repeated calculations
+        ps_3d = np.empty(complex_field.shape, dtype=np.float32)
+        for i in range(100):
+            ps_3d = deal_ps_3d(complex_field, ps_3d=ps_3d, ...)
     """
     if device_id >= 0:
         import cupy as cp
         from .cuda.fftpower import deal_ps_3d_from_cuda
         with cp.cuda.Device(device_id):
-            ps_3d = deal_ps_3d_from_cuda(complex_field, ps_3d_kernel, ps_3d_factor, shotnoise)
+            ps_3d = deal_ps_3d_from_cuda(complex_field_gpu=complex_field, ps_3d_gpu=ps_3d, ps_kernel_3d_gpu=ps_3d_kernel, ps_3d_factor=ps_3d_factor, shotnoise=shotnoise)
     else:
         if c_api:
             if not pybind:
                 from .CPP.fftpower import deal_ps_3d_c_api
-                ps_3d = deal_ps_3d_c_api(complex_field, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+                ps_3d = deal_ps_3d_c_api(complex_field, ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
             else:
                 from .CPP.fftpower_pybind import deal_ps_3d_pybind
-                ps_3d = deal_ps_3d_pybind(complex_field, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+                ps_3d = deal_ps_3d_pybind(complex_field, ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
         else:
-            if nthreads > 1:
-                ps_3d = deal_ps_3d_multithreads(complex_field, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+            # Determine expected dtype for ps_3d
+            expected_dtype = np.float32 if complex_field.dtype == np.complex64 else np.float64
+            
+            # Handle ps_3d parameter for Numba backend
+            if ps_3d is None:
+                ps_3d = np.empty(complex_field.shape, dtype=expected_dtype)
             else:
-                ps_3d = deal_ps_3d_single(complex_field, ps_3d_kernel, ps_3d_factor, shotnoise)
+                if not isinstance(ps_3d, np.ndarray):
+                    raise TypeError(f"ps_3d must be a numpy.ndarray or None, got {type(ps_3d)}")
+                if ps_3d.dtype != expected_dtype:
+                    raise TypeError(f"ps_3d dtype must be {expected_dtype} for complex_field dtype {complex_field.dtype}, got {ps_3d.dtype}")
+                if ps_3d.shape != complex_field.shape:
+                    raise ValueError(f"ps_3d shape {ps_3d.shape} must match complex_field shape {complex_field.shape}")
+            
+            if nthreads > 1:
+                ps_3d = deal_ps_3d_multithreads(complex_field, ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise, nthreads)
+            else:
+                ps_3d = deal_ps_3d_single(complex_field, ps_3d, ps_3d_kernel, ps_3d_factor, shotnoise)
     return ps_3d
 
 def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, nthreads=1, c_api=True, dk=-1):
@@ -74,12 +123,37 @@ class FFTPower:
         self.is_run_ps_3d = False
 
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None,
-    mode="1d", k_logarithmic=False, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=True, pybind=True):
+    mode="1d", k_logarithmic=False, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=True, pybind=True, ps_3d=None):
         """
         Calculate power spectrum from a mesh.
-            Args:
-                compensated: only used when mesh.complex_field is None.
-                mesh_kernel: If set, its complex_field.real will be used to muliple the ps_3d.
+        
+        Args:
+            mesh: Input mesh object
+            kmin, kmax, dk: k-space binning parameters
+            Nmu: Number of mu bins (required for mode="2d")
+            mode: Power spectrum mode ("1d" or "2d")
+            k_logarithmic: Whether k bins are logarithmic
+            mesh_kernel: If set, its complex_field.real will be used to multiply the ps_3d
+            compensated: Only used when mesh.complex_field is None
+            force_create_complex_field: Force recreation of complex field
+            nthreads: Number of threads for parallel computation
+            device_id: GPU device ID (-1 for CPU)
+            c_api: Whether to use C API
+            pybind: Whether to use pybind11
+            ps_3d: Optional pre-allocated array for 3D power spectrum. If provided, it will be 
+                   COMPLETELY OVERWRITTEN with new results. Use np.empty() for best performance 
+                   (no initialization needed). If None, a new array will be created automatically.
+                   Useful for memory reuse in repeated calls to avoid memory bloat.
+        
+        Returns:
+            power: Power spectrum result dictionary
+        
+        Example:
+            # Memory reuse for repeated calculations
+            ps_3d = np.empty(mesh.complex_field.shape, dtype=np.float32)
+            for i in range(100):
+                power = fftpower.cal_ps_from_mesh(mesh, kmin, kmax, dk, ps_3d=ps_3d)
+                # Process power spectrum...
         """
         shotnoise = mesh.attrs["shotnoise"]
         if device_id >= 0:
@@ -103,7 +177,7 @@ class FFTPower:
         else:
             ps_3d_kernel = None
             
-        ps_3d = deal_ps_3d(complex_field, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=float(boxsize_prod), shotnoise=shotnoise, nthreads=nthreads, c_api=c_api, pybind=pybind)
+        ps_3d = deal_ps_3d(complex_field, ps_3d=ps_3d, ps_3d_kernel=ps_3d_kernel, ps_3d_factor=float(boxsize_prod), shotnoise=shotnoise, nthreads=nthreads, c_api=c_api, pybind=pybind)
         self.removed_shotnoise = True # Avoid shotnoise being removed twice
         self.attrs["shotnoise"] = shotnoise
 

@@ -5,7 +5,30 @@ from .lib.fftpower_pybind import cal_ps_float, cal_ps_double # type: ignore
 from .lib.fftpower_pybind import cal_ps_2d_from_mesh_float, cal_ps_2d_from_mesh_double # type: ignore
 from .lib.fftpower_pybind import cal_ps_from_ps_2d # type: ignore
 
-def deal_ps_3d_pybind(complex_field, kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
+def deal_ps_3d_pybind(complex_field, ps_3d=None, kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
+    """
+    Calculate 3D power spectrum from complex field.
+    
+    Args:
+        complex_field: Input complex field array (complex64 or complex128)
+        ps_3d: Optional pre-allocated array for output. If provided, it will be 
+               COMPLETELY OVERWRITTEN with new results. Use np.empty() for best 
+               performance (no initialization needed). If None, a new array will 
+               be created automatically. Useful for memory reuse in repeated calls.
+        kernel: Optional kernel array (must match complex_field precision)
+        ps_3d_factor: Factor for power spectrum normalization
+        shotnoise: Shot noise to subtract
+        nthreads: Number of threads for parallel computation
+    
+    Returns:
+        ps_3d: 3D power spectrum array (same object if ps_3d was provided)
+    
+    Example:
+        # Memory reuse for repeated calculations
+        ps_3d = np.empty(complex_field.shape, dtype=np.float32)
+        for i in range(100):
+            ps_3d = deal_ps_3d_pybind(complex_field, ps_3d=ps_3d, ...)
+    """
     # Type checks for external inputs
     if not isinstance(complex_field, np.ndarray):
         raise TypeError(f"complex_field must be a numpy.ndarray, got {type(complex_field)}")
@@ -13,6 +36,24 @@ def deal_ps_3d_pybind(complex_field, kernel=None, ps_3d_factor=1.0, shotnoise=0.
         raise ValueError("complex_field must be contiguous")
     if complex_field.dtype not in [np.complex64, np.complex128]:
         raise TypeError(f"complex_field must be complex64 or complex128, got {complex_field.dtype}")
+    
+    # Determine expected dtype for ps_3d
+    expected_dtype = np.float32 if complex_field.dtype == np.complex64 else np.float64
+    
+    # Handle ps_3d parameter
+    if ps_3d is None:
+        # Create new array (backward compatible behavior)
+        ps_3d = np.empty(complex_field.shape, dtype=expected_dtype)
+    else:
+        # Validate provided ps_3d array
+        if not isinstance(ps_3d, np.ndarray):
+            raise TypeError(f"ps_3d must be a numpy.ndarray or None, got {type(ps_3d)}")
+        if not ps_3d.flags.contiguous:
+            raise ValueError("ps_3d must be contiguous")
+        if ps_3d.dtype != expected_dtype:
+            raise TypeError(f"ps_3d dtype must be {expected_dtype} for complex_field dtype {complex_field.dtype}, got {ps_3d.dtype}")
+        if ps_3d.shape != complex_field.shape:
+            raise ValueError(f"ps_3d shape {ps_3d.shape} must match complex_field shape {complex_field.shape}")
     
     # Check kernel if provided
     if kernel is not None:
@@ -30,12 +71,10 @@ def deal_ps_3d_pybind(complex_field, kernel=None, ps_3d_factor=1.0, shotnoise=0.
         raise TypeError(f"nthreads must be an integer, got {type(nthreads)}")
     
     if complex_field.dtype == np.complex64:
-        ps_3d = deal_ps_3d_float(complex_field, kernel, ps_3d_factor, shotnoise, nthreads)
+        deal_ps_3d_float(complex_field, ps_3d, kernel, ps_3d_factor, shotnoise, nthreads)
     else:
-        ps_3d = deal_ps_3d_double(complex_field, kernel, ps_3d_factor, shotnoise, nthreads)
+        deal_ps_3d_double(complex_field, ps_3d, kernel, ps_3d_factor, shotnoise, nthreads)
     
-    # Reshape to match input shape
-    ps_3d = ps_3d.reshape(complex_field.shape)
     return ps_3d
 
 def cal_ps_pybind(ps_3d, k_arrays_list, k_array, mu_array = None, k_logarithmic=False, nthreads=1):

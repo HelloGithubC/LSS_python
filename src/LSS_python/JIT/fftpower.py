@@ -2,18 +2,24 @@ import numpy as np
 from numba import njit, set_num_threads, prange, get_thread_id
 
 @njit(parallel=True)
-def deal_ps_3d_multithreads(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
+def deal_ps_3d_multithreads(complex_field, ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
     """
-    Calculate 3D power spectrum from complex field.
-    Returns a new real array containing the power spectrum.
+    Calculate 3D power spectrum from complex field (multi-threaded version).
+    
+    Args:
+        complex_field: Input complex field array (complex64 or complex128)
+        ps_3d: Pre-allocated output array. Will be COMPLETELY OVERWRITTEN with new results.
+               Must have the same shape as complex_field.
+        ps_3d_kernel: Optional kernel array (must match complex_field precision)
+        ps_3d_factor: Factor for power spectrum normalization
+        shotnoise: Shot noise to subtract
+        nthreads: Number of threads for parallel computation
+    
+    Returns:
+        ps_3d: Same object as input, filled with power spectrum values
     """
     set_num_threads(nthreads)
     nx, ny, nz = complex_field.shape
-    # Create output real array with matching precision
-    if complex_field.dtype == np.complex64:
-        ps_3d = np.zeros((nx, ny, nz), dtype=np.float32)
-    else:
-        ps_3d = np.zeros((nx, ny, nz), dtype=np.float64)
     
     for ix in prange(nx):
         for iy in prange(ny):
@@ -26,17 +32,22 @@ def deal_ps_3d_multithreads(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, 
     return ps_3d
 
 @njit
-def deal_ps_3d_single(complex_field, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0):
+def deal_ps_3d_single(complex_field, ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0):
     """
     Single-threaded version of deal_ps_3d.
-    Returns a new real array containing the power spectrum.
+    
+    Args:
+        complex_field: Input complex field array (complex64 or complex128)
+        ps_3d: Pre-allocated output array. Will be COMPLETELY OVERWRITTEN with new results.
+               Must have the same shape as complex_field.
+        ps_3d_kernel: Optional kernel array (must match complex_field precision)
+        ps_3d_factor: Factor for power spectrum normalization
+        shotnoise: Shot noise to subtract
+    
+    Returns:
+        ps_3d: Same object as input, filled with power spectrum values
     """
     nx, ny, nz = complex_field.shape
-    # Create output real array with matching precision
-    if complex_field.dtype == np.complex64:
-        ps_3d = np.zeros((nx, ny, nz), dtype=np.float32)
-    else:
-        ps_3d = np.zeros((nx, ny, nz), dtype=np.float64)
     
     for ix in range(nx):
         for iy in range(ny):

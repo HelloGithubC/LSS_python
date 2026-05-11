@@ -8,10 +8,45 @@ from .base import c_double_complex, c_float_complex
 script_dir = os.path.dirname(os.path.abspath(__file__))
 fftpower_lib = ctypes.CDLL(os.path.join(script_dir + "/lib", "fftpower_ctype.so"))
 
-def deal_ps_3d_c_api(complex_field, kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
+def deal_ps_3d_c_api(complex_field, ps_3d=None, kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
+    """
+    Calculate 3D power spectrum from complex field using C API.
+    
+    Args:
+        complex_field: Input complex field array (complex64 or complex128)
+        ps_3d: Optional pre-allocated array for output. If provided, it will be 
+               COMPLETELY OVERWRITTEN with new results. Use np.empty() for best 
+               performance (no initialization needed). If None, a new array will 
+               be created automatically. Useful for memory reuse in repeated calls.
+        kernel: Optional kernel array (must match complex_field precision)
+        ps_3d_factor: Factor for power spectrum normalization
+        shotnoise: Shot noise to subtract
+        nthreads: Number of threads for parallel computation
+    
+    Returns:
+        ps_3d: 3D power spectrum array (same object if ps_3d was provided)
+    """
     if complex_field.dtype != np.complex128 and complex_field.dtype != np.complex64:
-        print(f"Warning: complex_field({complex_field.dtype}) not complex128 or complex64. Tring to convert to complex64")
+        print(f"Warning: complex_field({complex_field.dtype}) not complex128 or complex64. Trying to convert to complex64")
         complex_field = complex_field.astype(np.complex64)
+    
+    # Determine expected dtype for ps_3d
+    np_real_dtype = np.float64 if complex_field.dtype == np.complex128 else np.float32
+    real_dtype = ctypes.c_double if complex_field.dtype == np.complex128 else ctypes.c_float
+    
+    # Handle ps_3d parameter
+    if ps_3d is None:
+        # Create new array (backward compatible behavior)
+        ps_3d = np.empty(complex_field.shape, dtype=np_real_dtype)
+    else:
+        # Validate provided ps_3d array
+        if not isinstance(ps_3d, np.ndarray):
+            raise TypeError(f"ps_3d must be a numpy.ndarray or None, got {type(ps_3d)}")
+        if ps_3d.dtype != np_real_dtype:
+            raise TypeError(f"ps_3d dtype must be {np_real_dtype} for complex_field dtype {complex_field.dtype}, got {ps_3d.dtype}")
+        if ps_3d.shape != complex_field.shape:
+            raise ValueError(f"ps_3d shape {ps_3d.shape} must match complex_field shape {complex_field.shape}")
+    
     if kernel is not None:
         # Extract real part of kernel (kernel should be real-valued)
         kernel = kernel.real
@@ -22,13 +57,6 @@ def deal_ps_3d_c_api(complex_field, kernel=None, ps_3d_factor=1.0, shotnoise=0.0
             kernel = kernel.astype(expected_dtype)
 
     ngrids = np.array(complex_field.shape, dtype=np.uint64)
-
-    # Determine real dtype for ps_3d output
-    real_dtype = ctypes.c_double if complex_field.dtype == np.complex128 else ctypes.c_float
-    np_real_dtype = np.float64 if complex_field.dtype == np.complex128 else np.float32
-    
-    # Create output real array for ps_3d
-    ps_3d = np.empty(complex_field.shape, dtype=np_real_dtype)
     
     complex_field_ptr = complex_field.ctypes.data_as(ctypes.POINTER(c_double_complex if complex_field.dtype == np.complex128 else c_float_complex))
     kernel_ptr = kernel.ctypes.data_as(ctypes.POINTER(real_dtype)) if kernel is not None else ctypes.POINTER(real_dtype)()
