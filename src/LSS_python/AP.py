@@ -82,7 +82,7 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh
         [perp_convert_factor, perp_convert_factor, parallel_convert_factor]
     )
     boxsize_array = boxsize * np.ones(3)
-    boxsize_convert_array = boxsize * convert_array
+    boxsize_convert_array = boxsize_array * convert_array
 
     Nmesh = kargs.get("Nmesh", 1024)
 
