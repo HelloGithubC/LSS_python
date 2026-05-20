@@ -1,6 +1,6 @@
 import numpy as np
 
-from .lib.AP_pybind import mapping_smudata_dense_cpp_float, mapping_smudata_dense_cpp_double  # type: ignore
+from .lib.AP_pybind import mapping_smudata_dense  # type: ignore
 
 
 def mapping_smudata_dense_cpp(
@@ -44,8 +44,7 @@ def mapping_smudata_dense_cpp(
     if smutabstd.ndim != 3:
         raise ValueError(f"smutabstd must be 3-dimensional, got {smutabstd.ndim}")
     
-    # Ensure contiguous array
-    smutabstd = np.ascontiguousarray(smutabstd)
+    smutabstd = np.ascontiguousarray(smutabstd.astype(np.float64, copy=False))
     
     # Unpack tuples
     Hz_f, Hz_m, DA_f, DA_m = cosmos_tuple
@@ -59,28 +58,12 @@ def mapping_smudata_dense_cpp(
     sbin_sparse = int(sbin_sparse)
     mubin_sparse = int(mubin_sparse)
     
-    # Select appropriate precision version
-    if smutabstd.dtype == np.float32:
-        result = mapping_smudata_dense_cpp_float(
-            smutabstd,
-            sbin_dense, mubin_dense,
-            sbin_sparse, mubin_sparse,
-            float(Hz_f), float(Hz_m), float(DA_f), float(DA_m),
-            float(smin_all), float(smax_all), float(mumin_all), float(mumax_all),
-            float(smin_mapping), float(smax_mapping),
-            nthreads
-        )
-    elif smutabstd.dtype == np.float64:
-        result = mapping_smudata_dense_cpp_double(
-            smutabstd,
-            sbin_dense, mubin_dense,
-            sbin_sparse, mubin_sparse,
-            Hz_f, Hz_m, DA_f, DA_m,
-            smin_all, smax_all, mumin_all, mumax_all,
-            smin_mapping, smax_mapping,
-            nthreads
-        )
-    else:
-        raise ValueError(f"Unsupported dtype: {smutabstd.dtype}. Must be float32 or float64.")
-    
-    return result
+    return mapping_smudata_dense(
+        smutabstd,
+        sbin_dense, mubin_dense,
+        sbin_sparse, mubin_sparse,
+        float(Hz_f), float(Hz_m), float(DA_f), float(DA_m),
+        float(smin_all), float(smax_all), float(mumin_all), float(mumax_all),
+        float(smin_mapping), float(smax_mapping),
+        nthreads
+    )

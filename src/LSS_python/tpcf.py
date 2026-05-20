@@ -126,6 +126,11 @@ class xismu(object):
                 raise ValueError("sbin or mubin is not equal to the data")
         else:
             raise ValueError("data_type must be CUTE or BINARY")
+
+        if self.DD is None or self.DR is None or self.RR is None:
+            raise ValueError("DD, DR, RR must be set")
+        if self.DDnorm is None or self.DRnorm is None or self.RRnorm is None:
+            raise ValueError("DDnorm, DRnorm, RRnorm must be set")
         
         self._check_data_not_None(types=["pairs", ])
         self.DD = self.DD / self.DDnorm 
@@ -142,6 +147,10 @@ class xismu(object):
         result_dict = {}
         result_dict["with_weight"] = with_weight
         self._check_data_not_None(types=["pairs", ])
+        if self.DD is None or self.DR is None or self.RR is None:
+            raise ValueError("DD, DR, RR must be set")
+        if self.DDnorm is None or self.DRnorm is None or self.RRnorm is None:
+            raise ValueError("DDnorm, DRnorm, RRnorm must be set")
         if with_weight:
             result_dict["DDwpairs"] = self.DD * self.DDnorm 
             result_dict["RRwpairs"] = self.RR * self.RRnorm 
@@ -260,6 +269,8 @@ class xismu(object):
         if hasattr(self, "s_array"):
             s_array = self.s_array
             if s_array is None:
+                if self.S is None:
+                    raise ValueError("S must be set before getting s_array")
                 s_array = np.mean(self.S, axis=1)
         else:
             if self.S is None:
@@ -269,6 +280,8 @@ class xismu(object):
         if hasattr(self, "mu_array"):
             mu_array = self.mu_array
             if mu_array is None:
+                if self.Mu is None:
+                    raise ValueError("Mu must be set before getting mu_array")
                 mu_array = np.mean(self.Mu, axis=0)
         else:
             if self.Mu is None:
@@ -425,6 +438,9 @@ class xismu(object):
         DAstd = DA_jit(redshift, omstd, wstd, wastd)
         DAnew = DA_jit(redshift, omwrong, wwrong, wawrong)
 
+        if self.DD is None or self.DR is None or self.RR is None:
+            raise ValueError("DD, DR, RR must be set before converting")
+
         data = np.concatenate(
             [
                 self.DD[:, :, np.newaxis],
@@ -492,6 +508,11 @@ class xismu(object):
         DAstd = DA(redshift, omstd, wstd, wawrong)
         DAnew = DA(redshift, omwrong, wwrong, wawrong)
 
+        if self.DD is None or self.DR is None or self.RR is None:
+            raise ValueError("DD, DR, RR must be set before converting")
+        if self.DDnorm is None or self.DRnorm is None or self.RRnorm is None:
+            raise ValueError("DDnorm, DRnorm, RRnorm must be set before converting")
+
         data = np.concatenate(
             [
                 self.DD[:, :, np.newaxis],
@@ -503,6 +524,7 @@ class xismu(object):
         # if test_mode:
         if c_api:
             from .CPP.AP import mapping_smudata_dense_cpp
+            data = data.astype(np.float64, copy=False)
             new_data = mapping_smudata_dense_cpp(
                 data,
                 (Hstd, Hnew, DAstd, DAnew),

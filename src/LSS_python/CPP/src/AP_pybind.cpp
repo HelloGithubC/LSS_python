@@ -8,10 +8,7 @@
 
 namespace py = pybind11;
 
-/**
- * @brief Python binding for mapping_smudata_dense_cpp with float64 precision
- */
-py::array_t<double> mapping_smudata_dense_cpp_double(
+py::array_t<double> mapping_smudata_dense_pybind(
     py::array_t<double> smutabstd,
     size_t sbin_dense, size_t mubin_dense,
     size_t sbin_sparse, size_t mubin_sparse,
@@ -40,7 +37,7 @@ py::array_t<double> mapping_smudata_dense_cpp_double(
     std::vector<double> smutabstd_vec(ptr, ptr + buf.size);
     
     // Call C++ function
-    std::vector<double> result_vec = mapping_smudata_dense_cpp<double>(
+    std::vector<double> result_vec = mapping_smudata_dense(
         smutabstd_vec,
         sbin_dense, mubin_dense,
         sbin_sparse, mubin_sparse,
@@ -59,63 +56,12 @@ py::array_t<double> mapping_smudata_dense_cpp_double(
     return result;
 }
 
-/**
- * @brief Python binding for mapping_smudata_dense_cpp with float32 precision
- */
-py::array_t<float> mapping_smudata_dense_cpp_float(
-    py::array_t<float> smutabstd,
-    size_t sbin_dense, size_t mubin_dense,
-    size_t sbin_sparse, size_t mubin_sparse,
-    float Hz_f, float Hz_m, float DA_f, float DA_m,
-    float smin_all, float smax_all, float mumin_all, float mumax_all,
-    float smin_mapping, float smax_mapping,
-    int nthreads = 1
-) {
-    // Get buffer info for input array
-    auto buf = smutabstd.request();
-    
-    // Validate input shape
-    if (buf.ndim != 3) {
-        throw std::runtime_error("Input array must be 3-dimensional");
-    }
-    if (buf.shape[0] != static_cast<py::ssize_t>(sbin_dense) || 
-        buf.shape[1] != static_cast<py::ssize_t>(mubin_dense)) {
-        throw std::runtime_error("Input array shape does not match sbin_dense and mubin_dense");
-    }
-    
-    // Get element size from third dimension
-    size_t element_size = buf.shape[2];
-    
-    // Convert to flat vector for C++ function
-    float* ptr = static_cast<float*>(buf.ptr);
-    std::vector<float> smutabstd_vec(ptr, ptr + buf.size);
-    
-    // Call C++ function
-    std::vector<float> result_vec = mapping_smudata_dense_cpp<float>(
-        smutabstd_vec,
-        sbin_dense, mubin_dense,
-        sbin_sparse, mubin_sparse,
-        Hz_f, Hz_m, DA_f, DA_m,
-        smin_all, smax_all, mumin_all, mumax_all,
-        smin_mapping, smax_mapping,
-        nthreads
-    );
-    
-    // Create output numpy array
-    py::array_t<float> result = py::array_t<float>(
-        {sbin_sparse, mubin_sparse, element_size},
-        result_vec.data()
-    );
-    
-    return result;
-}
-
 PYBIND11_MODULE(AP_pybind, m) {
     m.doc() = "AP effect dense-to-sparse conversion based on pybind11";
     
-    m.def("mapping_smudata_dense_cpp_float", &mapping_smudata_dense_cpp_float,
+    m.def("mapping_smudata_dense", &mapping_smudata_dense_pybind,
           R"pbdoc(
-            Map dense (s, mu) grid data to sparse grid with AP effect conversion (float precision).
+            Map dense (s, mu) grid data to sparse grid with AP effect conversion.
             
             Parameters
             ----------
@@ -156,17 +102,6 @@ PYBIND11_MODULE(AP_pybind, m) {
             -------
             numpy.ndarray (sbin_sparse, mubin_sparse, element_size)
                 Mapped data array.
-          )pbdoc",
-          py::arg("smutabstd"), py::arg("sbin_dense"), py::arg("mubin_dense"),
-          py::arg("sbin_sparse"), py::arg("mubin_sparse"),
-          py::arg("Hz_f"), py::arg("Hz_m"), py::arg("DA_f"), py::arg("DA_m"),
-          py::arg("smin_all"), py::arg("smax_all"), py::arg("mumin_all"), py::arg("mumax_all"),
-          py::arg("smin_mapping"), py::arg("smax_mapping"), py::arg("nthreads") = 1);
-    
-    m.def("mapping_smudata_dense_cpp_double", &mapping_smudata_dense_cpp_double,
-          R"pbdoc(
-            Map dense (s, mu) grid data to sparse grid with AP effect conversion (double precision).
-            Same arguments as mapping_smudata_dense_cpp_float but with float64 arrays.
           )pbdoc",
           py::arg("smutabstd"), py::arg("sbin_dense"), py::arg("mubin_dense"),
           py::arg("sbin_sparse"), py::arg("mubin_sparse"),
