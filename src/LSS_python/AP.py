@@ -2,8 +2,9 @@ import numpy as np
 from numba import njit
 import math
 
-from .base import Hz, DA, cal_HI_factor
+from .base import Hz, DA
 from .tpcf import xismu
+from .HI import cal_HI_factor
 
 def tpcf_convert_main(xismu:xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0,smin_mapping=3.0, smax_mapping=60.0, c_api=True) -> xismu | None:
     if xismu.xis is not None:
@@ -12,9 +13,8 @@ def tpcf_convert_main(xismu:xismu, omega_mf, w_f, omega_mm, w_m, redshift, conve
     else:
         raise ValueError("xismu.xis is None")
 
-    if abs(omega_mm - omega_mf) < 1e-8 and abs(w_m - w_f) < 1e-8 and abs(wa_m - wa_f) < 1e-8:
-        return assis_xismu
-    if redshift < 1e-5:
+    if abs(omega_mm - omega_mf) < 1e-8 and abs(w_m - w_f) < 1e-8 and abs(wa_m - wa_f) < 1e-8 or redshift < 1e-5:
+        print("Warning: omega_mm and w_m is too close to omega_mf and w_f, or redshift is too small, return xismu directly")
         return assis_xismu
 
     if convert_method == "dense":

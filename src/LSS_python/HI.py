@@ -3,6 +3,18 @@ from numba import njit, prange
 
 from .base import yntra
 
+def cal_HI_factor(redshift, omega_m, V_cell, h=0.677, omega_b=0.049):
+    rho_c = 27.752 # in h^2 (1e+10 Msun) Mpc^-3
+    rho_b = rho_c * omega_b
+    HI_factor = (
+        (1.0 / V_cell)
+        / (rho_b * 0.76)
+        * 27
+        * ((0.15 / (omega_m * h ** 2)) * (1 + redshift) / 10.0) ** (0.5)
+        * (omega_b * h**2 / 0.023)
+    )
+    return HI_factor
+
 
 # ============================================================================
 # Core HI Mass Calculation Functions (JIT-compiled)
