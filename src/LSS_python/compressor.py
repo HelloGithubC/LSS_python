@@ -849,6 +849,7 @@ class CompressorSeries:
                 )
 
         self.compressors = compressors
+        self.names = [compressor.name for compressor in compressors]
 
     def transform(self, X: np.ndarray) -> np.ndarray:
         """Apply each compressor's transform sequentially."""
