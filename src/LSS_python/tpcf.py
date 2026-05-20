@@ -259,6 +259,8 @@ class xismu(object):
 
         if hasattr(self, "s_array"):
             s_array = self.s_array
+            if s_array is None:
+                s_array = np.mean(self.S, axis=1)
         else:
             if self.S is None:
                 raise ValueError("S must be set before getting s_array")
@@ -266,6 +268,8 @@ class xismu(object):
         
         if hasattr(self, "mu_array"):
             mu_array = self.mu_array
+            if mu_array is None:
+                mu_array = np.mean(self.Mu, axis=0)
         else:
             if self.Mu is None:
                 raise ValueError("Mu must be set before getting mu_array")
@@ -474,20 +478,19 @@ class xismu(object):
         assistant_xismu=None, 
         wastd=0.0,
         wawrong=0.0,
-        c_api=False,
+        c_api=True,
     ):
-        from ._AP_core import mapping_smudata_to_another_cosmology_DenseToSparse, mapping_smudata_dense
-        from .base import Hz_w0wa_jit, DA_jit
+        from .base import Hz_w0wa, DA
 
         if int(self.sbin) == 150 and int(self.mubin) == 120:
             raise ValueError(
                 "Check your sbin and mubin of xismu. You are using dense convertor!"
             )
         redshift = max(redshift, 0.0001)
-        Hstd = Hz_w0wa_jit(redshift, omstd, wstd, wastd)
-        Hnew = Hz_w0wa_jit(redshift, omwrong, wwrong, wawrong)
-        DAstd = DA_jit(redshift, omstd, wstd, wawrong)
-        DAnew = DA_jit(redshift, omwrong, wwrong, wawrong)
+        Hstd = Hz_w0wa(redshift, omstd, wstd, wastd)
+        Hnew = Hz_w0wa(redshift, omwrong, wwrong, wawrong)
+        DAstd = DA(redshift, omstd, wstd, wawrong)
+        DAnew = DA(redshift, omwrong, wwrong, wawrong)
 
         data = np.concatenate(
             [
@@ -508,6 +511,7 @@ class xismu(object):
                 (smin_mapping, smax_mapping, 0.0, 1.0),
             )
         else:
+            from ._AP_core import mapping_smudata_dense
             new_data = mapping_smudata_dense(
                 data, 
                 (Hstd, Hnew, DAstd, DAnew),
@@ -801,7 +805,7 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
 
     return result_dict
 
-def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, compressors_list=None, **kwargs) -> np.ndarray:
+def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, compressor=None, **kwargs) -> np.ndarray:
     """
     kwargs:
         smin, smax: float, default 6.0, 40.0
@@ -837,7 +841,7 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, compresso
         shift = 0
     tpcf_diff_list_list = []
 
-    if compressors_list is None:
+    if compressor is None:
         use_compressor = False 
     else:
         use_compressor  = True 
@@ -862,27 +866,19 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, compresso
             tpcf_diff_list.append(xi_mu_temp_diff)
         tpcf_diff_list_list.append(np.array(tpcf_diff_list))
 
+    diff_array = np.concatenate(tpcf_diff_list_list, axis=1)
 
     # Apply PCA transformation if needed
     if use_compressor:
-        if isinstance(compressors_list, list):
-            # Multiple compressors: transform each local segment separately
-            transformed_segments = []
-            for i, local_array in enumerate(tpcf_diff_list_list):
-                # Each local_array shape: (size, n_bins), transform each sample
-                transformed = compressors_list[i].transform(local_array)
-                transformed_segments.append(transformed)
-            result_array = np.concatenate(transformed_segments, axis=1)
-        elif isinstance(compressors_list, Compressor):
-            result_array = np.concatenate(tpcf_diff_list_list, axis=1)
-            # Single compressor: transform the whole concatenated array
-            result_array = compressors_list.transform(result_array)
+        from .compressor import Compressor, CompressorSeries
+        if isinstance(compressor, CompressorSeries) or isinstance(compressor, Compressor):
+            result_array = compressor.transform(diff_array)
         else:
             raise ValueError("compressors_list must be a list of Compressor or a single Compressor")
     else:
-        result_array = np.concatenate(tpcf_diff_list_list, axis=1)
+        result_array = diff_array
     
-    if len(result_array) == 1:
+    if result_array.shape[0] == 1:
         result_array = result_array[0]
 
     if return_mu:
