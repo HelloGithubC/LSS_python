@@ -364,8 +364,10 @@ class FFTPower:
         
         return self.power
     
-    def intergrate_fftpower(self, k_min=-1.0, k_max=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", use_fix_mu=False, norm=False, bin_pack=1, remove_last_bin=False, use_modes=False):
+    def intergrate_fftpower(self, k_min=-1.0, k_max=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", use_fix_mu=False, norm=False, bin_pack=1, remove_last_bin=False, use_modes=False, with_k2=False):
         from .base import packarray
+        if with_k2 and use_modes:
+            raise ValueError("with_k2 and use_modes cannot be True at the same time")
         if not isinstance(bin_pack, int):
             bin_pack = int(bin_pack)
         if bin_pack > 1:
@@ -421,6 +423,9 @@ class FFTPower:
         mu_need = mu_array[mu_min_index: mu_max_index]
         k_need = k_array[k_min_index:k_max_index]
         if integrate == "k":
+            # Apply k^2 weighting before integration
+            if with_k2:
+                Pkmu_select = Pkmu_select * k_need[:, np.newaxis] ** 2        
             if use_modes:
                 # Weighted average based on mode counts, handling NaN values in Pkmu_select
                 weights = np.where(modes_select > 0, modes_select, 0.0)
@@ -452,6 +457,10 @@ class FFTPower:
                 Pkmu_integrate = packarray(Pkmu_integrate, bin_pack=bin_pack, axis=0)
             return mu_need, Pkmu_integrate
         elif integrate == "mu":
+            # Apply k^2 weighting before integration
+            if with_k2:
+                Pkmu_select = Pkmu_select * k_need[:, np.newaxis] ** 2
+            
             if use_modes:
                 # Weighted average based on mode counts, handling NaN values in Pkmu_select
                 weights = np.where(modes_select > 0, modes_select, 0.0)
@@ -591,3 +600,58 @@ class FFTPower2D:
         self.attrs = load_dict["attrs"]
         self.removed_shotnoise = load_dict.get("removed_shotnoise", False)
         return self
+    
+    @classmethod
+    def save_list(cls, filename, iterable):
+        """
+        Save multiple FFTPpower2D objects to a single file.
+        
+        Args:
+            filename: Output file path
+            iterable: An iterable of FFTPpower2D objects
+        """
+        import joblib
+        
+        save_list = []
+        for obj in iterable:
+            save_dict = {
+                "k_2d": obj.k_2d,
+                "ps_2d": obj.ps_2d,
+                "modes_2d": obj.modes_2d,
+                "attrs": obj.attrs,
+                "removed_shotnoise": obj.removed_shotnoise,
+            }
+            save_list.append(save_dict)
+        
+        dir_part = os.path.dirname(filename)
+        if not os.path.exists(dir_part):
+            os.makedirs(dir_part)
+        joblib.dump(save_list, filename)
+    
+    @classmethod
+    def load_list(cls, filename):
+        """
+        Load multiple FFTPpower2D objects from a file.
+        
+        Args:
+            filename: Input file path
+        
+        Returns:
+            A list of FFTPpower2D objects
+        """
+        import joblib
+        
+        load_list = joblib.load(filename)
+        obj_list = []
+        for load_dict in load_list:
+            obj = cls(
+                load_dict["attrs"]["Nmesh"],
+                load_dict["attrs"]["BoxSize"],
+            )
+            obj.k_2d = load_dict["k_2d"]
+            obj.ps_2d = load_dict["ps_2d"]
+            obj.modes_2d = load_dict["modes_2d"]
+            obj.attrs = load_dict["attrs"]
+            obj.removed_shotnoise = load_dict.get("removed_shotnoise", False)
+            obj_list.append(obj)
+        return obj_list
