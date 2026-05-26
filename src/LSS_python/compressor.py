@@ -356,7 +356,8 @@ class Compressor:
             Compressed data. Shape matches input: if input is 1D, output is 1D;
             if input is 2D, output is 2D.
         """
-        return self.fit(X_signal, *args, **kwargs).transform(X_signal)
+        self.fit(X_signal, *args, **kwargs)
+        return self.transform(X_signal)
 
     # =========================================================================
     # PCA implementation

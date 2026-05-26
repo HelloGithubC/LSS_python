@@ -84,7 +84,7 @@ def comov_dist(z, omega_m, w=-1.0, z_start=0.0, z_point=1000, wa=0.0):
             H_inv_array[i] = 1.0 / Hz(z[i], omega_m, w)
     return 0.5 * CONST_C * np.sum(dz * (H_inv_array[1:] + H_inv_array[:-1]))
 
-def traz(V_array, x_array, y_array=None):
+def traz(V_array, x_array, y_array=None) -> float:
     """ A simple function to calculate the trapezoidal integration. Only support mesh when y_array is set.
     
     V_array: Must be the same shape with x_array(1D) or np.meshgrid(x_array, y_array, "ij")
@@ -109,6 +109,7 @@ def traz(V_array, x_array, y_array=None):
         delta_Y_mesh = Y_mesh[1:, 1:] - Y_mesh[:-1, :-1]
         total_V = 0.25 * np.sum(delta_X_mesh * delta_Y_mesh * (V_array[1:,1:] + V_array[:-1,:-1] + V_array[1:,:-1] + V_array[:-1,1:]))
         return total_V
+    return 0.0
 
 def packarray(array, bin_pack=1, axis=-1):
     """Pack the array along the given axis by averaging over bins.

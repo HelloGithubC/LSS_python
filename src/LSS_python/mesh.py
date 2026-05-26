@@ -179,7 +179,8 @@ class Mesh:
                 pos_e = pos_e.astype(np.float32)
             
             # Map all coordinates to [0, BoxSize) using modulo operation
-            pos_e = pos_e % self.BoxSize
+            # Keep original dtype to avoid type promotion (float32 -> float64)
+            pos_e = (pos_e % self.BoxSize).astype(pos_e.dtype, copy=False)
             
             weight_e = weights_list[i]
             if weight_e is not None:
