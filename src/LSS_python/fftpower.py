@@ -655,3 +655,59 @@ class FFTPower2D:
             obj.removed_shotnoise = load_dict.get("removed_shotnoise", False)
             obj_list.append(obj)
         return obj_list
+
+def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, kmin=0.1, kmax=2.1, dk=0.02, shift=5,integrate_func=None, integrate_kwargs=None, **kwargs):
+    """ The main function to get diff 
+    integrate_func: the function to integrate the fftpower_2d (default: intergrate_fftpower). If set, the first argument must be FFTPower2D.
+    integrate_kwargs: the kwargs for the integrate_func if integrate_func is not intergrate_fftpower (default: None)
+    kwargs:
+        k_min: the minimum k for the integration. Only used when integrate_func is intergrate_fftpower (default: 0.1)
+        k_max: the maximum k for the integration Only used when integrate_func is intergrate_fftpower (default: 2.1)
+        mu_min and mu_max: the minimum and maximum mu for the integration (default: 0.0 and 1.0). Can be used when integrate_func is intergrate_fftpower
+        with_modes: whether to include modes (default: False)
+    """
+    if integrate_func is None:
+        k_min = kwargs.get("k_min", 0.3)
+        k_max = kwargs.get("k_max", 0.8)
+    else:
+        k_min = k_max = 0.0
+    
+    mu_min = kwargs.get("mu_min", -1.0)
+    mu_max = kwargs.get("mu_max", -1.0)
+
+    with_modes = kwargs.get("with_modes", False)
+    with_k2 = kwargs.get("with_k2", False)
+    remove_last_bin = kwargs.get("remove_last_bin", True)
+
+    Pmu_array_list = []
+    for snap_id in snap_ids:
+        fftpower_2d_list = fftpowers_2d_dict[snap_id]
+        if isinstance(fftpower_2d_list, FFTPower2D) or isinstance(fftpower_2d_list, FFTPower):
+            fftpower_2d_list = [fftpower_2d_list, ]
+        elif isinstance(fftpower_2d_list, list) or isinstance(fftpower_2d_list, tuple) or (fftpower_2d_list, np.ndarray):
+            pass 
+        else:
+            raise ValueError(f"fftpower_2d_list must be a list (tuple) or a dict, but got {type(fftpower_2d_list)}")
+        
+        if len(fftpower_2d_list) == 1:
+            shift = 0
+        
+        Pmu_list = []
+        for fftpower_2d in fftpower_2d_list:
+            if isinstance(fftpower_2d, FFTPower2D):
+                fftpower_temp = fftpower_2d.cal_pkmu_from_ps_2d(kmin=kmin, kmax=kmax, dk=dk, Nmu=Nmu, mode="2d", nthreads=1, c_api=True)
+            else:
+                fftpower_temp = fftpower_2d
+            if integrate_func is None:
+                Pmu_temp = fftpower_temp.intergrate_fftpower(k_min=k_min, k_max=k_max, mu_min=mu_min, mu_max=mu_max, use_fix_mu=True, norm=True, use_modes=with_modes, with_k2=with_k2, remove_last_bin=remove_last_bin)[1]
+            else:
+                if integrate_kwargs is None or not isinstance(integrate_kwargs, dict):
+                    raise ValueError(f"integrate_kwargs must be a dict, but got {type(integrate_kwargs)}")
+                Pmu_temp = integrate_func(fftpower_temp, **integrate_kwargs)
+            Pmu_list.append(Pmu_temp)
+        Pmu_array_list.append(np.array(Pmu_list))
+    Pmu_array = np.roll(Pmu_array_list[0], shift, axis=0) - np.array(Pmu_array_list[1])
+    if len(Pmu_array) == 1:
+        return Pmu_array[0]
+    else:
+        return Pmu_array
