@@ -590,7 +590,7 @@ class xismu(object):
             RR=temp_RR,
         )
 
-def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, run_parts=["all"], refine_factors=(2, 2, 1), output_dict=None, nthreads=1, verbose=False):
+def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, run_parts=["all"], refine_factors=(2, 2, 1), output_dict=None, nthreads=1, verbose=False):
     """
     data_catalog & random_catalog: ndarray, three cols: [x, y, z](without weight) or four cols: [x, y, z, weight]
     run_parts: List. Support all, ALL, DD, DR, RR. If including all or ALL, run_parts will be set to ["DD", "DR", "RR"]
@@ -634,9 +634,9 @@ def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, 
                 if verbose:
                     print("Now running DD", flush=True)
                 if with_weight:
-                    DD_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=data_catalog[:,0], Y1=data_catalog[:,1], Z1=data_catalog[:,2], weights1=data_catalog[:,3], weight_type="pair_product", verbose=verbose, periodic=False, boxsize=boxsize, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                    DD_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=data_catalog[:,0], Y1=data_catalog[:,1], Z1=data_catalog[:,2], weights1=data_catalog[:,3], weight_type="pair_product", verbose=verbose, periodic=False, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 else:
-                    DD_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=data_catalog[:,0], Y1=data_catalog[:,1], Z1=data_catalog[:,2], verbose=verbose, periodic=False, boxsize=boxsize, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                    DD_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=data_catalog[:,0], Y1=data_catalog[:,1], Z1=data_catalog[:,2], verbose=verbose, periodic=False, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 result_dict["DD"] = DD_result
                 if output_DD is not None:
                     joblib.dump(DD_result, output_DD)
@@ -649,9 +649,9 @@ def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, 
                     print("Now running DR", flush=True)
                 autocorr = False 
                 if with_weight:
-                    DR_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=data_catalog[:,0], Y1=data_catalog[:,1], Z1=data_catalog[:,2], weights1=data_catalog[:,3], X2=random_catalog[:,0], Y2=random_catalog[:,1], Z2=random_catalog[:,2], weights2=random_catalog[:,3], weight_type="pair_product", verbose = verbose, periodic=False, boxsize=boxsize, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                    DR_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=data_catalog[:,0], Y1=data_catalog[:,1], Z1=data_catalog[:,2], weights1=data_catalog[:,3], X2=random_catalog[:,0], Y2=random_catalog[:,1], Z2=random_catalog[:,2], weights2=random_catalog[:,3], weight_type="pair_product", verbose = verbose, periodic=False, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 else:
-                    DR_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=data_catalog[:,0], Y1=data_catalog[:,1], Z1=data_catalog[:,2], X2=random_catalog[:,0], Y2=random_catalog[:,1], Z2=random_catalog[:,2], verbose = verbose, periodic=False, boxsize=boxsize, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                    DR_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=data_catalog[:,0], Y1=data_catalog[:,1], Z1=data_catalog[:,2], X2=random_catalog[:,0], Y2=random_catalog[:,1], Z2=random_catalog[:,2], verbose = verbose, periodic=False, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 result_dict["DR"] = DR_result
                 if output_DR is not None:
                     joblib.dump(DR_result, output_DR)
@@ -664,9 +664,9 @@ def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, boxsize, 
                     print("Now running RR", flush=True)
                 autocorr = True 
                 if with_weight:
-                    RR_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=random_catalog[:,0], Y1=random_catalog[:,1], Z1=random_catalog[:,2], weights1=random_catalog[:,3], weight_type="pair_product", verbose = verbose, periodic=False, boxsize=boxsize, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                    RR_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=random_catalog[:,0], Y1=random_catalog[:,1], Z1=random_catalog[:,2], weights1=random_catalog[:,3], weight_type="pair_product", verbose = verbose, periodic=False, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 else:
-                    RR_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=random_catalog[:,0], Y1=random_catalog[:,1], Z1=random_catalog[:,2], verbose = verbose, periodic=False, boxsize=boxsize, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
+                    RR_result = DDsmu(autocorr, nthreads=nthreads, binfile=sedges, mu_max=1.0, nmu_bins=mubin, X1=random_catalog[:,0], Y1=random_catalog[:,1], Z1=random_catalog[:,2], verbose = verbose, periodic=False, xbin_refine_factor=x_refine_factor, ybin_refine_factor=y_refine_factor, zbin_refine_factor=z_refine_factor)
                 result_dict["RR"] = RR_result
                 if output_RR is not None:
                     joblib.dump(RR_result, output_RR)
