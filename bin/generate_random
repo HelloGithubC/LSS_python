@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""
+Generate 3D uniform random coordinates with a weight column (fixed to 1).
+"""
+
+import argparse
+import numpy as np
+import sys
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate 3D uniform random coordinates (x, y, z, weight) with weight fixed to 1."
+    )
+    parser.add_argument(
+        "boxsize",
+        type=float,
+        help="Box side length; coordinates are uniformly sampled in [0, boxsize)",
+    )
+    parser.add_argument(
+        "number",
+        type=int,
+        help="Number of random points to generate",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default="./random_temp.npy",
+        help="Output file path (npy format), default is ./random_temp.npy",
+    )
+    parser.add_argument(
+        "-double",
+        action="store_true",
+        help="Use np.float64 as data type; default is np.float32",
+    )
+
+    # Print help and exit if no arguments are provided
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(1)
+
+    args = parser.parse_args()
+
+    dtype = np.float64 if args.double else np.float32
+
+    # Generate 3D uniform coordinates
+    coords = np.random.uniform(0, args.boxsize, size=(args.number, 3)).astype(dtype)
+    # Weight column fixed to 1
+    weights = np.ones((args.number, 1), dtype=dtype)
+    data = np.concatenate([coords, weights], axis=1)
+
+    np.save(args.output, data)
+    print(f"Data saved to: {args.output}")
+    print(f"Shape: {data.shape}, data type: {dtype.__name__}")
+
+
+if __name__ == "__main__":
+    main()
