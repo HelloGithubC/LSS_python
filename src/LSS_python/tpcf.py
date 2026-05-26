@@ -359,16 +359,23 @@ class xismu(object):
 
         return result_dict
     
-    def get_specific_2d(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, norm_smax=45, mupack=1, is_norm=True):
+    def get_specific_2d(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, norm_smax=45, is_norm=True):
         if hasattr(self, "s_array"):
             s_array = self.s_array
         else:
+            if self.S is None:
+                raise ValueError("S must be set before getting s_array")
             s_array = np.mean(self.S, axis=1)
         
         if hasattr(self, "mu_array"):
             mu_array = self.mu_array
         else:
+            if self.Mu is None:
+                raise ValueError("Mu must be set before getting mu_array")
             mu_array = np.mean(self.Mu, axis=0)
+
+        if s_array is None or mu_array is None:
+            raise ValueError("s_array and mu_array must be set")
         norm_smax_index_source = np.where(s_array >= norm_smax)[0]
         if len(norm_smax_index_source) == 0:
             norm_smax_index = len(s_array)
@@ -377,16 +384,13 @@ class xismu(object):
         
         S_mesh, Mu_mesh = np.meshgrid(s_array, mu_array, indexing="ij")
         if not hasattr(self, "xis") or self.xis is None:
+            if self.DD is None or self.DR is None or self.RR is None:
+                raise ValueError("DD, DR, RR must be set before getting xis")
             self.xis = (self.DD - 2 * self.DR + self.RR) / self.RR
-        if mupack > 1:
-            S_mesh = packarray2d(S_mesh, mupack, axis=1)
-            Mu_mesh = packarray2d(Mu_mesh, mupack, axis=1)
-            self.xis = packarray2d(self.xis, mupack, axis=1)
-            mu_array = packarray1d(mu_array, mupack)
         
         if is_norm:
             V_mesh = S_mesh**2 * self.xis
-            norm_factor = 2 * np.pi * traz(V_mesh[:norm_smax_index, :], s_array[:norm_smax_index], mu_array)
+            norm_factor = 2.0 * np.pi * traz(V_mesh[:norm_smax_index, :], s_array[:norm_smax_index], mu_array)
         else:
             norm_factor = 1.0
 
@@ -907,3 +911,95 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, compresso
         return np.vstack((mu_temp_1, result_array))
     else:
         return result_array
+
+
+def get_diff_array_2d(tpcf_dict_list, snap_ids, shift=5, compressor=None, **kwargs) -> np.ndarray:
+    """
+    Get difference array from 2D tpcf data using get_specific_2d method.
+    
+    Parameters
+    tpcf_dict_list : dict or list of dict
+        Dictionary or list of dictionaries containing tpcf data
+    snap_ids : list
+        List of two snapshot IDs to compare
+    shift : int, default 5
+        Shift index for comparison
+    compressor : Compressor or CompressorSeries, optional
+        Compressor for PCA transformation
+    **kwargs : dict
+        Additional arguments for get_specific_2d:
+        - smin, smax: float, default 6.0, 40.0
+        - mumin, mumax: float, default 0.0, 0.97
+        - norm_smax: float, default 45.0
+    
+    Returns
+    np.ndarray
+        Difference array after processing and optional compression
+    """
+    # Get parameters for get_specific_2d
+    smin = kwargs.get("smin", 6.0)
+    smax = kwargs.get("smax", 40.0)
+    mumin = kwargs.get("mumin", 0.0)
+    mumax = kwargs.get("mumax", 0.97)
+    norm_smax = kwargs.get("norm_smax", 45.0)
+    # is_norm is fixed to True
+    
+    if isinstance(tpcf_dict_list, dict):
+        tpcf_dict_list = [tpcf_dict_list, ]
+    snap1, snap2 = snap_ids[0], snap_ids[1]
+    
+    # Ensure tpcf_dict_list[0][snap1] is a list, tuple, or array
+    first_snap_data = tpcf_dict_list[0][snap1]
+    if not isinstance(first_snap_data, (list, tuple, np.ndarray)):
+        first_snap_data = [first_snap_data]
+        single_xismu = True 
+    else:
+        single_xismu = False
+
+    size = len(first_snap_data)
+    if size == 1:
+        shift = 0
+    tpcf_diff_list_list = []
+
+    if compressor is None:
+        use_compressor = False 
+    else:
+        use_compressor = True 
+
+    for i_list in range(len(tpcf_dict_list)):
+        tpcf_diff_list = []
+        for i in range(size):
+            i_shift = i + shift
+            if i_shift >= size:
+                i_shift -= size
+            xismu_first = tpcf_dict_list[i_list][snap1][i] if not single_xismu else tpcf_dict_list[i_list][snap1]
+            xismu_second = tpcf_dict_list[i_list][snap2][i_shift] if not single_xismu else tpcf_dict_list[i_list][snap2]
+            
+            # Call get_specific_2d
+            result_dict_1 = xismu_first.get_specific_2d(smin=smin, smax=smax, mumin=mumin, mumax=mumax, norm_smax=norm_smax, is_norm=True)
+            result_dict_2 = xismu_second.get_specific_2d(smin=smin, smax=smax, mumin=mumin, mumax=mumax, norm_smax=norm_smax, is_norm=True)
+            
+            # Extract xis, flatten, and remove last element
+            xi_temp_1 = result_dict_1["xis"].flatten()[:-1]
+            xi_temp_2 = result_dict_2["xis"].flatten()[:-1]
+            
+            xi_temp_diff = (xi_temp_1 - xi_temp_2)
+            tpcf_diff_list.append(xi_temp_diff)
+        tpcf_diff_list_list.append(np.array(tpcf_diff_list))
+
+    diff_array = np.concatenate(tpcf_diff_list_list, axis=1)
+
+    # Apply PCA transformation if needed
+    if use_compressor:
+        from .compressor import Compressor, CompressorSeries
+        if isinstance(compressor, CompressorSeries) or isinstance(compressor, Compressor):
+            result_array = compressor.transform(diff_array)
+        else:
+            raise ValueError("compressors_list must be a list of Compressor or a single Compressor")
+    else:
+        result_array = diff_array
+    
+    if result_array.shape[0] == 1:
+        result_array = result_array[0]
+
+    return result_array
