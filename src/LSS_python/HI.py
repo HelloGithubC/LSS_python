@@ -20,7 +20,7 @@ def cal_HI_factor(redshift, omega_m, V_cell, h=0.677, omega_b=0.049):
 # Core HI Mass Calculation Functions (JIT-compiled)
 # ============================================================================
 
-@njit(cache=True)
+@njit
 def _M_HI_halo_scalar(Mh, z, h, alpha_grid, m0_grid, mmin_grid, mhard_grid, redshift_grid, grid_size):
     """
     Calculate HI mass for a single halo (internal JIT-compiled version).
@@ -71,7 +71,7 @@ def _M_HI_halo_scalar(Mh, z, h, alpha_grid, m0_grid, mmin_grid, mhard_grid, reds
     return M_HI
 
 
-@njit(cache=True)
+@njit
 def _M_HI_halo_vectorized(Mh_array, z, h, alpha_grid, m0_grid, mmin_grid, mhard_grid, redshift_grid, grid_size):
     """
     Calculate HI mass for an array of halo masses at a single redshift (internal version).

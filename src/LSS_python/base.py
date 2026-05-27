@@ -344,7 +344,7 @@ class CosmologyExact:
 # Interpolation Function (yntra)
 # ============================================================================
 
-@njit(cache=True)
+@njit
 def yntra(r, rw, fu, imax):
     """
     1-dimensional linear interpolation routine.
