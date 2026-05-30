@@ -1,106 +1,136 @@
 #!python -u
 
 import numpy as np 
-import argparse, os, sys
-import joblib
-
 from LSS_python.tpcf import run_tpCF_mock, cal_tpCF_from_pairs
+import joblib, os
+import argparse, sys
 
-def read_data(filename): # 临时版本
+def read_data(filename):
+    """读取数据，返回 (N, 4) 或 (N, 5) 的数组
+    列顺序: RA, DEC, R, WEIGHT [, WEIGHT_RHO]
+    """
     read_type = os.path.splitext(filename)[1]
     if read_type == ".npy":
-        data_temp = np.load(filename)
-        key_list = data_temp.dtype.names
-        if data_temp.dtype == np.float64 or data_temp.dtype == np.float32:
-            return data_temp
+        source = np.load(filename)
+        if source.dtype.names is not None:
+            n_col = len(source.dtype.names)
+            result = np.empty(shape=(len(source), n_col), dtype=source[source.dtype.names[0]].dtype)
+            for i, name in enumerate(source.dtype.names):
+                result[:, i] = source[name]
+            return result
+        else:
+            return source
     else:
-        data_temp = joblib.load(filename)
-        key_list = list(data_temp.keys())
+        source = joblib.load(filename)
+        if isinstance(source, dict):
+            key_list = list(source.keys())
+            n_col = len(key_list)
+            result = np.empty(shape=(len(source[key_list[0]]), n_col), dtype=source[key_list[0]].dtype)
+            for i, key in enumerate(key_list):
+                result[:, i] = source[key]
+            return result
+        else:
+            return source
 
-    n_col = 4 
-    if "WEIGHT_RHO" in key_list:
-        n_col += 1 
-    data_result = np.empty(shape=(len(data_temp["R"]), n_col), dtype=data_temp["R"].dtype)
-    data_result[:, 0] = data_temp["RA"]
-    data_result[:, 1] = data_temp["DEC"]
-    data_result[:, 2] = data_temp["R"]
-    data_result[:, 3] = data_temp["WEIGHT"]
-    if n_col == 5:
-        data_result[:, 4] = data_temp["WEIGHT_RHO"]
-    return data_result
+        
+parser = argparse.ArgumentParser(
+    prog="cal_2pCF_mock", usage="To cal 2pCF with Corrfunc for mock/survey data"
+)
 
-def split_filename(filename):
-    file_dir, file_name = os.path.split(filename)
-    if file_dir == "":
-        pass
-    else:
-        file_dir += "/"
-    file_name, file_ext = os.path.splitext(file_name)
-    return file_dir, file_name, file_ext
+parser.add_argument("mock_filename", help="Mock data filename. Format: RA, DEC, R(comoving distance), WEIGHT, [WEIGHT_RHO]")
+parser.add_argument("random_filename", help="Random catalog filename. Format: RA, DEC, R, WEIGHT")
+parser.add_argument("nthreads", type=int)
 
-parser = argparse.ArgumentParser(prog="run_mock_corr", usage="To run mock corr")
+parser.add_argument("-smin", type=float, default=0.0, help="Default 0.0")
+parser.add_argument("-smax", type=float, default=150.0, help="Default 150.0")
+parser.add_argument("-sbin", type=int, default=150, help="Default 150")
+parser.add_argument("-mubin", type=int, default=120, help="Default 120")
 
-parser.add_argument("mock_filename", help="data filename. Format: RA, DEC, Z(comving distance), Weight(not optional)")
-parser.add_argument("random_filename", help="random filename. Format: The same as mock_filename")
+parser.add_argument("--with_weight", "-ww", action="store_true", help="If set, will load the additional weight from 5th column (WEIGHT_RHO)")
+parser.add_argument("--xyz_refine_factors", "-refine", nargs=3, type=int, default=[2, 2, 1])
 
-parser.add_argument("--s_min", "-smin", type=float, default=0.0, help="The minimum separation. Default: 0.0")
-parser.add_argument("--s_max", "-smax", type=float, default=150.0, help="The maximum separation. Default: 150.0") 
-parser.add_argument("--s_bin", "-sbin", type=int, default=150, help="The s bin size. Default: 150")
-parser.add_argument("--mu_bin", "-mubin", type=int, default=120, help="The mu bin size. Default: 120")
-parser.add_argument("--with_weight", "-ww", action="store_true", help="Use addition weight. Note this is not the intrisic weight of survey, i.e. the forth column.")
-parser.add_argument("--weight_pow", "-wp", type=float, default=0.0, help="The weight power of the fifth column (rho). Default: 0.0 (default mean not weight, so with_weight will be ignored)")
-parser.add_argument("--weight_log", '-wlog', action="store_true")
-parser.add_argument("--xyz_refine_factors", "-xyz", type=int, nargs=3, default=[2, 2, 1], help="The refine factors for xyz. Default: [2, 2, 1]")
+parser.add_argument("--tpcf_filename", "-tpcf", help="Specify the output filename of tpCF or RR (when --only_run_rr set).", default=None)
+parser.add_argument("--rr_filename", "-rr", help="Force to specify the rr file.", default=None)
 
-parser.add_argument("--rr_filename", "-rr", help="The output filename for rr", default=None)
-parser.add_argument("--tpcf_filename", "-tpcf", help="The output filename for tpcf", default=None)
+parser.add_argument("--only_run_rr", "-only_rr", action="store_true")
+parser.add_argument("--save_dd_dr", "-savetemp", help="If set save DD and DR to re-use.", action="store_true")
+parser.add_argument("-force", "-f", action="store_true", help="Force to run tpCF, DD and DR, even if the result exists.")
+parser.add_argument("--force_rr", "-forcerr", action="store_true", help="Force to run RR, even if the result exists.")
 
-parser.add_argument("--nthreads", "-n", type=int, default=1, help="The number of threads to use")
-
-parser.add_argument("--save_dd_dr", "-save", action="store_true", help="Save the dd and dr")
-parser.add_argument("--only_run_rr", "-only_rr", action="store_true", help="Only run rr")
-parser.add_argument("--force", "-f", action="store_true", help="Force overwrite")
-parser.add_argument("--force_rr", "-frr", action="store_true", help="Force overwrite rr")
-parser.add_argument("--verbose", "-v", action="store_true", help="Verbose")
+parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output.")
 
 if len(sys.argv) == 1:
     parser.print_help()
-    sys.exit(0)
-args = parser.parse_args()
+    exit(0)
 
-mock_filename = args.mock_filename
-random_filename = args.random_filename
+argv = parser.parse_args()
 
-smin = args.s_min
-smax = args.s_max
-sbin = args.s_bin
-mubin = args.mu_bin
+mock_fileallname = argv.mock_filename
+random_fileallname = argv.random_filename
 
-with_weight = args.with_weight
-weight_power = args.weight_pow
-weight_log = args.weight_log
+nthreads = argv.nthreads
 
-xyz_refine_factors = args.xyz_refine_factors
+smin = argv.smin
+smax = argv.smax
+sbin = argv.sbin
+mubin = argv.mubin
+sedges = np.linspace(smin, smax, sbin+1)
 
-rr_filename = args.rr_filename
-tpcf_filename = args.tpcf_filename 
+with_weight = argv.with_weight
+xyz_refine_factors = argv.xyz_refine_factors
 
-nthreads = args.nthreads
+tpcf_filename = argv.tpcf_filename
+rr_filename = argv.rr_filename
 
-save_dd_dr = args.save_dd_dr
-only_run_rr = args.only_run_rr
-force = args.force
-force_rr = args.force_rr
-verbose = args.verbose
+only_run_rr = argv.only_run_rr
+save_dd_dr = argv.save_dd_dr 
+force = argv.force
+force_rr = argv.force_rr
+
+verbose = argv.verbose
 
 if not verbose:
     import warnings
     warnings.filterwarnings("ignore")
 
-if smin == 0.0:
-    smin = 1e-10
-sedges = np.linspace(smin, smax, sbin+1)
+mock_dir, mock_filename = os.path.split(mock_fileallname)
+if mock_dir:
+    mock_dir += "/"
+mock_filename, mock_fileext = os.path.splitext(mock_filename)
 
+random_dir, random_filename = os.path.split(random_fileallname)
+if random_dir:
+    random_dir += "/"
+random_filename, random_fileext = os.path.splitext(random_filename)
+
+# 设置输出文件名
+if rr_filename is not None:
+    RR_result_filename = rr_filename
+else:
+    RR_result_filename = "./RR_temp.pkl"
+
+if only_run_rr and not force_rr and os.path.exists(RR_result_filename):
+    print(f"RR file {RR_result_filename} exists, skipping")
+    exit(0)
+
+if not only_run_rr:
+    DD_result_filename = "./DD_temp.pkl"
+    DR_result_filename = "./DR_temp.pkl"
+    if tpcf_filename is not None:
+        tpCF_result_filename = tpcf_filename
+    else:
+        tpCF_result_filename = "./tpCF_temp.pkl"
+    if os.path.exists(tpCF_result_filename) and not force:
+        print("tpCF result exists, skip")
+        exit(0)
+
+# 读取数据
+mock_catalog = read_data(mock_dir + mock_filename + mock_fileext)
+random_catalog = read_data(random_dir + random_filename + random_fileext)
+
+# 确保数据类型一致
+if mock_catalog.dtype != random_catalog.dtype:
+    random_catalog = random_catalog.astype(mock_catalog.dtype)
 
 output_dict = {
     "DD": None,
@@ -108,43 +138,27 @@ output_dict = {
     "RR": None
 }
 
-if weight_power == 0.0:
-    with_weight = False 
-if with_weight:
-    weight_str = f"-weight{weight_power}"
-else:
-    weight_str = ""
-
-if rr_filename is None:
-    random_dir, random_file_name, random_file_ext = split_filename(random_filename)
-    rr_filename = random_dir + "RR-" + random_file_name + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
-
 if only_run_rr:
-    if not os.path.exists(rr_filename) or force_rr:
-        random_catalog = read_data(random_filename)
-        run_parts = ["RR"]
-        output_dict["RR"] = rr_filename
-        _ = run_tpCF_mock(None, random_catalog, sedges, mubin, with_weight, run_parts, xyz_refine_factors, output_dict, nthreads, verbose)
-    else:
-        print(f"{rr_filename} exists and not force_rr. Skip")
+    run_parts = ["RR"]
+    output_dict["RR"] = RR_result_filename
+    rr_dir, _ = os.path.split(RR_result_filename)
+    if rr_dir and not os.path.exists(rr_dir):
+        os.makedirs(rr_dir)
+    _ = run_tpCF_mock(None, random_catalog, sedges, mubin, with_weight, run_parts, xyz_refine_factors, output_dict, nthreads, verbose=verbose)
 else:
-    if os.path.exists(tpcf_filename) and not force:
-        print(f"{tpcf_filename} exists and not force. Skip")
-        exit(0)
-    mock_dir, mock_file_name, mock_file_ext = split_filename(mock_filename)
-    random_dir, random_file_name, random_file_ext = split_filename(random_filename)
-
     run_parts = []
-    if not os.path.exists(rr_filename) or force_rr:
-        output_dict["RR"] = rr_filename
+    for need_filename in (RR_result_filename, tpCF_result_filename):
+        need_dir, _ = os.path.split(need_filename)
+        if need_dir and not os.path.exists(need_dir):
+            os.makedirs(need_dir)
+    
+    if not os.path.exists(RR_result_filename) or force_rr:
+        output_dict["RR"] = RR_result_filename
         run_parts.append("RR")
         RR_result = None
     else:
-        RR_result = joblib.load(rr_filename)
+        RR_result = joblib.load(RR_result_filename)
     
-    DD_result_filename = mock_dir + "DD-" + mock_file_name + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
-    DR_result_filename = mock_dir + "DR-" + mock_file_name + "-" + random_file_name + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
-
     if not os.path.exists(DD_result_filename) or force:
         run_parts.append("DD")
         if save_dd_dr:
@@ -152,6 +166,7 @@ else:
         DD_result = None
     else:
         DD_result = joblib.load(DD_result_filename)
+    
     if not os.path.exists(DR_result_filename) or force:
         run_parts.append("DR")
         if save_dd_dr:
@@ -159,34 +174,12 @@ else:
         DR_result = None 
     else:
         DR_result = joblib.load(DR_result_filename)
-    
-    mock_catalog = read_data(mock_filename)
-    random_catalog = read_data(random_filename)
-
-    if mock_catalog.dtype != random_catalog.dtype:
-        random_catalog = random_catalog.astype(mock_catalog.dtype)
-
-    if with_weight:
-        weight_power_index = 4
-        if not only_run_rr:
-            if weight_log:
-                mock_weight = mock_catalog[:, weight_power_index]
-                mock_weight_log = np.log10(mock_weight)
-                weight_log_minus_index = mock_weight_log < 0.0
-                weight_log_positive_index = mock_weight_log > 0.0
-                mock_weight_log[weight_log_minus_index] = (1.0 / -mock_weight_log[weight_log_minus_index]) * 10.0
-                mock_weight_log[weight_log_positive_index] = mock_weight_log[weight_log_positive_index] * 10.0
-                mock_catalog[:, weight_power_index] = mock_weight_log
-            mock_catalog[:,weight_power_index] = mock_catalog[:,weight_power_index] ** float(weight_power)
         
-
-    result_dict = run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_parts, xyz_refine_factors, output_dict, nthreads, verbose)
+    result_dict = run_tpCF_mock(mock_catalog, random_catalog, sedges, mubin, with_weight, run_parts, xyz_refine_factors, output_dict, nthreads, verbose=verbose)
     
     DD_result = result_dict["DD"] if DD_result is None else DD_result 
     DR_result = result_dict["DR"] if DR_result is None else DR_result 
     RR_result = result_dict["RR"] if RR_result is None else RR_result
 
-    if tpcf_filename is None:
-        tpcf_filename = mock_dir + "tpCF-" + mock_file_name + "-" + random_file_name + f"{weight_str}-{sbin:d}s{smin:.0f}to{smax:.0f}_{mubin:d}mu.pkl"
-    tpCF_result = cal_tpCF_from_pairs(DD_result, DR_result, RR_result, mock_catalog, random_catalog, sbin, mubin, True)
-    joblib.dump(tpCF_result, tpcf_filename)
+    tpCF_result = cal_tpCF_from_pairs(DD_result, DR_result, RR_result, mock_catalog, random_catalog, sbin, mubin, with_weight)
+    joblib.dump(tpCF_result, tpCF_result_filename)
