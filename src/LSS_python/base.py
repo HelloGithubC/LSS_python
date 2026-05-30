@@ -40,7 +40,7 @@ def comov_dist_jit(z, omega_m, w=-1.0, z_start=0.0, z_point=1000, wa=0.0):
             H_inv_array[i] = 1.0 / Hz_jit(z[i], omega_m, w)
     return 0.5 * CONST_C * np.sum(dz * (H_inv_array[1:] + H_inv_array[:-1]))
 @njit(parallel=True)
-def comov_dist_array_jit(z_array, omega_m, w=-1.0, z_start=0.0, z_point=1000, nthreads=1, wa=0.0):
+def comov_dist_array_jit(z_array, omega_m, w=-1.0, z_start=0.0, z_point=100, nthreads=1, wa=0.0):
     comov_dist_array = np.empty(len(z_array), dtype=z_array.dtype)
     set_num_threads(nthreads)
     for j in prange(len(z_array)):
