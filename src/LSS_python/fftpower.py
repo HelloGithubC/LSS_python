@@ -530,7 +530,7 @@ class FFTPower2D:
         }
 
     def cal_ps_2d_from_mesh(
-        self, mesh, mesh_kernel=None, nthreads=1, device_id=-1, c_api=True, dk=-1,
+        self, mesh, mesh_kernel=None, nthreads=1, device_id=-1, c_api=True, dk:int|None=-1,
         compensated=True, force_create_complex_field=False
     ):
         if device_id >= 0:

@@ -98,7 +98,7 @@ class Mesh:
 
         return new
 
-    def to_mesh(self, pos, resampler="CIC", interlaced=False, weights=None, values=None, nthreads=1, device_id=-1, is_norm=True, field_extern=None, c_api=False, pybind=False) -> None:
+    def to_mesh(self, pos, resampler="CIC", interlaced=False, weights=None, values=None, nthreads=1, device_id=-1, is_norm=True, field_extern=None, c_api=True, pybind=True) -> None:
         """ The function to run CIC
         pos: ndarray, shape=(nparticle, 3); or list of ndarray
         resampler: str, the resampler to use, can be "NGP", "CIC", "TSC , "PCS"
@@ -373,6 +373,58 @@ class Mesh:
             else:
                 do_compensation_from_numba(self.complex_field, k_arrays, resampler=self.attrs["resampler"], interlace=self.attrs["interlaced"], nthreads=nthreads)
 
+    def do_downsampling(self, scale):
+        """Downsample the mesh to a lower resolution.
+
+        Reduces the grid resolution by a factor of `scale` in each dimension,
+        changing the mesh shape from ``Nmesh`` to ``Nmesh / scale``, and the
+        total number of grid cells by a factor of ``scale**3``.
+        Downsampling is done by average-pooling each ``scale x scale x scale``
+        block.
+
+        Parameters
+        ----------
+        scale : int
+            Downsampling factor. Must be an integer greater than 1, and must
+            evenly divide all dimensions of ``Nmesh``.
+
+        Returns
+        -------
+        np.ndarray
+            The downsampled real-space field as a plain numpy array, with the
+            same data type as the original field.
+        """
+        # Validate scale parameter
+        if not isinstance(scale, (int, np.integer)):
+            raise TypeError(f"scale must be an integer, got {type(scale)}")
+        if scale <= 1:
+            raise ValueError(f"scale must be greater than 1, got {scale}")
+        if np.any(self.Nmesh % scale != 0):
+            raise ValueError(
+                f"scale={scale} does not evenly divide all Nmesh dimensions. "
+                f"Nmesh={self.Nmesh}"
+            )
+
+        # Get the source array (prefer CPU data; transfer from GPU if needed)
+        if self.real_field is not None:
+            arr = self.real_field
+        elif self.real_field_gpu is not None:
+            import cupy as cp
+            arr = cp.asnumpy(self.real_field_gpu)
+        else:
+            raise ValueError("No real-space field available for downsampling.")
+
+        # Average pooling via reshape + mean:
+        # (N0, N1, N2) -> (N0/s, s, N1/s, s, N2/s, s) -> mean(axis=(1,3,5)) -> (N0/s, N1/s, N2/s)
+        new_shape = (
+            self.Nmesh[0] // scale, scale,
+            self.Nmesh[1] // scale, scale,
+            self.Nmesh[2] // scale, scale
+        )
+        downsampled = arr.reshape(new_shape).mean(axis=(1, 3, 5))
+
+        return downsampled
+
     def save(self, output_dir, mode="all"):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
@@ -430,6 +482,8 @@ class Mesh:
             if os.path.exists(attrs_filename):
                 attrs = joblib.load(attrs_filename)
                 self.attrs.update(attrs)
+                self.BoxSize = attrs["BoxSize"]
+                self.Nmesh = attrs["Nmesh"]
             else:
                 self.attrs["BoxSize"] = None 
                 self.BoxSize = None 
