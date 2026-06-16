@@ -6,6 +6,8 @@ import time
 import os
 import joblib
 
+from .tpcf import xismu
+
 def run_jaccknife_fftpower(data, boxsize, Nmesh, ngrids, nthreads=1, with_weights=False, with_values=False, dk=None, verbose=True):
     """
     Compute Jackknife power spectrum 2D measurements by leaving out one subbox at a time.
