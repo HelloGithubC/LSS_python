@@ -6,8 +6,6 @@ import time
 import os
 import joblib
 
-from .tpcf import xismu
-
 def run_jaccknife_fftpower(data, boxsize, Nmesh, ngrids, nthreads=1, with_weights=False, with_values=False, dk=None, verbose=True):
     """
     Compute Jackknife power spectrum 2D measurements by leaving out one subbox at a time.
@@ -1256,6 +1254,10 @@ def create_xismu_from_pairs(DD, DR, RR, norm_DD, norm_DR, norm_RR, sedges, muedg
     xismu_obj : xismu
         xismu object containing the correlation function.
     """
+    # Deferred import to avoid circular dependency:
+    # cov.py -> tpcf.py -> compressor.py -> cov.py
+    from .tpcf import xismu
+
     sbin = len(sedges) - 1
     mubin = len(muedges) - 1
     smax = sedges[-1]
