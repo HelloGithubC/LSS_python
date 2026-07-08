@@ -1,4 +1,12 @@
 #!python -u
+"""
+Two-point correlation function (2pCF) calculator for simulation boxes.
+This script computes the 2D 2pCF (xi(s, mu)) using the Landy-Szalay estimator
+with pair counting via the Corrfunc library.
+
+Supports both data-data (DD), data-random (DR), and random-random (RR) pair counts.
+Can save intermediate pair counts for re-use and supports weighted catalogs.
+"""
 
 import numpy as np 
 from LSS_python.tpcf import cal_tpCF_from_pairs, run_tpCF
@@ -6,91 +14,186 @@ import joblib, os
 import argparse, sys
 
 def read_data(filename, weight_set_one=False):
-    """读取普通npy数组，只支持形状为(N, 3)或(N, 4)的数组"""
+    """
+    Read ordinary npy arrays, only supporting shapes of (N, 3) or (N, 4)
+    
+    Parameters
+    ----------
+    filename : str
+        Path to the npy file containing catalog data
+    weight_set_one : bool, optional
+        If True, force the weight column (4th column) to 1.0, by default False
+        
+    Returns
+    -------
+    numpy.ndarray
+        Processed catalog array with shape (N, 3) or (N, 4)
+    """
     source = np.load(filename)
     result_cols = 4 if weight_set_one else 3
     result_array = np.zeros(shape=(source.shape[0], result_cols), dtype=source.dtype)
 
     if weight_set_one:
+        # Copy positions and set weights to 1.0
         result_array[:, :3] = source[:, :3]
         result_array[:, 3] = 1.0
     else:
+        # Copy available columns (either 3 or 4)
         result_array[:, :result_cols] = source[:, :result_cols]
 
     return result_array
         
     
+# ============================================================================
+# Command-line argument parser
+# ============================================================================
 parser = argparse.ArgumentParser(
-    prog="cal_tpCF_box", usage="To cal tpCF with Corrfunc for simulation box"
+    prog="cal_tpCF_box", 
+    usage="Calculate 2pCF with Corrfunc for simulation boxes",
+    description="Compute two-point correlation function from data and random catalogs"
 )
 
-parser.add_argument("data_filename", help="Need suffix to support the automatic naming rules. Or use --tpcf_filename and --rr_filename to specify the relevant files.", type=str)
-parser.add_argument("random_filename", help="Need suffix to ... (the same as data_filename)", type=str)
-parser.add_argument("nthreads", type=int)
+# Required positional arguments
+parser.add_argument("data_filename", 
+                   help="Path to data catalog (npy format, shape (N, 3) or (N, 4))", 
+                   type=str)
+parser.add_argument("random_filename", 
+                   help="Path to random catalog (npy format, shape (M, 3) or (M, 4))", 
+                   type=str)
+parser.add_argument("nthreads", 
+                   help="Number of threads for parallel computation", 
+                   type=int)
 
-parser.add_argument("-smin", type=float, default=0.0, help="Default 0.0")
-parser.add_argument("-smax", type=float, default=150.0, help="Default 150.0")
-parser.add_argument("-sbin", type=int, default=150, help="Default 150")
-parser.add_argument("-mubin", type=int, default=120, help="Default 120")
+# Binning parameters
+parser.add_argument("-smin", 
+                   type=float, 
+                   default=0.0, 
+                   help="Minimum separation (default: 0.0)")
+parser.add_argument("-smax", 
+                   type=float, 
+                   default=150.0, 
+                   help="Maximum separation (default: 150.0)")
+parser.add_argument("-sbin", 
+                   type=int, 
+                   default=150, 
+                   help="Number of separation bins (default: 150)")
+parser.add_argument("-mubin", 
+                   type=int, 
+                   default=120, 
+                   help="Number of mu (cosine of angle to LOS) bins (default: 120)")
 
-parser.add_argument("--with_weight", "-ww", action="store_true", help="If set, will load the weight from file (4th column)")
-parser.add_argument("--set_weight_to_one", "-weightone", action="store_true", help="If set, weight will be forced to 1")
-parser.add_argument("--xyz_refine_factors", "-refine", nargs=3, type=int, default=[2, 2, 1])
+# Weight handling options
+parser.add_argument("--with_weight", "-ww", 
+                   action="store_true", 
+                   help="Load weights from 4th column of catalog files")
+parser.add_argument("--set_weight_to_one", "-weightone", 
+                   action="store_true", 
+                   help="Force weights to 1.0 (valid only with --with_weight)")
 
-parser.add_argument("--tpcf_filename", "-tpcf", help="Only support specifying the filename of tpCF or RR (when --only_run_rr set). The dir is needed.", default=None)
-parser.add_argument("--rr_filename", "-rr", help="Force to specify the rr file.", default=None)
+# Algorithm parameters
+parser.add_argument("--xyz_refine_factors", "-refine", 
+                   nargs=3, 
+                   type=int, 
+                   default=[2, 2, 1],
+                   help="Refinement factors for x, y, z in pair counting (default: [2, 2, 1])")
 
-parser.add_argument("--only_run_rr", "-only_rr", action="store_true")
-parser.add_argument("--save_dd_dr", "-savetemp", help="If set save DD and DR to re-use.", action="store_true")
-parser.add_argument("-force", "-f", action="store_true", help="Force to run tpCF, DD and DR, even if the result exists.")
-parser.add_argument("--force_rr", "-forcerr", action="store_true", help="Force to run RR, even if the result exists.")
+# Output file options
+parser.add_argument("--tpcf_filename", "-tpcf", 
+                   help="Output filename for tpCF result (default: ./tpCF_temp.pkl)", 
+                   default=None)
+parser.add_argument("--rr_filename", "-rr", 
+                   help="Output filename for RR pairs (default: ./RR_temp.pkl)", 
+                   default=None)
 
-parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output.")
+# Execution mode flags
+parser.add_argument("--only_run_rr", "-only_rr", 
+                   action="store_true", 
+                   help="Only compute RR pairs, skip DD and DR")
+parser.add_argument("--save_dd_dr", "-savetemp", 
+                   action="store_true", 
+                   help="Save DD and DR pair counts to disk for re-use")
 
+# Force re-computation flags
+parser.add_argument("-force", "-f", 
+                   action="store_true", 
+                   help="Force re-computation of tpCF, DD, and DR even if outputs exist")
+parser.add_argument("--force_rr", "-forcerr", 
+                   action="store_true", 
+                   help="Force re-computation of RR pairs even if output exists")
+
+# Verbosity
+parser.add_argument("--verbose", "-v", 
+                   action="store_true", 
+                   help="Enable verbose output during computation")
+
+# ============================================================================
+# Parse command-line arguments
+# ============================================================================
 if len(sys.argv) == 1:
     parser.print_help()
     exit(0)
 
 argv = parser.parse_args()
 
+# Extract catalog filenames
 data_fileallname = argv.data_filename
 random_fileallname = argv.random_filename
 
+# Computation parameters
 nthreads = argv.nthreads
 
+# Binning configuration
 smin = argv.smin
 smax = argv.smax
 sbin = argv.sbin
 mubin = argv.mubin
-sedges = np.linspace(smin, smax, sbin+1)
+sedges = np.linspace(smin, smax, sbin+1)  # Create separation bin edges
 
+# Weight configuration
 with_weight = argv.with_weight
 weight_set_one = argv.set_weight_to_one
+
+# Algorithm parameters
 xyz_refine_factors = argv.xyz_refine_factors
 
+# Output filenames (None means use defaults)
 tpcf_filename = argv.tpcf_filename
 rr_filename = argv.rr_filename
 
+# Execution mode flags
 only_run_rr = argv.only_run_rr
 save_dd_dr = argv.save_dd_dr 
+
+# Force re-computation flags
 force = argv.force
 force_rr = argv.force_rr
 
+# Logging
 verbose = argv.verbose
 
+# If weight is not used, ignore weight-related settings
 if not with_weight:
     weight_set_one = False
 
+# ============================================================================
+# Load data catalog (if not in RR-only mode)
+# ============================================================================
 if not only_run_rr:
+    # Split directory and filename
     data_dir, data_filename = os.path.split(data_fileallname)
     if data_dir == "":
         pass
     else:
         data_dir += "/"
+    # Split filename and extension
     data_filename, data_fileext = os.path.splitext(data_filename)
 
+    # Load data catalog with appropriate weight handling
     data_catalog = read_data(data_dir + data_filename + data_fileext, weight_set_one=weight_set_one)
 
+# ============================================================================
+# Parse random catalog path
+# ============================================================================
 random_dir, random_filename = os.path.split(random_fileallname)
 if random_dir == "":
     pass
@@ -98,74 +201,137 @@ else:
     random_dir += "/"
 random_filename, random_fileext = os.path.splitext(random_filename)
 
+# ============================================================================
+# Determine output filenames for pair counts and tpCF result
+# ============================================================================
 if rr_filename is not None:
     RR_result_filename = rr_filename
 else:
     RR_result_filename = "./RR_temp.pkl"
+
+# Check if RR-only mode and file already exists
 if only_run_rr and not force_rr and os.path.exists(RR_result_filename):
     print(f"RR file {RR_result_filename} exists, skipping")
     exit(0)
 
+# Setup filenames for DD, DR, and tpCF (only in full mode)
 if not only_run_rr:
     DD_result_filename = "./DD_temp.pkl"
     DR_result_filename = "./DR_temp.pkl"
+    
+    # Use specified tpCF filename or default
     if tpcf_filename is not None:
         tpCF_result_filename = tpcf_filename
     else:
         tpCF_result_filename = "./tpCF_temp.pkl"
+    
+    # Check if tpCF result already exists
     if os.path.exists(tpCF_result_filename) and not force:
         print("tpCF result exists, skip")
         exit(0)
 
-# 对于random catalog，如果不使用weight，则设置weight为1
+# ============================================================================
+# Load random catalog
+# For random catalog, if weight is not used, set weight to 1
+# ============================================================================
 random_catalog = read_data(random_dir + random_filename + random_fileext, weight_set_one=not with_weight)
 
+# Dictionary to hold output filenames for pair counts
+# Will be passed to run_tpCF to save results to disk if specified
 output_dict = {
-    "DD": None,
-    "DR": None, 
-    "RR": None
+    "DD": None,   # Data-Data pair counts
+    "DR": None,   # Data-Random pair counts
+    "RR": None    # Random-Random pair counts
 }
 
 
+# ============================================================================
+# Execute pair counting and tpCF calculation
+# ============================================================================
 if only_run_rr:
+    # RR-only mode: compute only random-random pairs
+    print("Running in RR-only mode")
     run_parts = ["RR"]
     output_dict["RR"] = RR_result_filename
+    
+    # Create output directory if needed
     rr_dir, _ = os.path.split(RR_result_filename)
     if not os.path.exists(rr_dir):
         os.makedirs(rr_dir)
-    _ = run_tpCF(None, random_catalog, sedges, mubin, with_weight, run_parts, xyz_refine_factors, output_dict, nthreads, verbose=verbose)
+    
+    # Compute RR pairs (data_catalog is None in RR-only mode)
+    _ = run_tpCF(None, random_catalog, sedges, mubin, with_weight, run_parts, 
+                 xyz_refine_factors, output_dict, nthreads, verbose=verbose)
 else:
-    run_parts = []
+    # Full mode: compute DD, DR, RR and then tpCF
+    
+    # Ensure output directories exist
     for need_filename in (RR_result_filename, tpCF_result_filename):
         need_dir, _ = os.path.split(need_filename)
         if not os.path.exists(need_dir):
             os.makedirs(need_dir)
+    
+    # Initialize list of pair types to compute
+    run_parts = []
+    
+    # --- Handle RR pairs ---
     if not os.path.exists(RR_result_filename) or force_rr:
+        # Need to compute RR: mark for computation and set output filename
         output_dict["RR"] = RR_result_filename
         run_parts.append("RR")
-        RR_result = None
+        RR_result = None  # Will be computed
     else:
+        # RR file exists and not forcing: load from disk
+        print(f"Loading existing RR from {RR_result_filename}")
         RR_result = joblib.load(RR_result_filename)
+    
+    # --- Handle DD pairs ---
     if not os.path.exists(DD_result_filename) or force:
+        # Need to compute DD
         run_parts.append("DD")
         if save_dd_dr:
-            output_dict["DD"] = DD_result_filename
-        DD_result = None
+            output_dict["DD"] = DD_result_filename  # Save to disk
+        DD_result = None  # Will be computed
     else:
+        # DD file exists and not forcing: load from disk
+        print(f"Loading existing DD from {DD_result_filename}")
         DD_result = joblib.load(DD_result_filename)
+    
+    # --- Handle DR pairs ---
     if not os.path.exists(DR_result_filename) or force:
+        # Need to compute DR
         run_parts.append("DR")
         if save_dd_dr:
-            output_dict["DR"] = DR_result_filename
-        DR_result = None 
+            output_dict["DR"] = DR_result_filename  # Save to disk
+        DR_result = None  # Will be computed
     else:
+        # DR file exists and not forcing: load from disk
+        print(f"Loading existing DR from {DR_result_filename}")
         DR_result = joblib.load(DR_result_filename)
-        
-    result_dict = run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, run_parts, xyz_refine_factors, output_dict, nthreads, verbose=verbose)
     
+    # Print computation plan
+    if run_parts:
+        print(f"Computing pair counts for: {', '.join(run_parts)} using {nthreads} threads")
+    else:
+        print("All pair counts already exist, loading from disk")
+    
+    # Run pair counting (only for parts that need computation)
+    result_dict = run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, 
+                           run_parts, xyz_refine_factors, output_dict, nthreads, 
+                           verbose=verbose)
+    
+    # Collect results: use computed results if available, otherwise use loaded
     DD_result = result_dict["DD"] if DD_result is None else DD_result 
     DR_result = result_dict["DR"] if DR_result is None else DR_result 
     RR_result = result_dict["RR"] if RR_result is None else RR_result
-
-    tpCF_result = cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data_catalog, random_catalog, sbin, mubin, with_weight)
+    
+    # Compute tpCF from pair counts using Landy-Szalay estimator
+    print("Computing tpCF from pair counts...")
+    tpCF_result = cal_tpCF_from_pairs(DD_result, DR_result, RR_result, 
+                                      data_catalog, random_catalog, 
+                                      sbin, mubin, with_weight)
+    
+    # Save tpCF result to disk
+    print(f"Saving tpCF result to {tpCF_result_filename}")
     joblib.dump(tpCF_result, tpCF_result_filename)
+    print("Done!")

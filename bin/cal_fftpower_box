@@ -1,4 +1,13 @@
 #!python -u
+"""
+FFT power spectrum calculator for simulation boxes.
+This script computes the power spectrum (P(k)) from particle data using FFT-based methods.
+It first meshes the particle distribution onto a grid, then computes the power spectrum
+from the Fourier-transformed density field.
+
+Supports weighted particles and optional value fields. Can save intermediate mesh
+data for re-use and supports both 1D and 2D power spectrum calculations.
+"""
 
 import numpy as np 
 from LSS_python.mesh import Mesh 
@@ -7,11 +16,39 @@ import joblib, os
 import argparse, sys
 
 def read_data(filename, weight_key, value_key):
+    """
+    Load particle data from a joblib file.
+    
+    Expected data format: a dictionary containing at least 'Pos' (positions) or 
+    'X', 'Y', 'Z' (individual coordinates). Optional keys: weight_key, value_key.
+    
+    Parameters
+    ----------
+    filename : str
+        Path to the joblib file containing particle data
+    weight_key : str or None
+        Key for particle weights in the data dictionary, or None if no weights
+    value_key : str or None
+        Key for particle values (e.g., density) in the data dictionary, or None
+        
+    Returns
+    -------
+    dict
+        Dictionary containing particle data with 'Pos' guaranteed to exist
+        
+    Raises
+    ------
+    ValueError
+        If required keys are missing or data format is invalid
+    """
     data = joblib.load(filename)
+    # Validate that requested keys exist
     if weight_key is not None and weight_key not in data.keys():
         raise ValueError("weight_key not in data")
     if value_key is not None and value_key not in data.keys():
         raise ValueError("value_key not in data")
+    
+    # Ensure positions exist: construct from X, Y, Z if needed
     if "Pos" not in data.keys():
         if "X" in data.keys():
             data["Pos"] = np.stack([data["X"], data["Y"], data["Z"]], axis=1)
@@ -21,6 +58,19 @@ def read_data(filename, weight_key, value_key):
     
     
 def split_filename(filename):
+    """
+    Split a filename into directory, base name, and extension.
+    
+    Parameters
+    ----------
+    filename : str
+        Full path to the file
+        
+    Returns
+    -------
+    tuple
+        (directory, basename, extension) with trailing slash added to directory if non-empty
+    """
     file_dir, file_name = os.path.split(filename)
     if file_dir == "":
         pass
@@ -30,59 +80,115 @@ def split_filename(filename):
     return file_dir, file_name, file_ext
         
     
+# ============================================================================
+# Command-line argument parser
+# ============================================================================
 parser = argparse.ArgumentParser(
-    prog="cal_fftpower_box", usage="To cal fftpower with LSS_python for simulation box"
+    prog="cal_fftpower_box", 
+    usage="Calculate FFT power spectrum with LSS_python for simulation boxes",
+    description="Compute power spectrum from particle data using FFT-based methods"
 )
 
-parser.add_argument("data_filename", help="Only support joblib file with a dict", type=str)
-parser.add_argument("BoxSize", type=float, help="If <=0, will be calculated from data")
-parser.add_argument("Nmesh", type=int)
-parser.add_argument("nthreads", type=int)
+# Required positional arguments
+parser.add_argument("data_filename", 
+                   help="Path to joblib file containing particle data dictionary", 
+                   type=str)
+parser.add_argument("BoxSize", 
+                   type=float, 
+                   help="Box size of the simulation. If <=0, calculated from data")
+parser.add_argument("Nmesh", 
+                   type=int, 
+                   help="Number of mesh cells per dimension (grid resolution)")
+parser.add_argument("nthreads", 
+                   type=int, 
+                   help="Number of threads for parallel computation")
 
-parser.add_argument("--weight_key", "-wei", type=str, default=None, help="Set it to enable weight")
-parser.add_argument("--value_key", "-val", type=str, default=None, help="Set it to enable value")
-parser.add_argument("--is_norm", "-norm", action="store_true", help="Set it to enable norm in to_mesh")
+# Data field options
+parser.add_argument("--weight_key", "-wei", 
+                   type=str, 
+                   default=None, 
+                   help="Key in data dict for particle weights (default: None)")
+parser.add_argument("--value_key", "-val", 
+                   type=str, 
+                   default=None, 
+                   help="Key in data dict for particle values (default: None)")
+parser.add_argument("--is_norm", "-norm", 
+                   action="store_true", 
+                   help="Normalize the density field when meshing (default: False)")
 
-parser.add_argument("-kmin", type=float, default=0.1, help="Default 0.1")
-parser.add_argument("-kmax", type=float, default=1.0, help="Default 1.0")
-parser.add_argument("-dk", type=float, default=0.1, help="Default 0.1")
-parser.add_argument("-Nmu", type=int, default=30, help="Default 30")
-parser.add_argument("-mode", type=str, default="1d", help="Support '1d' and '2d'. Default '1d'")
+# Power spectrum binning parameters
+parser.add_argument("-kmin", 
+                   type=float, 
+                   default=0.1, 
+                   help="Minimum wavenumber k (default: 0.1)")
+parser.add_argument("-kmax", 
+                   type=float, 
+                   default=1.0, 
+                   help="Maximum wavenumber k (default: 1.0)")
+parser.add_argument("-dk", 
+                   type=float, 
+                   default=0.1, 
+                   help="Wavenumber bin width (default: 0.1)")
+parser.add_argument("-Nmu", 
+                   type=int, 
+                   default=30, 
+                   help="Number of mu bins for 2D power spectrum (default: 30)")
+parser.add_argument("-mode", 
+                   type=str, 
+                   default="1d", 
+                   choices=["1d", "2d"], 
+                   help="Power spectrum mode: '1d' (angle-averaged) or '2d' (default: '1d')")
 
-parser.add_argument("--fftpower_filename", "-fftpower", help="The fftpower filename. Default fftpower-${data_filename}-Nmesh${Nmesh}-k${kmin}to${kmax}_dk${dk}_Nmu${Nmu}(Or _1d if mode is '1d' and '.' will be replace with dot)", default=None)
-parser.add_argument("--mesh_dir", "-mesh", help="The mesh dir. Default mesh-${data_filename}-BoxSize{boxsize}_Nmesh${Nmesh}", default=None)
+# Output file options
+parser.add_argument("--fftpower_filename", "-fftpower", 
+                   help="Output filename for power spectrum (default: auto-generated)", 
+                   default=None)
+parser.add_argument("--mesh_dir", "-mesh", 
+                   help="Directory to save/load mesh data (default: auto-generated)", 
+                   default=None)
 
-parser.add_argument("--only_run_mesh", "-only_mesh", action="store_true")
-parser.add_argument("-force", "-f", action="store_true", help="Force to run fftpower")
-parser.add_argument("--force_mesh", "-forcem", action="store_true", help="Force to run mesh")
+# Execution mode flags
+parser.add_argument("--only_run_mesh", "-only_mesh", 
+                   action="store_true", 
+                   help="Only compute the mesh, skip power spectrum calculation")
+parser.add_argument("-force", "-f", 
+                   action="store_true", 
+                   help="Force re-computation of power spectrum even if output exists")
+parser.add_argument("--force_mesh", "-forcem", 
+                   action="store_true", 
+                   help="Force re-computation of mesh even if it exists")
 
-parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output.")
+# Verbosity
+parser.add_argument("--verbose", "-v", 
+                   action="store_true", 
+                   help="Enable verbose output during computation")
 
+# ============================================================================
+# Parse command-line arguments
+# ============================================================================
 if len(sys.argv) == 1:
     parser.print_help()
     exit(0)
 
 argv = parser.parse_args()
 
+# Extract data filename components
 data_filename = argv.data_filename
 data_dir, data_name, data_ext = split_filename(data_filename)
 
+# Simulation parameters
 boxsize = argv.BoxSize
 Nmesh = argv.Nmesh
 nthreads = argv.nthreads
 
+# Data field configuration
 weight_key = argv.weight_key
-if weight_key is not None:
-    use_weight_key = True 
-else:
-    use_weight_key = False
+use_weight_key = weight_key is not None
 value_key = argv.value_key
-if value_key is not None:
-    use_value_key = True
-else:
-    use_value_key = False
+use_value_key = value_key is not None
 is_norm = argv.is_norm
 
+# Power spectrum binning parameters
 kmin = argv.kmin
 kmin_str = f"{kmin:.1f}".replace(".", "dot")
 kmax = argv.kmax
@@ -91,20 +197,29 @@ dk = argv.dk
 dk_str = f"{dk:.2f}".replace(".", "dot")
 Nmu = argv.Nmu
 mode = argv.mode
+
+# Generate mode string for filename
 if mode == "1d":
     mode_str = "1d"
 else:
     mode_str = f"Nmu{Nmu:d}"
 
+# Determine output filenames (auto-generate if not specified)
 fftpower_filename = argv.fftpower_filename
 if fftpower_filename is None:
     fftpower_filename = data_dir + f"/fftpower-{data_name}-Nmesh{Nmesh:d}-k{kmin_str}to{kmax_str}_dk{dk_str}_{mode_str}.pkl"
+
 mesh_dir = argv.mesh_dir
 if mesh_dir is None:
     mesh_dir = data_dir + f"/mesh-{data_name}-BoxSize{boxsize:.0f}_Nmesh{Nmesh:d}"
 
+# ============================================================================
+# Load particle data and initialize mesh
+# ============================================================================
 data = read_data(data_filename, weight_key, value_key)
 mesh = Mesh(Nmesh, boxsize)
+
+# Extract optional weight and value fields
 if use_weight_key:
     weights = data[weight_key]
 else:
@@ -114,42 +229,68 @@ if use_value_key:
 else:
     values = None
 
+# Execution flags
 only_run_mesh = argv.only_run_mesh
 force = argv.force
 force_mesh = argv.force_mesh
 verbose = argv.verbose
 
+# ============================================================================
+# Mesh creation or loading
+# ============================================================================
 if not os.path.exists(mesh_dir + "/complex_field.npy") or force_mesh:
+    # Mesh does not exist or forcing re-computation
     if verbose:
         print("Now running mesh...")
         print(f"Number of particles is {data['Pos'].shape[0]:d}; Boxsize is {boxsize:.0f}; Nmesh is {Nmesh:d}.")
         print(f"Use resampler CIC; Use weights: {use_weight_key}; Use values: {use_value_key}; Use norm: {is_norm}")
         print(f"Use nthreads: {nthreads:d}")
-    mesh.to_mesh(data["Pos"], resampler="CIC", weights=weights, values=values, nthreads=nthreads, is_norm=is_norm, c_api=True)
+    
+    # Mesh the particle distribution using Cloud-in-Cell (CIC) interpolation
+    mesh.to_mesh(data["Pos"], resampler="CIC", weights=weights, values=values, 
+                 nthreads=nthreads, is_norm=is_norm, c_api=True)
+    # Perform FFT and apply compensation
     mesh.r2c(compensated=True, nthreads=nthreads, c_api=True)
+    
     if verbose:
         print(f"Mesh created. Now saving mesh to {mesh_dir}")
     mesh.save(mesh_dir, mode="all")
     if verbose:
         print("Mesh saved.")
+        
 elif only_run_mesh:
+    # Only computing mesh but it already exists
     print("Mesh already exists. Skip.")
     exit(0)
 else:
+    # Mesh exists and we need to load it
     if verbose:
         print("Mesh exists. Now reading ...")
     mesh = Mesh.load(mesh_dir, only_complex=True)
     if verbose:
         print("Mesh read done.")
 
+# ============================================================================
+# Power spectrum calculation
+# ============================================================================
 if not only_run_mesh:
+    # Compute power spectrum from the mesh
     if not os.path.exists(fftpower_filename) or force:
         fftpower = FFTPower(Nmesh, boxsize)
         if verbose:
             print("Now running fftpower...")
             print(f"kmin is {kmin:.1f}; kmax is {kmax:.1f}; dk is {dk:.2f}; Nmu is {Nmu:d}; mode is {mode}")
             print(f"Use nthreads: {nthreads:d}")
-        power = fftpower.cal_ps_from_mesh(mesh, kmin, kmax, dk, Nmu, mode=mode, nthreads=nthreads, c_api=True, compensated=True)
+        
+        # Compute power spectrum from the meshed density field
+        power = fftpower.cal_ps_from_mesh(mesh, kmin, kmax, dk, Nmu, 
+                                          mode=mode, nthreads=nthreads, 
+                                          c_api=True, compensated=True)
+        
+        # Save power spectrum result
         fftpower.save(fftpower_filename)
         if verbose:
             print(f"fftpower saved to {fftpower_filename}")
+    else:
+        if verbose:
+            print(f"Power spectrum file {fftpower_filename} already exists. Use -force to re-compute.")
