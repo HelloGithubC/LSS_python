@@ -2428,7 +2428,7 @@ def cal_ellipse_from_fisher(fisher, confidence_level=0.683, full_output=False):
         Fisher information matrix, must be 2x2.
     confidence_level : float, default 0.683
         Confidence level for the ellipse (0 < confidence_level < 1).
-        For 1\sigma Gaussian: 0.683, for 2\sigma: 0.954, for 3\sigma: 0.997.
+        For 1\\sigma Gaussian: 0.683, for 2\\sigma: 0.954, for 3\\sigma: 0.997.
     full_output : bool, default False
         If True, return additional ellipse parameters.
 
