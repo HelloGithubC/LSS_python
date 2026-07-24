@@ -2,7 +2,6 @@
 """
 Generate 3D uniform random coordinates with a weight column (fixed to 1).
 """
-
 import argparse
 import numpy as np
 import sys
@@ -18,9 +17,16 @@ def main():
         help="Box side length; coordinates are uniformly sampled in [0, boxsize)",
     )
     parser.add_argument(
-        "number",
+        "-number",
         type=int,
-        help="Number of random points to generate",
+        default=None,
+        help="Number of random points to generate. Takes priority over -nbar.",
+    )
+    parser.add_argument(
+        "-nbar",
+        type=float,
+        default=1e-3,
+        help="Number density of random points. Used to calculate number as nbar * boxsize^3 if -number is not provided (default: 1e-3).",
     )
     parser.add_argument(
         "-o",
@@ -42,12 +48,21 @@ def main():
 
     args = parser.parse_args()
 
+    if args.number is not None:
+        number = args.number
+    else:
+        number = int(args.nbar * (args.boxsize ** 3))
+    
+    if number <= 0:
+        print("Error: number of points must be greater than 0.", file=sys.stderr)
+        sys.exit(1)
+
     dtype = np.float64 if args.double else np.float32
 
     # Generate 3D uniform coordinates
-    coords = np.random.uniform(0, args.boxsize, size=(args.number, 3)).astype(dtype)
+    coords = np.random.uniform(0, args.boxsize, size=(number, 3)).astype(dtype)
     # Weight column fixed to 1
-    weights = np.ones((args.number, 1), dtype=dtype)
+    weights = np.ones((number, 1), dtype=dtype)
     data = np.concatenate([coords, weights], axis=1)
 
     np.save(args.output, data)

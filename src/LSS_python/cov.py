@@ -693,7 +693,7 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
                 print(f"Saving RR results to {rr_filename}...")
             # Save complete RR_result (structured array) with self-pair correction applied
             RR_result_corrected = RR_result.copy()
-            if sedges[0] == 0.0:
+            if abs(sedges[0] - 0.0) < 1e-5:
                 # Apply self-pair correction before saving
                 npairs = RR_result_corrected['npairs'].copy()
                 npairs[0] -= nr
