@@ -657,14 +657,65 @@ class FFTPower2D:
         return obj_list
 
 def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, kmin=0.1, kmax=2.1, dk=0.02, shift=5,integrate_func=None, integrate_kwargs=None, **kwargs):
-    """ The main function to get diff 
-    integrate_func: the function to integrate the fftpower_2d (default: intergrate_fftpower). If set, the first argument must be FFTPower2D.
-    integrate_kwargs: the kwargs for the integrate_func if integrate_func is not intergrate_fftpower (default: None)
-    kwargs:
-        k_min: the minimum k for the integration. Only used when integrate_func is intergrate_fftpower (default: 0.1)
-        k_max: the maximum k for the integration Only used when integrate_func is intergrate_fftpower (default: 2.1)
-        mu_min and mu_max: the minimum and maximum mu for the integration (default: 0.0 and 1.0). Can be used when integrate_func is intergrate_fftpower
-        with_modes: whether to include modes (default: False)
+    """Compute the difference of integrated power spectra between two snapshots.
+
+    For each snapshot in ``snap_ids``, the corresponding ``FFTPower2D`` (or
+    ``FFTPower``) objects are optionally converted to P(k, mu) via
+    ``cal_pkmu_from_ps_2d``, then integrated over k or mu using either the
+    built-in ``intergrate_fftpower`` method or a user-supplied
+    ``integrate_func``.  The result is the rolled difference between the two
+    snapshot groups.
+
+    Parameters
+    ----------
+    fftpowers_2d_dict : dict
+        Dictionary mapping snapshot IDs to power spectrum objects.
+        Values can be a single ``FFTPower2D`` / ``FFTPower`` instance, or a
+        list / tuple / ndarray of them.
+    snap_ids : list
+        A list of exactly two snapshot IDs.  The power spectra of the first
+        ID are rolled by ``shift`` before the difference is taken.
+    Nmu : int
+        Number of mu bins used in ``cal_pkmu_from_ps_2d``.
+    kmin : float, optional
+        Minimum k for ``cal_pkmu_from_ps_2d`` conversion (default: 0.1).
+    kmax : float, optional
+        Maximum k for ``cal_pkmu_from_ps_2d`` conversion (default: 2.1).
+    dk : float, optional
+        k bin width for ``cal_pkmu_from_ps_2d`` conversion (default: 0.02).
+    shift : int, optional
+        Number of bins to roll the first snapshot's P(mu) array along the
+        sample axis before subtraction (default: 5).  Set to 0 automatically
+        when only one object is present for a snapshot.
+    integrate_func : callable, optional
+        Custom integration function.  Its first argument must be an
+        ``FFTPower2D`` instance.  When ``None`` (default), the built-in
+        ``intergrate_fftpower`` method is used.
+    integrate_kwargs : dict, optional
+        Additional keyword arguments passed to ``integrate_func``.  Required
+        when ``integrate_func`` is not ``None``.
+    **kwargs : optional
+        Additional keyword arguments forwarded to the built-in integration:
+
+        - ``k_min`` (float): Minimum k for integration (default: 0.3).
+        - ``k_max`` (float): Maximum k for integration (default: 0.8).
+        - ``mu_min`` (float): Minimum mu for integration (default: -1.0,
+          meaning use all bins).
+        - ``mu_max`` (float): Maximum mu for integration (default: -1.0,
+          meaning use all bins).
+        - ``with_modes`` (bool): Whether to weight by mode counts
+          (default: False).
+        - ``with_k2`` (bool): Whether to apply k^2 weighting before
+          integration (default: False).
+        - ``remove_last_bin`` (bool): Whether to drop the last mu bin after
+          integration (default: True).
+
+    Returns
+    -------
+    ndarray
+        Difference array.  If each snapshot has a single object, returns a
+        1-D array P(mu).  Otherwise returns a 2-D array of shape
+        ``(n_objects, n_mu_bins)``.
     """
     if integrate_func is None:
         k_min = kwargs.get("k_min", 0.3)

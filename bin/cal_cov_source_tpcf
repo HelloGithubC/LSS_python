@@ -1,0 +1,243 @@
+#! python -u
+# -*- coding: utf-8 -*-
+"""
+Compute 2-point correlation function (tpCF / MCF) covariance measurements
+using jackknife or subsampling on a periodic box.
+
+Usage examples
+--------------
+# Jackknife
+python cal_cov_source_xismu data.npy random.npy 2500.0 jk -n 8 -v
+
+# Subsample
+python cal_cov_source_xismu data.npy random.npy 2500.0 subsample --weight_key HImass -v
+"""
+
+import argparse
+import os
+import sys
+import warnings
+from pathlib import Path
+
+import joblib
+import numpy as np
+from LSS_python.cov import run_jackknife_tpCF, run_subsample_tpCF
+
+
+# ---------------------------------------------------------------------------
+# Data loading (mirrors cal_cov_source_fftpower2d.read_data)
+# ---------------------------------------------------------------------------
+def read_data(filename, weight_key=None):
+    """
+    Load particle data from a ``.npy`` file.
+
+    Supports both structured arrays (with named fields) and plain arrays.
+    For structured arrays, positions are extracted from ``Pos`` (or ``X``,
+    ``Y``, ``Z``), and the weight field is looked up by name.
+    For plain arrays, *weight_key* acts as a boolean flag: when not ``None``,
+    the 4th column is treated as weight.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the ``.npy`` file.
+    weight_key : str or None
+        Field name for weights (structured array) or flag to enable the 4th
+        column (plain array).  ``None`` means no weights.
+
+    Returns
+    -------
+    data : ndarray, shape (N, 3) or (N, 4)
+        Position array optionally concatenated with a weight column.
+    use_weight : bool
+        Whether a weight column is present.
+    """
+    source = np.load(filename)
+
+    # --- Structured array path (has named fields) ---
+    if source.dtype.names is not None:
+        if "Pos" in source.dtype.names:
+            pos = source["Pos"]
+        elif all(f in source.dtype.names for f in ("X", "Y", "Z")):
+            pos = np.stack([source["X"], source["Y"], source["Z"]], axis=1)
+        else:
+            raise ValueError(
+                "Structured array must contain 'Pos' or ('X', 'Y', 'Z') fields"
+            )
+
+        use_weight = weight_key is not None
+        if use_weight and weight_key not in source.dtype.names:
+            raise ValueError(
+                f"weight_key '{weight_key}' not found in structured array fields"
+            )
+
+        dtypes = [pos.dtype]
+        if use_weight:
+            dtypes.append(source[weight_key].dtype)
+
+        final_dtype = np.result_type(*dtypes)
+        if final_dtype != pos.dtype:
+            warnings.warn(
+                f"Type mismatch: position dtype is {pos.dtype}, "
+                f"but weight field has dtype {source[weight_key].dtype}. "
+                f"Output array promoted to {final_dtype}."
+            )
+
+        ncols = 3 + (1 if use_weight else 0)
+        out = np.empty((source.shape[0], ncols), dtype=final_dtype)
+        out[:, :3] = pos
+        if use_weight:
+            out[:, 3] = source[weight_key]
+
+    # --- Plain array path (no named fields) ---
+    else:
+        use_weight = weight_key is not None
+        ncols = 3 + (1 if use_weight else 0)
+
+        if source.shape[1] < ncols:
+            raise ValueError(
+                f"Plain array has {source.shape[1]} columns, "
+                f"but {ncols} are needed (3 positions"
+                + (" + 1 weight" if use_weight else "")
+                + ")"
+            )
+        out = source[:, :ncols].copy()
+
+    return out, use_weight
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(
+        description="Compute tpCF / MCF covariance via jackknife or subsampling."
+    )
+
+    # --- Positional arguments ---
+    parser.add_argument("data_filename", type=str,
+                        help="Path to data .npy file")
+    parser.add_argument("random_filename", type=str,
+                        help="Path to random .npy file")
+    parser.add_argument("boxsize", type=float,
+                        help="Box size (total boxsize, not the sub-box) of the simulation in Mpc/h")
+    parser.add_argument("ngrid", type=int,
+                        help="Number of sub-box divisions per axis")
+    parser.add_argument("cov_source_type", choices=["jk", "subsample"],
+                        help="Covariance method: jk (jackknife) or subsample")
+
+    # --- Optional arguments ---
+    parser.add_argument("--sbin", type=int, default=150,
+                        help="Number of s bins (default: 150)")
+    parser.add_argument("--mubin", type=int, default=120,
+                        help="Number of mu bins (default: 120)")
+    parser.add_argument("--s_max", type=float, default=150.0,
+                        help="Maximum s value in Mpc/h (default: 150.0)")
+    parser.add_argument("--rr_filename", "-rr", type=str, default="RR_temp.pkl",
+                        help="RR pkl file for caching (default: RR_temp.pkl)")
+    parser.add_argument("--tpcf_filename", "-tpcf", type=str, default="tpCF_temp.pkl",
+                        help="Output tpCF pkl file (default: tpCF_temp.pkl)")
+    parser.add_argument("--weight_key", "-wei", type=str, default=None,
+                        help="Field name for particle weights (default: None)")
+    parser.add_argument("--nthreads", "-n", type=int, default=32,
+                        help="Number of threads (default: 32)")
+    parser.add_argument("--force", "-f", action="store_true", default=False,
+                        help="Force recomputation even if output file exists")
+    parser.add_argument("--force_rr", "-frr", action="store_true", default=False,
+                        help="Force RR recomputation")
+    parser.add_argument("--verbose", "-v", action="store_true", default=False,
+                        help="Print verbose output")
+
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(0)
+
+    args = parser.parse_args()
+
+    # --- Derived parameters ---
+    sedges = np.linspace(0.0, args.s_max, args.sbin + 1)
+    rr_type_str = "JK" if args.cov_source_type == "jk" else "sub"
+
+    # --- Print configuration ---
+    if args.verbose:
+        print("=" * 50, flush=True)
+        print("tpCF / MCF covariance source calculation", flush=True)
+        print("=" * 50, flush=True)
+        print(f"  data:          {args.data_filename}", flush=True)
+        print(f"  random:        {args.random_filename}", flush=True)
+        print(f"  boxsize:       {args.boxsize}", flush=True)
+        print(f"  cov method:    {args.cov_source_type} ({rr_type_str})", flush=True)
+        print(f"  ngrid:         {args.ngrid}", flush=True)
+        print(f"  sbin:          {args.sbin}", flush=True)
+        print(f"  mubin:         {args.mubin}", flush=True)
+        print(f"  s_max:         {args.s_max}", flush=True)
+        print(f"  weight_key:    {args.weight_key}", flush=True)
+        print(f"  rr_filename:   {args.rr_filename}", flush=True)
+        print(f"  tpcf_filename: {args.tpcf_filename}", flush=True)
+        print(f"  nthreads:      {args.nthreads}", flush=True)
+        print(f"  force:         {args.force}", flush=True)
+        print(f"  force_rr:      {args.force_rr}", flush=True)
+        print("=" * 50, flush=True)
+
+    # --- Step 1: Load data ---
+    print(f"[1/3] Loading data from {args.data_filename} ...", flush=True)
+    data, use_weight = read_data(args.data_filename, args.weight_key)
+    if args.verbose:
+        print(f"       data shape: {data.shape}, use_weight={use_weight}", flush=True)
+
+    # --- Step 2: Load random ---
+    print(f"[2/3] Loading random from {args.random_filename} ...", flush=True)
+    random, _ = read_data(args.random_filename, args.weight_key)
+    if args.verbose:
+        print(f"       random shape: {random.shape}", flush=True)
+
+    # --- Step 3: Compute covariance ---
+    result_filename = args.tpcf_filename
+
+    if args.verbose:
+        print(f"[3/3] Computing covariance ({args.cov_source_type}) ...", flush=True)
+        print(f"       output: {result_filename}", flush=True)
+
+    result_dir = os.path.dirname(result_filename)
+    if result_dir and not os.path.exists(result_dir):
+        os.makedirs(result_dir)
+        if args.verbose:
+            print(f"       created dir: {result_dir}", flush=True)
+
+    if os.path.exists(result_filename) and not args.force:
+        print(f"       output file already exists, skipping. Use -f to overwrite.", flush=True)
+        return
+
+    if args.cov_source_type == "subsample":
+        result_dict = run_subsample_tpCF(
+            data, random, sedges, args.mubin,
+            with_weight=use_weight,
+            boxsize=args.boxsize,
+            ngrids=args.ngrid,
+            rr_filename=args.rr_filename,
+            force_rr=args.force_rr,
+            nthreads=args.nthreads,
+            verbose=args.verbose,
+            full_output=False,
+        )
+    else:
+        result_dict = run_jackknife_tpCF(
+            data, random, sedges, args.mubin,
+            with_weight=use_weight,
+            boxsize=args.boxsize,
+            ngrids=args.ngrid,
+            rr_filename=args.rr_filename,
+            force_rr=args.force_rr,
+            nthreads=args.nthreads,
+            verbose=args.verbose,
+            full_output=False,
+        )
+
+    joblib.dump(result_dict, result_filename)
+    print(f"       -> saved: {result_filename}", flush=True)
+    print("Done.", flush=True)
+
+
+if __name__ == "__main__":
+    main()
+

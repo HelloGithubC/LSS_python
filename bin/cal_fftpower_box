@@ -9,52 +9,124 @@ Supports weighted particles and optional value fields. Can save intermediate mes
 data for re-use and supports both 1D and 2D power spectrum calculations.
 """
 
-import numpy as np 
-from LSS_python.mesh import Mesh 
-from LSS_python.fftpower import FFTPower
-import joblib, os
-import argparse, sys
+import numpy as np
+from LSS_python.mesh import Mesh
+from LSS_python.fftpower import FFTPower, FFTPower2D
+import os, sys, warnings
+import argparse
 
 def read_data(filename, weight_key, value_key):
     """
-    Load particle data from a joblib file.
-    
-    Expected data format: a dictionary containing at least 'Pos' (positions) or 
-    'X', 'Y', 'Z' (individual coordinates). Optional keys: weight_key, value_key.
-    
+    Load particle data from a .npy file.
+
+    Supports both structured arrays (with named fields) and plain arrays.
+    For structured arrays, positions are extracted from 'Pos' (or 'X', 'Y', 'Z'),
+    and weight/value fields are looked up by field name.
+    For plain arrays, weight_key and value_key act as boolean flags: when not None,
+    they enable the corresponding column (4th for weight, 5th for value).
+
+    When fields have different dtypes, the output is promoted to the highest
+    precision and a warning is issued.
+
     Parameters
     ----------
     filename : str
-        Path to the joblib file containing particle data
+        Path to the .npy file containing particle data
     weight_key : str or None
-        Key for particle weights in the data dictionary, or None if no weights
+        For structured arrays: field name for weights.
+        For plain arrays: if not None, enables 4th column as weight.
+        None means no weights.
     value_key : str or None
-        Key for particle values (e.g., density) in the data dictionary, or None
-        
+        For structured arrays: field name for values.
+        For plain arrays: if not None, enables the next column after weight as value.
+        None means no values.
+
     Returns
     -------
-    dict
-        Dictionary containing particle data with 'Pos' guaranteed to exist
-        
+    tuple
+        (data_array, use_weight, use_value)
+        - data_array : ndarray, shape (N, 3), (N, 4) or (N, 5)
+        - use_weight : bool, whether weight column is present
+        - use_value : bool, whether value column is present
+
     Raises
     ------
     ValueError
-        If required keys are missing or data format is invalid
+        If required fields/columns are missing or data format is invalid
     """
-    data = joblib.load(filename)
-    # Validate that requested keys exist
-    if weight_key is not None and weight_key not in data.keys():
-        raise ValueError("weight_key not in data")
-    if value_key is not None and value_key not in data.keys():
-        raise ValueError("value_key not in data")
-    
-    # Ensure positions exist: construct from X, Y, Z if needed
-    if "Pos" not in data.keys():
-        if "X" in data.keys():
-            data["Pos"] = np.stack([data["X"], data["Y"], data["Z"]], axis=1)
+    source = np.load(filename)
+
+    # === Structured array path (has named fields) ===
+    if source.dtype.names is not None:
+        # Identify position columns
+        if "Pos" in source.dtype.names:
+            pos = source["Pos"]
+        elif ("X" in source.dtype.names and "Y" in source.dtype.names
+              and "Z" in source.dtype.names):
+            pos = np.stack([source["X"], source["Y"], source["Z"]], axis=1)
         else:
-            raise ValueError("Pos not in data and X, Y, Z not in data")
-    return data
+            raise ValueError(
+                "Structured array must contain 'Pos' or ('X', 'Y', 'Z') fields"
+            )
+
+        # Validate requested fields exist
+        if weight_key is not None and weight_key not in source.dtype.names:
+            raise ValueError(
+                f"weight_key '{weight_key}' not found in structured array fields"
+            )
+        if value_key is not None and value_key not in source.dtype.names:
+            raise ValueError(
+                f"value_key '{value_key}' not found in structured array fields"
+            )
+
+        use_weight = weight_key is not None
+        use_value = value_key is not None
+
+        # Determine output dtype; promote if mixed types
+        dtypes = [pos.dtype]
+        if use_weight:
+            dtypes.append(source[weight_key].dtype)
+        if use_value:
+            dtypes.append(source[value_key].dtype)
+
+        final_dtype = np.result_type(*dtypes)
+        if final_dtype != pos.dtype:
+            warnings.warn(
+                f"Type mismatch: position dtype is {pos.dtype}, "
+                f"but weight/value fields have "
+                f"{', '.join(str(d) for d in dtypes[1:])}. "
+                f"Output array promoted to {final_dtype}."
+            )
+
+        # Assemble output array
+        ncols = 3 + (1 if use_weight else 0) + (1 if use_value else 0)
+        out = np.empty((source.shape[0], ncols), dtype=final_dtype)
+        out[:, :3] = pos
+        col = 3
+        if use_weight:
+            out[:, col] = source[weight_key]
+            col += 1
+        if use_value:
+            out[:, col] = source[value_key]
+
+    # === Plain array path (no named fields) ===
+    else:
+        use_weight = weight_key is not None
+        use_value = value_key is not None
+        ncols = 3 + (1 if use_weight else 0) + (1 if use_value else 0)
+
+        if source.shape[1] < ncols:
+            raise ValueError(
+                f"Plain array has {source.shape[1]} columns, "
+                f"but {ncols} are needed (3 positions"
+                + (" + 1 weight" if use_weight else "")
+                + (" + 1 value" if use_value else "")
+                + ")"
+            )
+
+        out = source[:, :ncols].copy()
+
+    return out, use_weight, use_value
     
     
 def split_filename(filename):
@@ -91,7 +163,7 @@ parser = argparse.ArgumentParser(
 
 # Required positional arguments
 parser.add_argument("data_filename", 
-                   help="Path to joblib file containing particle data dictionary", 
+                   help="Path to .npy file containing particle data", 
                    type=str)
 parser.add_argument("BoxSize", 
                    type=float, 
@@ -112,9 +184,9 @@ parser.add_argument("--value_key", "-val",
                    type=str, 
                    default=None, 
                    help="Key in data dict for particle values (default: None)")
-parser.add_argument("--is_norm", "-norm", 
+parser.add_argument("--not_norm", "-nnorm", 
                    action="store_true", 
-                   help="Normalize the density field when meshing (default: False)")
+                   help="Disable density normalization when meshing (default: False, i.e. to normalize)")
 
 # Power spectrum binning parameters
 parser.add_argument("-kmin", 
@@ -127,8 +199,8 @@ parser.add_argument("-kmax",
                    help="Maximum wavenumber k (default: 1.0)")
 parser.add_argument("-dk", 
                    type=float, 
-                   default=0.1, 
-                   help="Wavenumber bin width (default: 0.1)")
+                   default=None, 
+                   help="Wavenumber bin width (default: None). Need to set when not using --use_FFTPower2D")
 parser.add_argument("-Nmu", 
                    type=int, 
                    default=30, 
@@ -148,13 +220,16 @@ parser.add_argument("--mesh_dir", "-mesh",
                    default=None)
 
 # Execution mode flags
+parser.add_argument("--use_FFTPower2D", "-FFTPower2D", 
+                   action="store_true",
+                   help="Use FFTPower2D rather than FFTPower (default: False)")
 parser.add_argument("--only_run_mesh", "-only_mesh", 
                    action="store_true", 
                    help="Only compute the mesh, skip power spectrum calculation")
 parser.add_argument("-force", "-f", 
                    action="store_true", 
                    help="Force re-computation of power spectrum even if output exists")
-parser.add_argument("--force_mesh", "-forcem", 
+parser.add_argument("--force_mesh", "-fmesh", 
                    action="store_true", 
                    help="Force re-computation of mesh even if it exists")
 
@@ -183,51 +258,41 @@ nthreads = argv.nthreads
 
 # Data field configuration
 weight_key = argv.weight_key
-use_weight_key = weight_key is not None
 value_key = argv.value_key
-use_value_key = value_key is not None
-is_norm = argv.is_norm
+is_norm = not argv.not_norm
 
 # Power spectrum binning parameters
+use_FFTPower2D = argv.use_FFTPower2D
 kmin = argv.kmin
 kmin_str = f"{kmin:.1f}".replace(".", "dot")
 kmax = argv.kmax
 kmax_str = f"{kmax:.1f}".replace(".", "dot")
 dk = argv.dk
-dk_str = f"{dk:.2f}".replace(".", "dot")
 Nmu = argv.Nmu
 mode = argv.mode
 
+# dk can be None (auto-determined) when using FFTPower2D
+dk_str = "_auto" if dk is None else f"{dk:.2f}".replace(".", "dot")
+
 # Generate mode string for filename
-if mode == "1d":
-    mode_str = "1d"
+if use_FFTPower2D:
+    mode_str = ""
+elif mode == "1d":
+    mode_str = "_1d"
 else:
-    mode_str = f"Nmu{Nmu:d}"
+    mode_str = f"_Nmu{Nmu:d}"
 
 # Determine output filenames (auto-generate if not specified)
 fftpower_filename = argv.fftpower_filename
 if fftpower_filename is None:
-    fftpower_filename = data_dir + f"/fftpower-{data_name}-Nmesh{Nmesh:d}-k{kmin_str}to{kmax_str}_dk{dk_str}_{mode_str}.pkl"
+    if use_FFTPower2D:
+        fftpower_filename = data_dir + f"/fftpower-{data_name}-Nmesh{Nmesh:d}-dk{dk_str}{mode_str}.pkl"
+    else:
+        fftpower_filename = data_dir + f"/fftpower-{data_name}-Nmesh{Nmesh:d}-k{kmin_str}to{kmax_str}_dk{dk_str}{mode_str}.pkl"
 
 mesh_dir = argv.mesh_dir
 if mesh_dir is None:
     mesh_dir = data_dir + f"/mesh-{data_name}-BoxSize{boxsize:.0f}_Nmesh{Nmesh:d}"
-
-# ============================================================================
-# Load particle data and initialize mesh
-# ============================================================================
-data = read_data(data_filename, weight_key, value_key)
-mesh = Mesh(Nmesh, boxsize)
-
-# Extract optional weight and value fields
-if use_weight_key:
-    weights = data[weight_key]
-else:
-    weights = None
-if use_value_key:
-    values = data[value_key]
-else:
-    values = None
 
 # Execution flags
 only_run_mesh = argv.only_run_mesh
@@ -235,40 +300,68 @@ force = argv.force
 force_mesh = argv.force_mesh
 verbose = argv.verbose
 
+# Warn about ignored parameters when using FFTPower2D
+if use_FFTPower2D and verbose:
+    print("WARNING: --use_FFTPower2D is enabled. kmin, kmax, Nmu, and mode are ignored.")
+    if dk is not None:
+        print(f"  dk={dk:.2f} is provided but will be determined automatically by FFTPower2D.")
+
+# Early exit: if not forcing anything and the final power spectrum already exists,
+# skip mesh loading entirely to avoid unnecessary I/O
+if not only_run_mesh and not force and not force_mesh and os.path.exists(fftpower_filename):
+    if verbose:
+        print(f"Power spectrum file {fftpower_filename} already exists. Use -force to re-compute.")
+    exit(0)
+
 # ============================================================================
 # Mesh creation or loading
 # ============================================================================
-if not os.path.exists(mesh_dir + "/complex_field.npy") or force_mesh:
-    # Mesh does not exist or forcing re-computation
+# Check if mesh already exists and no re-computation is requested
+mesh_exists = os.path.exists(mesh_dir + "/complex_field.npy")
+if mesh_exists and not force_mesh:
+    if only_run_mesh:
+        # Only computing mesh but it already exists
+        print("Mesh already exists. Skip.")
+        exit(0)
+    else:
+        # Mesh exists, just load it (no need to read particle data)
+        if verbose:
+            print("Mesh exists. Now reading ...")
+        mesh = Mesh.load(mesh_dir, only_complex=True)
+        if verbose:
+            print("Mesh read done.")
+else:
+    # Mesh does not exist or forcing re-computation: need to read particle data
+    data, use_weight, use_value = read_data(data_filename, weight_key, value_key)
+    mesh = Mesh(Nmesh, boxsize)
+
+    # Extract optional weight and value fields from columns
+    if use_weight:
+        weights = data[:, 3]
+    else:
+        weights = None
+    if use_value:
+        values = data[:, 3 + (1 if use_weight else 0)]
+    else:
+        values = None
+
     if verbose:
         print("Now running mesh...")
-        print(f"Number of particles is {data['Pos'].shape[0]:d}; Boxsize is {boxsize:.0f}; Nmesh is {Nmesh:d}.")
-        print(f"Use resampler CIC; Use weights: {use_weight_key}; Use values: {use_value_key}; Use norm: {is_norm}")
+        print(f"Number of particles is {data.shape[0]:d}; Boxsize is {boxsize:.0f}; Nmesh is {Nmesh:d}.")
+        print(f"Use resampler CIC; Use weights: {use_weight}; Use values: {use_value}; Normalized: {is_norm}")
         print(f"Use nthreads: {nthreads:d}")
-    
+
     # Mesh the particle distribution using Cloud-in-Cell (CIC) interpolation
-    mesh.to_mesh(data["Pos"], resampler="CIC", weights=weights, values=values, 
+    mesh.to_mesh(data[:, :3], resampler="CIC", weights=weights, values=values,
                  nthreads=nthreads, is_norm=is_norm, c_api=True)
     # Perform FFT and apply compensation
     mesh.r2c(compensated=True, nthreads=nthreads, c_api=True)
-    
+
     if verbose:
         print(f"Mesh created. Now saving mesh to {mesh_dir}")
     mesh.save(mesh_dir, mode="all")
     if verbose:
         print("Mesh saved.")
-        
-elif only_run_mesh:
-    # Only computing mesh but it already exists
-    print("Mesh already exists. Skip.")
-    exit(0)
-else:
-    # Mesh exists and we need to load it
-    if verbose:
-        print("Mesh exists. Now reading ...")
-    mesh = Mesh.load(mesh_dir, only_complex=True)
-    if verbose:
-        print("Mesh read done.")
 
 # ============================================================================
 # Power spectrum calculation
@@ -276,16 +369,26 @@ else:
 if not only_run_mesh:
     # Compute power spectrum from the mesh
     if not os.path.exists(fftpower_filename) or force:
-        fftpower = FFTPower(Nmesh, boxsize)
-        if verbose:
-            print("Now running fftpower...")
-            print(f"kmin is {kmin:.1f}; kmax is {kmax:.1f}; dk is {dk:.2f}; Nmu is {Nmu:d}; mode is {mode}")
-            print(f"Use nthreads: {nthreads:d}")
-        
-        # Compute power spectrum from the meshed density field
-        power = fftpower.cal_ps_from_mesh(mesh, kmin, kmax, dk, Nmu, 
-                                          mode=mode, nthreads=nthreads, 
-                                          c_api=True, compensated=True)
+        if use_FFTPower2D:
+            fftpower = FFTPower2D(Nmesh, boxsize)
+            if verbose:
+                print("Now running FFTPower2D...")
+                print(f"Use nthreads: {nthreads:d}")
+                print(f"dk is determined automatically (kmin, kmax, Nmu are ignored).")
+            
+            # Compute 2D power spectrum from the meshed density field
+            fftpower.cal_ps_2d_from_mesh(mesh, nthreads=nthreads, dk=dk)
+        else:
+            fftpower = FFTPower(Nmesh, boxsize)
+            if verbose:
+                print("Now running fftpower...")
+                print(f"kmin is {kmin:.1f}; kmax is {kmax:.1f}; dk is {dk:.2f}; Nmu is {Nmu:d}; mode is {mode}")
+                print(f"Use nthreads: {nthreads:d}")
+            
+            # Compute power spectrum from the meshed density field
+            power = fftpower.cal_ps_from_mesh(mesh, kmin, kmax, dk, Nmu, 
+                                              mode=mode, nthreads=nthreads, 
+                                              c_api=True, compensated=True)
         
         # Save power spectrum result
         fftpower.save(fftpower_filename)

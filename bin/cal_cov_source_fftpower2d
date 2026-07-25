@@ -1,0 +1,216 @@
+#!python -u
+# -*- coding: utf-8 -*-
+"""
+Script to compute Jackknife power spectrum measurements.
+"""
+
+import argparse, sys
+import os
+from pathlib import Path
+import numpy as np
+import warnings
+from LSS_python.cov import run_jaccknife_fftpower
+from LSS_python.fftpower import FFTPower2D
+
+
+def read_data(filename, weight_key, value_key):
+    """
+    Load particle data from a .npy file.
+
+    Supports both structured arrays (with named fields) and plain arrays.
+    For structured arrays, positions are extracted from 'Pos' (or 'X', 'Y', 'Z'),
+    and weight/value fields are looked up by field name.
+    For plain arrays, weight_key and value_key act as boolean flags: when not None,
+    they enable the corresponding column (4th for weight, 5th for value).
+
+    When fields have different dtypes, the output is promoted to the highest
+    precision and a warning is issued.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the .npy file containing particle data
+    weight_key : str or None
+        For structured arrays: field name for weights.
+        For plain arrays: if not None, enables 4th column as weight.
+        None means no weights.
+    value_key : str or None
+        For structured arrays: field name for values.
+        For plain arrays: if not None, enables the next column after weight as value.
+        None means no values.
+
+    Returns
+    -------
+    tuple
+        (data_array, use_weight, use_value)
+        - data_array : ndarray, shape (N, 3), (N, 4) or (N, 5)
+        - use_weight : bool, whether weight column is present
+        - use_value : bool, whether value column is present
+
+    Raises
+    ------
+    ValueError
+        If required fields/columns are missing or data format is invalid
+    """
+    source = np.load(filename)
+
+    # === Structured array path (has named fields) ===
+    if source.dtype.names is not None:
+        # Identify position columns
+        if "Pos" in source.dtype.names:
+            pos = source["Pos"]
+        elif ("X" in source.dtype.names and "Y" in source.dtype.names
+              and "Z" in source.dtype.names):
+            pos = np.stack([source["X"], source["Y"], source["Z"]], axis=1)
+        else:
+            raise ValueError(
+                "Structured array must contain 'Pos' or ('X', 'Y', 'Z') fields"
+            )
+
+        # Validate requested fields exist
+        if weight_key is not None and weight_key not in source.dtype.names:
+            raise ValueError(
+                f"weight_key '{weight_key}' not found in structured array fields"
+            )
+        if value_key is not None and value_key not in source.dtype.names:
+            raise ValueError(
+                f"value_key '{value_key}' not found in structured array fields"
+            )
+
+        use_weight = weight_key is not None
+        use_value = value_key is not None
+
+        # Determine output dtype; promote if mixed types
+        dtypes = [pos.dtype]
+        if use_weight:
+            dtypes.append(source[weight_key].dtype)
+        if use_value:
+            dtypes.append(source[value_key].dtype)
+
+        final_dtype = np.result_type(*dtypes)
+        if final_dtype != pos.dtype:
+            warnings.warn(
+                f"Type mismatch: position dtype is {pos.dtype}, "
+                f"but weight/value fields have "
+                f"{', '.join(str(d) for d in dtypes[1:])}. "
+                f"Output array promoted to {final_dtype}."
+            )
+
+        # Assemble output array
+        ncols = 3 + (1 if use_weight else 0) + (1 if use_value else 0)
+        out = np.empty((source.shape[0], ncols), dtype=final_dtype)
+        out[:, :3] = pos
+        col = 3
+        if use_weight:
+            out[:, col] = source[weight_key]
+            col += 1
+        if use_value:
+            out[:, col] = source[value_key]
+
+    # === Plain array path (no named fields) ===
+    else:
+        use_weight = weight_key is not None
+        use_value = value_key is not None
+        ncols = 3 + (1 if use_weight else 0) + (1 if use_value else 0)
+
+        if source.shape[1] < ncols:
+            raise ValueError(
+                f"Plain array has {source.shape[1]} columns, "
+                f"but {ncols} are needed (3 positions"
+                + (" + 1 weight" if use_weight else "")
+                + (" + 1 value" if use_value else "")
+                + ")"
+            )
+
+        out = source[:, :ncols].copy()
+
+    return out, use_weight, use_value
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Compute Jackknife power spectrum 2D measurements."
+    )
+    # Required arguments
+    parser.add_argument("data_filename", type=str, help="Path to .npy file containing particle data")
+    parser.add_argument("BoxSize", type=float, help="Box size of the simulation. If <=0, calculated from data")
+    parser.add_argument("Nmesh", type=int, help="Number of mesh cells per dimension (grid resolution)")
+    parser.add_argument("ngrids", type=int, help="Number of divisions along each axis for Jackknife subboxes. Total Jackknife samples = ngrids^3")
+    
+    # Optional arguments with defaults
+    parser.add_argument("--weight_key", "-wei", type=str, default=None,
+                        help="Key for particle weights (default: None)")
+    parser.add_argument("--value_key", "-val", type=str, default=None,
+                        help="Key for particle values (default: None)")
+    parser.add_argument("-dk", type=float, default=None, help="Wavenumber step size for FFTPower2D (default: None means auto)")
+    parser.add_argument("--nthreads", "-n", type=int, default=1, help="Number of threads for parallel computation (default: 1)")
+    parser.add_argument("--fftpower_filename", "-fftpower",
+                        help="Output filename for results (default: default.pkl)",
+                        default=None)
+    parser.add_argument("--force", "-f", action="store_true", help="Force computation even if output file exists")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Print verbose output")
+    
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return 
+    else:
+        args = parser.parse_args()
+
+    # Simulation parameters
+    boxsize = args.BoxSize
+    Nmesh = args.Nmesh
+    dk = args.dk
+    
+    # Handle dk string for output filename
+    dk_str = "_auto" if dk is None else f"{dk:.2f}".replace(".", "dot")
+    
+    output_filename = args.fftpower_filename
+    if output_filename is None:
+        data_dir, = os.path.split(args.data_filename)
+        output_filename = Path(data_dir) / f"fftpower2d_list-Nmesh{Nmesh:d}_dk{dk_str}.pkl"
+    
+    # Check if output file exists and force flag
+    if os.path.exists(output_filename) and not args.force:
+        print(f"Output file '{output_filename}' already exists. Use --force to overwrite.", flush=True)
+        return
+    
+    # Load data using read_data (unified with cal_fftpower_box)
+    if args.verbose:
+        print(f"Loading data from {args.data_filename}...", flush=True)
+    data, with_weights, with_values = read_data(args.data_filename, args.weight_key, args.value_key)
+    if args.verbose:
+        print(f"Data shape: {data.shape}", flush=True)
+        print(f"Use weights: {with_weights}; Use values: {with_values}", flush=True)
+    
+    # Run Jackknife computation
+    if args.verbose:
+        print("Computing Jackknife power spectrum...", flush=True)
+        print(f"  Boxsize: {boxsize}", flush=True)
+        print(f"  Nmesh: {Nmesh}", flush=True)
+        print(f"  nthreads: {args.nthreads}", flush=True)
+        print(f"  with_weights: {with_weights}", flush=True)
+        print(f"  with_values: {with_values}", flush=True)
+        print(f"  dk: {dk_str}", flush=True)
+    
+    fftpower2d_list = run_jaccknife_fftpower(
+        data=data,
+        boxsize=boxsize,
+        Nmesh=Nmesh,
+        ngrids=args.ngrids,
+        nthreads=args.nthreads,
+        with_weights=with_weights,
+        with_values=with_values,
+        dk=dk,
+        verbose=args.verbose
+    )
+    
+    # Save results
+    if args.verbose:
+        print(f"Saving results to {output_filename}...", flush=True)
+    FFTPower2D.save_list(output_filename, fftpower2d_list)
+    if args.verbose:
+        print("Done!", flush=True)
+
+
+if __name__ == "__main__":
+    main()
