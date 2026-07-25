@@ -13,8 +13,6 @@ from scipy.linalg import eigh
 from sklearn.decomposition import PCA
 import joblib
 
-from LSS_python.cov import cal_Fisher_matrix_from_precomputed
-
 
 class Compressor:
     """Data compression using various algorithms (PCA, KL, MOPED).
@@ -640,6 +638,8 @@ class Compressor:
             If any required parameter is missing or if precomputed_data
             does not contain both 'plus' and 'minus' for any parameter.
         """
+        from LSS_python.fisher import cal_Fisher_matrix_from_precomputed    
+
         # Validate required parameters
         if precomputed_data is None:
             raise ValueError("precomputed_data is required for MOPED compression")

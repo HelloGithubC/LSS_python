@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from scipy.stats import norm, chi2
 
-from LSS_python.cov import _compute_ellipse_params_from_fisher
+from LSS_python.fisher import _compute_ellipse_params_from_fisher
 
 def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
                               sigma=1, color='C0', show_center=True,
