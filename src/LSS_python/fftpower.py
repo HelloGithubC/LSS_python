@@ -122,6 +122,40 @@ class FFTPower:
         self.removed_shotnoise = False
         self.is_run_ps_3d = False
 
+    @classmethod
+    def from_fftpower_2d(cls, fftpower_2d, kmin, kmax, dk, Nmu=None, mode="2d", k_logarithmic=False, nthreads=1, c_api=True):
+        """
+        Create an FFTPower object from an FFTPower2D object.
+
+        This constructs an FFTPower instance by extracting Nmesh and BoxSize
+        from the given FFTPower2D and computing the power spectrum via
+        ``cal_pkmu_from_ps_2d``.
+
+        Args:
+            fftpower_2d: FFTPower2D instance (must have called ``cal_ps_2d_from_mesh`` first).
+            kmin, kmax, dk: k-space binning parameters (passed to ``cal_pkmu_from_ps_2d``).
+            Nmu: Number of mu bins.
+            mode: Power spectrum mode ("2d" or "1d").
+            k_logarithmic: Whether k bins are logarithmic.
+            nthreads: Number of threads for parallel computation.
+            c_api: Whether to use C API.
+
+        Returns:
+            FFTPower instance with the power spectrum computed.
+        """
+        self = cls(fftpower_2d.attrs["Nmesh"], fftpower_2d.attrs["BoxSize"])
+        self.removed_shotnoise = fftpower_2d.removed_shotnoise
+        self.attrs["shotnoise"] = 0.0 if fftpower_2d.removed_shotnoise else fftpower_2d.attrs["shotnoise"]
+        self.cal_pkmu_from_ps_2d(
+            fftpower_2d.ps_2d, fftpower_2d.k_2d, fftpower_2d.modes_2d,
+            kmin=kmin, kmax=kmax, dk=dk, Nmu=Nmu,
+            mode=mode, k_logarithmic=k_logarithmic,
+            nthreads=nthreads, c_api=c_api,
+        )
+        if self.power is not None:
+            self.power["modes"] = fftpower_2d.modes_2d
+        return self
+
     def cal_ps_from_mesh(self, mesh, kmin, kmax, dk, Nmu=None,
     mode="1d", k_logarithmic=False, mesh_kernel=None, compensated=True, force_create_complex_field=False, nthreads=1, device_id=-1, c_api=True, pybind=True, ps_3d=None):
         """

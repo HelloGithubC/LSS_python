@@ -52,7 +52,9 @@ def analyze_float_format(s):
             precision = len(frac_part)
             format_spec = f".{precision}{format_str}"
         else:
-            format_spec = f".0{format_str}"
+            # 源字符串无小数部分（如 "1e3"）：使用合理的默认精度，
+            # 避免 ".0e" 生成形如 "1e+03" 的非标准/难读写法。
+            format_spec = f".6{format_str}"
     elif decimal_match:
         # 普通小数
         sign, int_part, frac_part = decimal_match.groups()

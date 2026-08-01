@@ -121,9 +121,17 @@ def create_PS(omega_m0, w0, kmax, verbose=False, params=None, method="CAMB", kmi
 
 ## Read and write parameter files (Only support lua format if the simulation supports, or txt format)
 def read_params_lua(filename: str):
+    """ 读取 lua 格式配置文件。
+
+    Returns:
+        params (dict): 解析后的参数，数值为自然类型（int/float），可直接参与运算。
+        formats (dict): 每个 key 对应的数值格式串（如 ".1f"、".6e"），用于写回时保留原格式。
+                        非数值类型的 key 不在其中。
+    """
     import ast,re 
     from .io import analyze_float_format
     params = {}
+    formats = {}
 
     with open(filename, "r", encoding="utf-8") as f:
         for line in f:
@@ -138,7 +146,7 @@ def read_params_lua(filename: str):
 
             key, value = map(str.strip, line.split("=", 1))
 
-            # 若 value 是花括号形式 {a, b, c}，转为 list
+            # 若 value 是花括号形式 {a, b, c}，转为 list（仅支持单行 table）
             if re.match(r"^\{.*\}$", value):
                 # 去掉花括号并按逗号分
                 inner = value.strip("{}").strip()
@@ -168,19 +176,32 @@ def read_params_lua(filename: str):
                         eval_value = ast.literal_eval(v)
                         if isinstance(eval_value, float) or isinstance(eval_value, int):
                             if isinstance(eval_value, float):
-                                params[key] = analyze_float_format(v)
+                                val, fmt = analyze_float_format(v)
+                                params[key] = val
+                                formats[key] = fmt
                             else:
                                 params[key] = eval_value
                         if isinstance(eval_value, str):
                             params[key] = eval_value.strip()
                     except Exception:
-                        params[key] = (v, "var")
+                        params[key] = v  # 无法解析的，原样保留为字符串
 
-    return params
+    return params, formats
 
-def write_params_lua(params: dict, filename: str):
-    def format_value(v):
-        # tuple -> {a, b, c}
+def write_params_lua(params: dict, filename: str, formats: dict = None):
+    """ 写入 lua 格式配置文件。
+
+    Args:
+        params (dict): 参数值（自然类型）。
+        filename (str): 输出文件路径。
+        formats (dict, optional): 数值格式串字典（来自 read_params_lua）。
+            提供时浮点按原格式写出；未提供或缺失时退回默认格式。
+    """
+    if formats is None:
+        formats = {}
+
+    def format_value(v, fmt=None):
+        # list -> {a, b, c}（仅支持单行 table）
         if isinstance(v, list):
             items = []
             for x in v:
@@ -189,21 +210,16 @@ def write_params_lua(params: dict, filename: str):
                 else:
                     items.append(f'"{x}"')
             return "{ " + ", ".join(items) + " }"
-        elif isinstance(v, tuple):
-            value = v[0]
-            format_str = v[1]
-            if format_str == "var":
-                return str(value)
-            return format(value, format_str)
         # boolean -> true / false
         elif isinstance(v, bool):
             return "true" if v else "false"
-
-        # number -> keep numeric format
-        elif isinstance(v, (int, float)):
+        # 浮点：优先使用 formats 中记录的格式串
+        elif isinstance(v, float):
+            return format(v, fmt) if fmt else repr(v)
+        # 整数
+        elif isinstance(v, int):
             return str(v)
-
-        # string -> quote
+        # 字符串 -> 加引号
         elif isinstance(v, str):
             return f'"{v}"'
         else:
@@ -211,12 +227,20 @@ def write_params_lua(params: dict, filename: str):
 
     with open(filename, "w", encoding="utf-8") as f:
         for key, value in params.items():
-            f.write(f"{key} = {format_value(value)}\n")
+            fmt = formats.get(key)
+            f.write(f"{key} = {format_value(value, fmt)}\n")
 
 def read_params_txt(filepath, comment_char="%", sep=None):
+    """ 读取 txt 格式配置文件。
+
+    Returns:
+        params (dict): 解析后的参数（自然类型）。
+        formats (dict): 数值格式串字典，用于写回时保留原格式。
+    """
     from .io import analyze_float_format
     import ast
     params = {}
+    formats = {}
 
     with open(filepath, "r", encoding="utf-8") as f:
         for line in f:
@@ -247,7 +271,9 @@ def read_params_txt(filepath, comment_char="%", sep=None):
                         eval_value = ast.literal_eval(v)
                         if isinstance(eval_value, float) or isinstance(eval_value, int):
                             if isinstance(eval_value, float):
-                                params[key] = analyze_float_format(v)
+                                val, fmt = analyze_float_format(v)
+                                params[key] = val
+                                formats[key] = fmt
                             else:
                                 params[key] = eval_value
                         else:
@@ -256,42 +282,47 @@ def read_params_txt(filepath, comment_char="%", sep=None):
                         params[key] = v
             # 其他情况忽略（比如纯注释行）
 
-    return params
+    return params, formats
 
-def write_params_txt(params, filepath, sep=None, str_no_quote=False):
+def write_params_txt(params, filepath, formats=None, sep=None, str_no_quote=False):
     """
     sep (str): separator between key and value. Default is None, which means use eight spaces
+    formats (dict): 数值格式串字典（来自 read_params_txt），用于保留原格式。
     """
+    if formats is None:
+        formats = {}
     if sep is None:
         sep = " " * 8
-    def format_value(v):
+    def format_value(v, fmt=None):
         # boolean -> true / false
-        if isinstance(v, tuple):
-            value = v[0]
-            format_str = v[1]
-            return format(value, format_str)
-        # boolean -> true / false
-        elif isinstance(v, bool):
+        if isinstance(v, bool):
             return "true" if v else "false"
 
         # number -> keep numeric format
-        elif isinstance(v, (int, float)):
+        elif isinstance(v, float):
+            return format(v, fmt) if fmt else repr(v)
+        elif isinstance(v, int):
             return str(v)
 
         # string -> quote
-        elif str_no_quote:
-            return v
+        elif isinstance(v, str):
+            return v if str_no_quote else f'"{v}"'
         else:
-            return f'"{v}"'
+            raise ValueError(f"Unsupported value type: {type(v)}")
     with open(filepath, "w", encoding="utf-8") as f:
         for key, value in params.items():
-            f.write(f"{key}{sep}{format_value(value)}\n")
+            fmt = formats.get(key)
+            f.write(f"{key}{sep}{format_value(value, fmt)}\n")
 
 ## Load default parameters
 def get_default_params(param_name):
     """ Get default parameters for a simulation
+
     Args:
         param_name (str): The param name. Support cola_halo, mg_cola_C, mg_cola_CPP, rockstar
+    Returns:
+        params (dict): 解析后的默认参数（自然类型）。
+        formats (dict): 数值格式串字典，用于写回时保留原格式。
     """
     supported_sims = ["cola_halo", "mg_cola_C", "mg_cola_CPP", "rockstar"]
     if param_name not in supported_sims:
