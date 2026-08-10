@@ -36,16 +36,16 @@ def dw_kernel_jit(d_array, h):
             dw_array[i] = 0.0
     return dw_array
 
-@njit 
-def cal_rho_array(distance_array, h, use_max_distance_as_h=True):
+@njit
+def cal_rho_array(distance_array, h, use_adaptive_h=True):
     """ cal rho to get MCF
     Note:
         distance_array: [n_galaxy, n_neighbor]
-        h: The smoothing length. Only used when use_max_distance_as_h is False
+        h: The fixed smoothing length. Only used when use_adaptive_h is False
     """
     rho_array = np.zeros(distance_array.shape[0], dtype=np.float64)
     for i in range(distance_array.shape[0]):
-        if use_max_distance_as_h:
+        if use_adaptive_h:
             h_need = np.max(distance_array[i]) / 2.0
         else:
             h_need = h
@@ -82,16 +82,51 @@ def cal_rho(distance_array, h, use_max_distance_as_h=False):
         h = np.max(distance_array) / 2.0
     return np.sum(w_kernel(distance_array, h))
 
-def create_rho(pos, boxsize, k=30, nthreads=1, only_return_rho=True):
-    """ The main function to create rho
-    Note:
-        pos: [n_galaxy, 3]
+def create_rho(
+    pos,
+    boxsize,
+    k=30,
+    nthreads=1,
+    only_return_rho=True,
+    ignore_self=False,
+    use_adaptive_h=True,
+    h=None,
+):
+    """Estimate a local number-density mark for each position.
+
+    Parameters
+    ----------
+    pos : ndarray
+        Positions with shape ``(n_galaxy, 3)``.
+    boxsize : float or ndarray or None
+        Periodic box size. Pass ``None`` for non-periodic distances.
+    k : int, default=30
+        Number of neighbours used to estimate each density.
+    nthreads : int, default=1
+        Number of KDTree query workers.
+    only_return_rho : bool, default=True
+        Return only the density mark; otherwise append it to ``pos``.
+    ignore_self : bool, default=False
+        Exclude the query point itself from its neighbour list.
+    use_adaptive_h : bool, default=True
+        Set ``h`` to half the maximum queried neighbour distance for each point.
+    h : float, optional
+        Fixed smoothing length when ``use_adaptive_h`` is ``False``.
     """
+    if not use_adaptive_h and (h is None or h <= 0.0):
+        raise ValueError("h must be positive when use_adaptive_h is False")
     if boxsize is not None:
         boxsize += 1e-5
     kdtree = KDTree(pos, boxsize=boxsize)
-    distance_array, _ = kdtree.query(pos, k=k, workers=nthreads)
-    rho_array = cal_rho_array(distance_array, h=None, use_max_distance_as_h=True).astype(pos.dtype)
+    query_k = k + 1 if ignore_self else k
+    distance_array, _ = kdtree.query(pos, k=query_k, workers=nthreads)
+    if ignore_self:
+        distance_array = distance_array[:, 1:]
+    rho_array = cal_rho_array(
+        distance_array,
+        h=h,
+        use_adaptive_h=use_adaptive_h,
+    ).astype(pos.dtype)
     if only_return_rho:
         return rho_array
     else:
