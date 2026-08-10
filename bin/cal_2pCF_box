@@ -1,4 +1,4 @@
-#!python -u
+#! /public4/home/a0s003156/miniforge3/envs/xiaoliang/bin/python -u
 """
 Two-point correlation function (2pCF) calculator for simulation boxes.
 This script computes the 2D 2pCF (xi(s, mu)) using the Landy-Szalay estimator
