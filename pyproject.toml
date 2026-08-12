@@ -16,6 +16,8 @@ dependencies = [
     "numba",
     "joblib",
     "scipy",
+    "tqdm",
+    "freud-analysis",
     "emcee",
     "h5py",
     "multiprocess",
