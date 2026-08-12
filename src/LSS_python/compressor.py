@@ -47,22 +47,14 @@ class Compressor:
     >>> compressor.fit(X_signal=signal_train, X_noise=noise_train, snr_threshold=1.0)
     >>> X_compressed = compressor.transform(X_test)
 
-    >>> # MOPED compression with precomputed data (central differences)
+    >>> # MOPED compression with precomputed parameter points and function values
     >>> compressor = Compressor(method='moped')
+    >>> # parameter_points: shape (n_params, 2, n_params)
+    >>> # function_values: shape (n_params, 2, n_features)
     >>> compressor.fit(
-    ...     precomputed_data=data,
-    ...     delta=d,
+    ...     parameter_points=pts,
+    ...     function_values=vals,
     ...     cov_matrix=C
-    ... )
-    >>> X_compressed = compressor.transform(X_test)
-
-    >>> # MOPED compression with Fisher matrix calculation
-    >>> compressor = Compressor(method='moped')
-    >>> compressor.fit(
-    ...     precomputed_data=data,
-    ...     delta=d,
-    ...     cov_matrix=C,
-    ...     best_fit=theta_best
     ... )
     >>> X_compressed = compressor.transform(X_test)
     >>> print(compressor.get_fisher_matrix())  # Access the computed Fisher matrix
@@ -109,8 +101,8 @@ class Compressor:
         -------
         fisher_matrix : ndarray or None
             Fisher information matrix with shape (n_params, n_params) if
-            computed during fitting (only available for MOPED method with
-            best_fit parameter provided), otherwise None.
+            computed during fitting (only available for MOPED method),
+            otherwise None.
 
         Raises
         ------
@@ -125,8 +117,7 @@ class Compressor:
         return self._fisher_matrix
 
     def fit(self, X_signal=None, *, n_components=None, pca_ratio_sum_max=None, X_noise=None, snr_threshold=None,
-            fiducial_array=None, precomputed_data=None, delta=None, cov_matrix=None,
-            best_fit=None):
+            fiducial_array=None, parameter_points=None, function_values=None, cov_matrix=None):
         """Fit the compression model.
 
         Parameters
@@ -159,19 +150,18 @@ class Compressor:
         fiducial_array : ndarray, shape (n_features,), optional
             Fiducial array. Optional for MOPED compression; if provided,
             used only for dimension tracking, not for centering.
-        precomputed_data : dict, optional
-            Precomputed function values for derivative calculation. Required
-            for MOPED compression. Format:
-            {param_index: {'plus': f(theta + delta_i), 'minus': f(theta - delta_i)}}
-        delta : float or array_like, optional
-            Finite difference step size(s) for each parameter. Required for
-            MOPED compression.
+        parameter_points : ndarray, shape (n_params, 2, n_params), optional
+            Precomputed parameter points in structured format.
+            parameter_points[i, 0] = parameter vector with parameter i perturbed upward
+            parameter_points[i, 1] = parameter vector with parameter i perturbed downward
+            Required for MOPED compression.
+        function_values : ndarray, shape (n_params, 2, n_output), optional
+            Precomputed function values matching parameter_points.
+            function_values[i, 0] = f(parameter_points[i, 0])
+            function_values[i, 1] = f(parameter_points[i, 1])
+            Required for MOPED compression.
         cov_matrix : ndarray, shape (n_features, n_features), optional
             Covariance matrix. Required for MOPED compression.
-        best_fit : array_like, optional
-            Best-fit parameter values. Optional for MOPED. If provided, the
-            Fisher information matrix is computed and stored in
-            `self._fisher_matrix`.
 
         Returns
         -------
@@ -204,20 +194,11 @@ class Compressor:
         >>> # MOPED compression
         >>> compressor = Compressor(method='moped')
         >>> compressor.fit(
-        ...     precomputed_data=data,
-        ...     delta=d,
+        ...     parameter_points=pts,      # shape (n_params, 2, n_params)
+        ...     function_values=vals,      # shape (n_params, 2, n_features)
         ...     cov_matrix=C
         ... )
-
-        >>> # MOPED compression with Fisher matrix
-        >>> compressor = Compressor(method='moped')
-        >>> compressor.fit(
-        ...     precomputed_data=data,
-        ...     delta=d,
-        ...     cov_matrix=C,
-        ...     best_fit=theta_best
-        ... )
-    >>> print(compressor.get_fisher_matrix())
+        >>> print(compressor.get_fisher_matrix())
     """
         import warnings
 
@@ -266,10 +247,9 @@ class Compressor:
         elif self.method == 'moped':
             self._fit_moped(
                 X_signal,
-                precomputed_data=precomputed_data,
-                delta=delta,
+                parameter_points=parameter_points,
+                function_values=function_values,
                 cov_matrix=cov_matrix,
-                best_fit=best_fit,
             )
 
         self.is_fitted = True
@@ -601,7 +581,7 @@ class Compressor:
     # MOPED implementation
     # =========================================================================
 
-    def _fit_moped(self, X_signal, precomputed_data, delta, cov_matrix, best_fit=None, **kwargs):
+    def _fit_moped(self, X_signal, parameter_points, function_values, cov_matrix, **kwargs):
         """Fit MOPED compression.
 
         MOPED (MOPED Algorithm for Parameter Estimation and Data Compression)
@@ -619,54 +599,55 @@ class Compressor:
         ----------
         X_signal : None
             Ignored. Included for API consistency with other methods.
-        precomputed_data : dict, required
-            Precomputed function values for derivative calculation using central differences.
-            Format: {param_index: {'plus': f(theta + delta_i), 'minus': f(theta - delta_i)}}
-            Each parameter must have both 'plus' and 'minus' entries.
-        delta : float or array_like, required
-            Finite difference step size(s) for each parameter.
+        parameter_points : ndarray, shape (n_params, 2, n_params), required
+            Parameter values at which the model function was evaluated.
+            parameter_points[i, 0] = parameter vector with parameter i perturbed upward
+            parameter_points[i, 1] = parameter vector with parameter i perturbed downward
+        function_values : ndarray, shape (n_params, 2, n_features), required
+            Model function values at the corresponding parameter_points.
         cov_matrix : ndarray, shape (n_features, n_features), required
             Covariance matrix. Must be provided explicitly.
-        best_fit : array_like, optional
-            Best-fit parameter values. If provided, the Fisher information matrix
-            is computed using `cal_Fisher_matrix_from_precomputed` and stored in
-            `self._fisher_matrix`.
 
         Raises
         ------
         ValueError
-            If any required parameter is missing or if precomputed_data
-            does not contain both 'plus' and 'minus' for any parameter.
+            If any required parameter is missing or if shapes are incorrect.
         """
-        from LSS_python.fisher import cal_Fisher_matrix_from_precomputed    
+        from LSS_python.fisher import cal_Fisher_matrix_from_precomputed
 
         # Validate required parameters
-        if precomputed_data is None:
-            raise ValueError("precomputed_data is required for MOPED compression")
-        if delta is None:
-            raise ValueError("delta is required for MOPED compression")
+        if parameter_points is None:
+            raise ValueError("parameter_points is required for MOPED compression")
+        if function_values is None:
+            raise ValueError("function_values is required for MOPED compression")
         if cov_matrix is None:
             raise ValueError("cov_matrix is required for MOPED compression")
 
-        # Determine number of parameters from precomputed_data
-        n_parameters = len(precomputed_data)
-        if n_parameters == 0:
-            raise ValueError("precomputed_data must contain at least one parameter")
-
-        # Process delta
-        if np.isscalar(delta):
-            delta = np.full(n_parameters, delta, dtype=np.float64)
-        else:
-            delta = np.asarray(delta, dtype=np.float64)
-            if len(delta) != n_parameters:
-                raise ValueError(
-                    f"delta length {len(delta)} doesn't match "
-                    f"number of parameters {n_parameters}"
-                )
+        parameter_points = np.asarray(parameter_points, dtype=np.float64)
+        function_values = np.asarray(function_values, dtype=np.float64)
+        
+        # Validate shapes
+        if parameter_points.ndim != 3 or parameter_points.shape[1] != 2:
+            raise ValueError(
+                f"parameter_points must have shape (n_params, 2, n_params), "
+                f"got {parameter_points.shape}"
+            )
+        if function_values.ndim != 3 or function_values.shape[:2] != (parameter_points.shape[0], 2):
+            raise ValueError(
+                f"function_values must have shape (n_params, 2, n_features), "
+                f"got {function_values.shape}"
+            )
+        
+        n_params = parameter_points.shape[0]
+        n_features = function_values.shape[2]
 
         # Determine n_features from cov_matrix (since fiducial_array is optional)
         cov_matrix = np.asarray(cov_matrix, dtype=np.float64)
-        n_features = cov_matrix.shape[0]
+        if cov_matrix.shape[0] != n_features:
+            raise ValueError(
+                f"cov_matrix shape {cov_matrix.shape} doesn't match "
+                f"n_features {n_features} from function_values"
+            )
         # Set mean for dimension tracking if not already set
         if self._mean is None:
             self._mean = np.zeros(n_features)
@@ -685,29 +666,30 @@ class Compressor:
             # Use pseudo-inverse if singular
             cov_inv = linalg.pinv(cov_matrix)
 
-        # Compute derivatives from precomputed data using central differences
-        derivatives = np.zeros((n_features, n_parameters))
-        for i in range(n_parameters):
-            if i not in precomputed_data:
+        # Compute delta from parameter_points
+        # delta_i = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2
+        delta = np.zeros(n_params, dtype=np.float64)
+        for i in range(n_params):
+            delta[i] = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2.0
+            if np.abs(delta[i]) < 1e-15:
                 raise ValueError(
-                    f"precomputed_data missing entry for parameter index {i}"
+                    f"delta for parameter {i} is too small: {delta[i]}. "
+                    f"Check that parameter_points[{i}, 0] and parameter_points[{i}, 1] "
+                    f"differ in the {i}-th component."
                 )
 
-            param_data = precomputed_data[i]
-            if 'plus' not in param_data or 'minus' not in param_data:
-                raise ValueError(
-                    f"precomputed_data for parameter {i} must contain both "
-                    f"'plus' and 'minus' entries for central difference"
-                )
-
-            f_plus = np.asarray(param_data['plus'], dtype=np.float64)
-            f_minus = np.asarray(param_data['minus'], dtype=np.float64)
+        # Compute derivatives from structured data
+        # derivatives[:, i] = (function_values[i, 0] - function_values[i, 1]) / (2 * delta[i])
+        derivatives = np.zeros((n_features, n_params))
+        for i in range(n_params):
+            f_plus = function_values[i, 0]   # shape: (n_features,)
+            f_minus = function_values[i, 1]  # shape: (n_features,)
             derivatives[:, i] = (f_plus - f_minus) / (2.0 * delta[i])
 
         # Compute MOPED compression coefficients using equation (13):
         # b_m = [C^{-1} μ,m - Σ_{q=1}^{m-1} (μ,m^T b_q) b_q] / sqrt[μ,m^T C^{-1} μ,m - Σ_{q=1}^{m-1} (μ,m^T b_q)^2]
-        self._moped_coefficients = np.zeros((n_features, n_parameters))
-        for i in range(n_parameters):
+        self._moped_coefficients = np.zeros((n_features, n_params))
+        for i in range(n_params):
             db_dtheta = derivatives[:, i]  # μ,m = ∂μ/∂θ_m
 
             # Compute sum of squared projections for denominator
@@ -738,13 +720,12 @@ class Compressor:
 
             self._moped_coefficients[:, i] = numerator / denominator
 
-        self.n_components = n_parameters
+        self.n_components = n_params
 
-        # Compute and store Fisher information matrix if best_fit is provided
-        if best_fit is not None:
-            self._fisher_matrix = cal_Fisher_matrix_from_precomputed(
-                precomputed_data, best_fit, delta, cov_matrix
-            )
+        # Compute and store Fisher information matrix
+        self._fisher_matrix = cal_Fisher_matrix_from_precomputed(
+            parameter_points, function_values, cov_matrix
+        )
 
     def _transform_moped(self, X):
         """Transform using fitted MOPED coefficients.

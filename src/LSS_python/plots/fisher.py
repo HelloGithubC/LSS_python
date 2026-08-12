@@ -7,7 +7,8 @@ from LSS_python.fisher import _compute_ellipse_params_from_fisher
 
 def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
                               sigma=1, color='C0', show_center=True,
-                              ellipse_fill=True, visual_xylims=True, **kwargs):
+                              ellipse_fill=True, visual_xylims=True,
+                              param_indices=None, **kwargs):
     """
     Plot error ellipse from Fisher matrix.
 
@@ -17,9 +18,12 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
     Parameters
     ----------
     fisher : ndarray
-        Fisher information matrix, must be 2x2.
+        Fisher information matrix. Can be 2x2 (direct ellipse plot) or
+        NxN (N >= 2, requires param_indices to select which two parameters).
     best_fit : array_like
-        Best-fit parameter values [p1, p2] for the ellipse center.
+        Best-fit parameter values for the ellipse center.
+        If fisher is NxN (N > 2), must have N elements.
+        If fisher is 2x2, must have 2 elements.
     ax : matplotlib.axes.Axes, optional
         Matplotlib axis to plot on. If None, creates a new figure and axis.
     plot_engine : str, default 'Ellipse'
@@ -48,6 +52,11 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         If True, use visually pleasing axis limits (different ranges for x and y).
         If False, enforce equal axis ranges and aspect ratio to ensure perfect
         alignment between ellipse and sigma points.
+    param_indices : tuple of int, optional
+        Indices of the two parameters to plot when fisher is NxN (N > 2).
+        Must be a tuple of two distinct integers in range [0, N-1].
+        If fisher is 2x2, this parameter is ignored.
+        Example: param_indices=(0, 2) plots parameter 0 vs parameter 2.
     **kwargs : dict
         Additional keyword arguments for customization. Supported keys:
 
@@ -93,7 +102,8 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
     Raises
     ------
     ValueError
-        If fisher is not a 2x2 matrix, or plot_engine is not 'Ellipse' or 'parametric'.
+        If fisher is not a valid square matrix, param_indices is invalid,
+        or plot_engine is not 'Ellipse' or 'parametric'.
     ImportError
         If matplotlib is not installed.
 
@@ -118,14 +128,48 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
 
     # Validate fisher matrix dimensions
     fisher = np.atleast_2d(fisher)
-    if fisher.shape != (2, 2):
-        raise ValueError(f"Fisher matrix must be 2x2 for ellipse plotting, "
+    n_params = fisher.shape[0]
+    if fisher.shape[0] != fisher.shape[1]:
+        raise ValueError(f"Fisher matrix must be square, got shape {fisher.shape}")
+    if n_params < 2:
+        raise ValueError(f"Fisher matrix must have at least 2 parameters, "
                         f"got shape {fisher.shape}")
 
     # Validate best_fit
     best_fit = np.atleast_1d(best_fit)
-    if len(best_fit) != 2:
-        raise ValueError(f"best_fit must have exactly 2 elements, got {len(best_fit)}")
+    if len(best_fit) != n_params:
+        raise ValueError(f"best_fit must have {n_params} elements (matching fisher), "
+                        f"got {len(best_fit)}")
+
+    # Handle param_indices: extract 2x2 sub-matrix if needed
+    if n_params == 2:
+        # 2x2 fisher: use directly, param_indices ignored
+        if param_indices is not None:
+            # Validate even though we'll ignore it
+            param_indices = tuple(param_indices)
+            if len(param_indices) != 2:
+                raise ValueError(f"param_indices must have 2 elements, got {len(param_indices)}")
+        fisher_2d = fisher
+        best_fit_2d = best_fit
+    else:
+        # NxN fisher (N > 2): param_indices is required
+        if param_indices is None:
+            raise ValueError(f"param_indices is required when fisher is {n_params}x{n_params}. "
+                            f"Specify which 2 parameters to plot, e.g. param_indices=(0, 1)")
+        param_indices = tuple(param_indices)
+        if len(param_indices) != 2:
+            raise ValueError(f"param_indices must have exactly 2 elements, got {len(param_indices)}")
+        i, j = param_indices
+        if not (0 <= i < n_params and 0 <= j < n_params):
+            raise ValueError(f"param_indices values must be in range [0, {n_params-1}], "
+                            f"got {param_indices}")
+        if i == j:
+            raise ValueError(f"param_indices must specify two different parameters, "
+                            f"got ({i}, {j})")
+        # Extract 2x2 sub-matrix and corresponding best_fit values
+        idx = np.array([i, j])
+        fisher_2d = fisher[np.ix_(idx, idx)]
+        best_fit_2d = best_fit[idx]
 
     # Validate plot_engine
     if plot_engine not in ['Ellipse', 'parametric']:
@@ -166,7 +210,7 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
     n_points = kwargs.get('n_points', 200)
 
     # Compute ellipse parameters using helper function
-    ellipse_params = _compute_ellipse_params_from_fisher(fisher, confidence_level)
+    ellipse_params = _compute_ellipse_params_from_fisher(fisher_2d, confidence_level)
     
     # Extract parameters
     a = ellipse_params['semi_minor']  # semi-minor axis
@@ -191,7 +235,7 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         # Use matplotlib.patches.Ellipse
         # Note: When aspect ratio is not 'equal', angle is interpreted in screen space
         ellipse = Ellipse(
-            xy=best_fit,
+            xy=best_fit_2d,
             width=2 * a,      # full width (2 * semi-axis)
             height=2 * b,     # full height (2 * semi-axis)
             angle=angle_deg,
@@ -223,8 +267,8 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         y_rotated = x_ellipse * sin_angle + y_ellipse * cos_angle
         
         # Translate to center
-        x_final = x_rotated + best_fit[0]
-        y_final = y_rotated + best_fit[1]
+        x_final = x_rotated + best_fit_2d[0]
+        y_final = y_rotated + best_fit_2d[1]
         
         # Draw filled ellipse if requested
         if ellipse_fill:
@@ -242,7 +286,7 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
 
     # Plot center point if requested
     if show_center:
-        ax.plot(best_fit[0], best_fit[1],
+        ax.plot(best_fit_2d[0], best_fit_2d[1],
                 marker=center_marker,
                 color=center_color,
                 markersize=center_size,
@@ -272,19 +316,19 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         elif xlim is not None:
             # Only xlim provided, set ylim based on ellipse
             x_min, x_max = xlim
-            y_min = best_fit[1] - half_height
-            y_max = best_fit[1] + half_height
+            y_min = best_fit_2d[1] - half_height
+            y_max = best_fit_2d[1] + half_height
         elif ylim is not None:
             # Only ylim provided, set xlim based on ellipse
             y_min, y_max = ylim
-            x_min = best_fit[0] - half_width
-            x_max = best_fit[0] + half_width
+            x_min = best_fit_2d[0] - half_width
+            x_max = best_fit_2d[0] + half_width
         else:
             # Neither provided, use ellipse bounding box
-            x_min = best_fit[0] - half_width
-            x_max = best_fit[0] + half_width
-            y_min = best_fit[1] - half_height
-            y_max = best_fit[1] + half_height
+            x_min = best_fit_2d[0] - half_width
+            x_max = best_fit_2d[0] + half_width
+            y_min = best_fit_2d[1] - half_height
+            y_max = best_fit_2d[1] + half_height
         
         # Calculate ranges and apply padding
         x_range = x_max - x_min
@@ -310,19 +354,19 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         elif xlim is not None:
             # Only xlim provided, set ylim based on ellipse
             x_min, x_max = xlim
-            y_min = best_fit[1] - half_height
-            y_max = best_fit[1] + half_height
+            y_min = best_fit_2d[1] - half_height
+            y_max = best_fit_2d[1] + half_height
         elif ylim is not None:
             # Only ylim provided, set xlim based on ellipse
             y_min, y_max = ylim
-            x_min = best_fit[0] - half_width
-            x_max = best_fit[0] + half_width
+            x_min = best_fit_2d[0] - half_width
+            x_max = best_fit_2d[0] + half_width
         else:
             # Neither provided, use ellipse bounding box
-            x_min = best_fit[0] - half_width
-            x_max = best_fit[0] + half_width
-            y_min = best_fit[1] - half_height
-            y_max = best_fit[1] + half_height
+            x_min = best_fit_2d[0] - half_width
+            x_max = best_fit_2d[0] + half_width
+            y_min = best_fit_2d[1] - half_height
+            y_max = best_fit_2d[1] + half_height
         
         # Calculate ranges
         x_range = x_max - x_min

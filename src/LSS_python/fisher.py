@@ -132,53 +132,30 @@ def cal_Fisher_matrix(func, best_fit, cov_matrix, delta=None, computed_jac=None,
         return fisher
 
 
-def cal_Fisher_matrix_from_precomputed(precomputed_data, best_fit, delta, cov_matrix, return_jac=False):
+def cal_Fisher_matrix_from_precomputed(parameter_points, function_values, cov_matrix, return_jac=False):
     """
-    Calculate Fisher matrix from precomputed function values at parameter points.
+    Calculate Fisher matrix from precomputed parameter-function value pairs.
 
     This function is useful when function evaluations are expensive and have been
-    precomputed at points around the best-fit parameters. It computes the Jacobian
-    matrix from the precomputed values and then calls cal_Fisher_matrix.
+    precomputed at ±delta perturbations for each parameter. It uses the structured
+    format where the meaning of each point is explicit from its position in the array.
 
     The Fisher information matrix is computed as:
     F = (∂μ/∂θ)^T * C^{-1} * (∂μ/∂θ)
 
-    where the Jacobian ∂μ/∂θ is computed using finite differences from the
-    precomputed function values.
-
     Parameters
     ----------
-    precomputed_data : dict
-        Dictionary containing precomputed function values. Format:
-        {param_index: {'plus': f(theta + delta_i), 'minus': f(theta - delta_i)}}
-        
-        Optionally include 'best' key for one-sided derivatives:
-        {'best': f(theta), 0: {'plus': ...}, 1: {'minus': ...}, ...}
-        
-        Example for 2 parameters (central differences):
-        {
-            0: {'plus': array([...]), 'minus': array([...])},  # f(best_fit + delta[0], best_fit[1])
-            1: {'plus': array([...]), 'minus': array([...])}   # f(best_fit[0], best_fit[1] + delta[1])
-        }
-        
-        Example with one-sided derivatives:
-        {
-            'best': array([...]),  # f(best_fit) - required for one-sided derivatives
-            0: {'plus': array([...]), 'minus': array([...])},  # central difference
-            1: {'plus': array([...])}  # forward difference only (requires 'best')
-        }
-        
-        For scalar function outputs, use float values instead of arrays.
+    parameter_points : ndarray, shape (n_params, 2, n_params)
+        Parameter values at which the model function was evaluated.
+        parameter_points[i, 0] = parameter vector with parameter i perturbed upward
+        parameter_points[i, 1] = parameter vector with parameter i perturbed downward
     
-    best_fit : array_like
-        Best-fit parameter values.
+    function_values : ndarray, shape (n_params, 2, n_output)
+        Model function values at the corresponding parameter_points.
+        function_values[i, 0] = f(parameter_points[i, 0])
+        function_values[i, 1] = f(parameter_points[i, 1])
     
-    delta : float or array_like
-        Finite difference step size(s). Can be:
-        - A single float applied to all parameters
-        - An array matching best_fit length
-    
-    cov_matrix : ndarray
+    cov_matrix : ndarray, shape (n_output, n_output)
         Covariance matrix of the model outputs.
     
     return_jac : bool, default False
@@ -186,202 +163,211 @@ def cal_Fisher_matrix_from_precomputed(precomputed_data, best_fit, delta, cov_ma
 
     Returns
     -------
-    fisher : ndarray
-        Fisher information matrix with shape (n_params, n_params).
+    fisher : ndarray, shape (n_params, n_params)
+        Fisher information matrix.
     
-    jacobian : ndarray, optional
-        Jacobian matrix with shape (n_output, n_params). Only returned if
-        return_jac=True.
+    jacobian : ndarray, shape (n_output, n_params), optional
+        Jacobian matrix. Only returned if return_jac=True.
 
     Examples
     --------
-    >>> # Precompute expensive function evaluations
     >>> best_fit = [1.0, 2.0]
     >>> delta = [0.01, 0.02]
     >>> 
-    >>> # Evaluate at perturbed points (can be done in parallel or saved from previous runs)
-    >>> precomputed_data = {
-    ...     0: {
-    ...         'plus': expensive_model(1.01, 2.0),   # best_fit[0] + delta[0]
-    ...         'minus': expensive_model(0.99, 2.0)   # best_fit[0] - delta[0]
-    ...     },
-    ...     1: {
-    ...         'plus': expensive_model(1.0, 2.02),   # best_fit[1] + delta[1]
-    ...         'minus': expensive_model(1.0, 1.98)   # best_fit[1] - delta[1]
-    ...     }
-    ... }
+    >>> # Build structured arrays: (n_params, 2, ...)
+    >>> # For each parameter i: [plus_point, minus_point]
+    >>> n_params = len(best_fit)
+    >>> parameter_points = np.zeros((n_params, 2, n_params))
+    >>> for i in range(n_params):
+    ...     parameter_points[i, 0] = best_fit.copy()
+    ...     parameter_points[i, 0, i] += delta[i]  # plus point
+    ...     parameter_points[i, 1] = best_fit.copy()
+    ...     parameter_points[i, 1, i] -= delta[i]  # minus point
     >>> 
-    >>> # Compute Fisher matrix from precomputed values
+    >>> # Evaluate model at all points
+    >>> function_values = np.array([
+    ...     [expensive_model(*parameter_points[i, 0]),
+    ...      expensive_model(*parameter_points[i, 1])]
+    ...     for i in range(n_params)
+    ... ])
+    >>> 
+    >>> # Compute Fisher matrix
     >>> fisher = cal_Fisher_matrix_from_precomputed(
-    ...     precomputed_data, best_fit, delta, cov_matrix
+    ...     parameter_points, function_values, cov_matrix
     ... )
 
     Notes
     -----
-    This function avoids redundant function evaluations by using precomputed
-    values, which is particularly useful when:
-    - Function evaluations are computationally expensive
-    - Function values have been computed in parallel
-    - Function values are available from previous optimization/sampling runs
+    The function computes derivatives using central differences:
+        ∂f/∂θ_i ≈ [f(θ + δ_i e_i) - f(θ - δ_i e_i)] / (2 δ_i)
     
-    The Jacobian is computed using finite differences:
-    - Central difference (preferred): ∂f/∂θ_i ≈ [f(θ + δ_i e_i) - f(θ - δ_i e_i)] / (2 δ_i)
-    - Forward difference: ∂f/∂θ_i ≈ [f(θ + δ_i e_i) - f(θ)] / δ_i
-    - Backward difference: ∂f/∂θ_i ≈ [f(θ) - f(θ - δ_i e_i)] / δ_i
+    where δ_i is inferred from the parameter points:
+        δ_i = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2
     
-    When using one-sided derivatives (forward or backward), a 'best' key must be
-    provided in precomputed_data with the function value at best-fit parameters.
-    A warning will be issued for parameters using one-sided derivatives.
+    This approach is explicit and does not require separate best_fit or delta parameters.
     """
-    import warnings
-    
     # Convert inputs to numpy arrays
-    best_fit = np.atleast_1d(best_fit)
-    n_params = len(best_fit)
+    parameter_points = np.asarray(parameter_points, dtype=np.float64)
+    function_values = np.asarray(function_values, dtype=np.float64)
     
-    # Validate delta
-    if np.isscalar(delta):
-        delta = np.full(n_params, delta)
-    else:
-        delta = np.atleast_1d(delta)
-        if len(delta) != n_params:
-            raise ValueError(f"delta length {len(delta)} does not match "
-                           f"number of parameters {n_params}")
-    
-    # Validate precomputed_data
-    if not isinstance(precomputed_data, dict):
-        raise TypeError("precomputed_data must be a dictionary")
-    
-    # Check that all required parameter indices are present
-    param_keys = set(k for k in precomputed_data.keys() if isinstance(k, int))
-    required_keys = set(range(n_params))
-    if param_keys != required_keys:
-        raise ValueError(f"precomputed_data must contain keys 0, 1, ..., {n_params-1}, "
-                        f"but got keys {sorted(param_keys)}")
-    
-    # Check structure of each entry and determine derivative type
-    derivative_types = []
-    has_best = 'best' in precomputed_data
-    
-    for i in range(n_params):
-        has_plus = 'plus' in precomputed_data[i]
-        has_minus = 'minus' in precomputed_data[i]
-        
-        if has_plus and has_minus:
-            derivative_types.append('central')
-        elif has_plus and has_best:
-            derivative_types.append('forward')
-        elif has_minus and has_best:
-            derivative_types.append('backward')
-        elif has_plus or has_minus:
-            raise ValueError(
-                f"precomputed_data[{i}] has only one-sided data but no 'best' key "
-                f"at top level. For one-sided derivatives, provide 'best' key "
-                f"with function value at best-fit parameters."
-            )
-        else:
-            raise ValueError(f"precomputed_data[{i}] must contain at least 'plus' or 'minus' key")
-    
-    # Issue warning for one-sided derivatives
-    one_sided_params = [i for i, dtype in enumerate(derivative_types) if dtype != 'central']
-    if one_sided_params:
-        warnings.warn(
-            f"Parameters {one_sided_params} are using one-sided derivatives "
-            f"({[derivative_types[i] for i in one_sided_params]}). "
-            f"Results may be less accurate than central differences.",
-            UserWarning
+    # Validate shapes
+    if parameter_points.ndim != 3:
+        raise ValueError(
+            f"parameter_points must be 3D with shape (n_params, 2, n_params), "
+            f"got {parameter_points.ndim}D"
+        )
+    n_params = parameter_points.shape[0]
+    if parameter_points.shape[1] != 2:
+        raise ValueError(
+            f"parameter_points.shape[1] must be 2 (for plus/minus), "
+            f"got {parameter_points.shape[1]}"
+        )
+    if parameter_points.shape[2] != n_params:
+        raise ValueError(
+            f"parameter_points.shape[2] must equal n_params ({n_params}), "
+            f"got {parameter_points.shape[2]}"
         )
     
-    # Get the first function value to determine output dimension
-    first_entry = precomputed_data[0]
-    if 'plus' in first_entry:
-        first_value = first_entry['plus']
-    elif 'minus' in first_entry:
-        first_value = first_entry['minus']
-    elif 'best' in precomputed_data:
-        first_value = precomputed_data['best']
-    else:
-        raise ValueError("Cannot determine output dimension from precomputed_data")
-    if hasattr(first_value, '__len__') and not isinstance(first_value, (float, int)):
-        first_value = np.asarray(first_value)
-        n_output = first_value.shape[0] if first_value.ndim > 0 else 1
-    else:
-        n_output = 1
+    if function_values.shape[:2] != (n_params, 2):
+        raise ValueError(
+            f"function_values must have shape (n_params, 2, n_output), "
+            f"got {function_values.shape}"
+        )
+    n_output = function_values.shape[2] if function_values.ndim == 3 else 1
+    if function_values.ndim == 2:
+        function_values = function_values.reshape(n_params, 2, 1)
     
-    # Initialize Jacobian matrix (n_output x n_params)
-    jacobian = np.zeros((n_output, n_params))
-    
-    # Compute Jacobian from precomputed values
-    f_best = precomputed_data.get('best')
-    if f_best is not None and n_output > 1:
-        f_best = np.asarray(f_best)
-    
+    # Compute delta for each parameter from the points themselves
+    # delta_i = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2
+    delta = np.zeros(n_params, dtype=np.float64)
     for i in range(n_params):
-        f_plus = precomputed_data[i].get('plus')
-        f_minus = precomputed_data[i].get('minus')
-        
-        # Convert to numpy arrays if needed
-        if n_output > 1:
-            if f_plus is not None:
-                f_plus = np.asarray(f_plus)
-            if f_minus is not None:
-                f_minus = np.asarray(f_minus)
-        
-        # Compute derivative based on available data
-        dtype = derivative_types[i]
-        if dtype == 'central':
-            # Central difference: (f_plus - f_minus) / (2 * delta)
-            if n_output == 1:
-                jacobian[0, i] = (f_plus - f_minus) / (2 * delta[i])
-            else:
-                jacobian[:, i] = (f_plus - f_minus) / (2 * delta[i])
-        elif dtype == 'forward':
-            # Forward difference: (f_plus - f_best) / delta
-            if n_output == 1:
-                jacobian[0, i] = (f_plus - f_best) / delta[i]
-            else:
-                jacobian[:, i] = (f_plus - f_best) / delta[i]
-        else:  # backward
-            # Backward difference: (f_best - f_minus) / delta
-            if n_output == 1:
-                jacobian[0, i] = (f_best - f_minus) / delta[i]
-            else:
-                jacobian[:, i] = (f_best - f_minus) / delta[i]
+        delta[i] = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2.0
+        if np.abs(delta[i]) < 1e-15:
+            raise ValueError(
+                f"delta for parameter {i} is too small: {delta[i]}. "
+                f"Check that parameter_points[{i}, 0] and parameter_points[{i}, 1] "
+                f"differ in the {i}-th component."
+            )
     
-    # Call cal_Fisher_matrix with computed Jacobian
-    return cal_Fisher_matrix(
-        func=None,  # Not needed when computed_jac is provided
-        best_fit=best_fit,
-        cov_matrix=cov_matrix,
-        computed_jac=jacobian,
-        return_jac=return_jac
-    )
+    # Compute inverse covariance matrix
+    cov_matrix = np.atleast_2d(cov_matrix)
+    if cov_matrix.shape != (n_output, n_output):
+        raise ValueError(f"cov_matrix shape {cov_matrix.shape} does not match "
+                        f"model output dimension {n_output}")
+    try:
+        cov_inv = np.linalg.inv(cov_matrix)
+    except np.linalg.LinAlgError:
+        raise ValueError("Covariance matrix is singular, cannot compute inverse")
+    
+    # Compute Jacobian from structured arrays using central differences
+    # jacobian[:, i] = (function_values[i, 0] - function_values[i, 1]) / (2 * delta[i])
+    jacobian = np.zeros((n_output, n_params), dtype=np.float64)
+    for i in range(n_params):
+        f_plus = function_values[i, 0]   # shape: (n_output,)
+        f_minus = function_values[i, 1]  # shape: (n_output,)
+        jacobian[:, i] = (f_plus - f_minus) / (2 * delta[i])
+    
+    # Compute Fisher matrix: F = J^T * C^{-1} * J
+    fisher = jacobian.T @ cov_inv @ jacobian
+    
+    if return_jac:
+        return fisher, jacobian
+    return fisher
 
-def get_fisher_from_tpcf(xismu_source_dict, xismu_assis_dict, snap_ids, redshift_dict, delta, best_fit, cov_matrix, **argv):
+
+def get_fisher_from_tpcf(xismu_source_dict, xismu_assis_dict, snap_ids, redshift_dict, delta, best_fit, cov_matrix, return_details=False, **kwargs):
+    """
+    Compute Fisher matrix from two-point correlation function with AP parameters.
+
+    Evaluates the model at ±delta perturbations for each parameter and computes
+    the Fisher information matrix. Returns both the standardized data and the
+    Fisher matrix.
+
+    Returns
+    -------
+    fisher : ndarray
+        Fisher information matrix.
+    parameter_points : ndarray, shape (n_params, 2, n_params)
+        Standardized parameter points.
+    function_values : ndarray, shape (n_params, 2, n_output)
+        Function values at the standardized points.
+    """
     from .tpcf import get_diff_array
-    xi_mu_diff_precomputed_dict = {
-        "0": {
-            "plus": None, 
-            "minus": None,
-        }, 
-        "1": {
-            "plus": None, 
-            "minus": None,
-        }
-    }
+    best_fit = np.atleast_1d(np.asarray(best_fit, dtype=np.float64))
+    n_params = len(best_fit)
 
-    omega_mf, w_f = best_fit 
+    if n_params != 2 and n_params != 3:
+        raise ValueError(
+            f"Number of parameters must be 2 or 3, got {n_params}"
+        )
 
-    key_list = [("0", "plus"), ("0", "minus"), ("1", "plus"), ("1", "minus")]
-    parameters_list = [(best_fit[0]+delta[0], best_fit[1]), (best_fit[0]-delta[0], best_fit[1]), (best_fit[0], best_fit[1]+delta[1]), (best_fit[0], best_fit[1]-delta[1])]
-    for key, parameters in zip(key_list, parameters_list):
-        key_1, key_2 = key
-        omega_mm, w_m = parameters
+    # Process delta
+    if np.isscalar(delta):
+        delta = np.full(n_params, float(delta))
+    else:
+        delta = np.atleast_1d(np.asarray(delta, dtype=np.float64))
+
+    # Build structured arrays: (n_params, 2, ...)
+    # For each parameter i: [plus_point, minus_point]
+    parameter_points = np.zeros((n_params, 2, n_params), dtype=np.float64)
+    function_values_list = []
+
+    for i in range(n_params):
+        # Plus point: best_fit + delta[i] * e_i
+        plus_point = best_fit.copy()
+        plus_point[i] += delta[i]
+        parameter_points[i, 0] = plus_point
+
+        # Minus point: best_fit - delta[i] * e_i
+        minus_point = best_fit.copy()
+        minus_point[i] -= delta[i]
+        parameter_points[i, 1] = minus_point
+
+        # Evaluate model at plus point
+        if n_params == 2:
+            omega_mm, w_m = plus_point
+        else:
+            omega_mm, w_m, wa_m = plus_point
         xismu_dict_temp = {}
         for snap_id in snap_ids:
-            xismu_temp = tpcf_convert_main(xismu_source_dict[snap_id], omega_mf, w_f, omega_mm, w_m, redshift_dict[snap_id], assis_xismu=xismu_assis_dict[snap_id])
+            xismu_temp = tpcf_convert_main(
+                xismu_source_dict[snap_id], best_fit[0], best_fit[1],
+                omega_mm, w_m, redshift_dict[snap_id],
+                assis_xismu=xismu_assis_dict[snap_id],
+                wa_f=0.0, wa_m=wa_m
+            )
             xismu_dict_temp[snap_id] = xismu_temp
-        xi_mu_diff_precomputed_dict[key_1][key_2] = get_diff_array(xismu_dict_temp, snap_ids, )
+        f_plus = get_diff_array(xismu_dict_temp, snap_ids, **kwargs)
+        function_values_list.append(f_plus)
+
+        # Evaluate model at minus point
+        if n_params == 2:
+            omega_mm, w_m = minus_point
+        else:
+            omega_mm, w_m, w_am = minus_point
+        xismu_dict_temp = {}
+        for snap_id in snap_ids:
+            xismu_temp = tpcf_convert_main(
+                xismu_source_dict[snap_id], best_fit[0], best_fit[1],
+                omega_mm, w_m, redshift_dict[snap_id],
+                assis_xismu=xismu_assis_dict[snap_id],
+                wa_f=0.0, wa_m=w_am
+            )
+            xismu_dict_temp[snap_id] = xismu_temp
+        f_minus = get_diff_array(xismu_dict_temp, snap_ids, **kwargs)
+        function_values_list.append(f_minus)
+
+    # Reshape function_values to (n_params, 2, n_output)
+    function_values = np.array(function_values_list).reshape(n_params, 2, -1)
+
+    fisher = cal_Fisher_matrix_from_precomputed(
+        parameter_points, function_values, cov_matrix
+    )
+
+    if return_details:
+        return fisher, parameter_points, function_values
+    else:
+        return fisher
 
 
 
