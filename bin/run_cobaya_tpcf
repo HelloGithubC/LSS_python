@@ -1,0 +1,350 @@
+#! python -u
+
+import numpy as np
+import joblib, os
+import argparse, sys
+from cobaya.likelihood import Likelihood
+from cobaya.run import run
+from cobaya.mpi import is_main_process
+
+from LSS_python.tpcf import xismu, get_diff_array
+from LSS_python.AP import tpcf_convert_main
+from LSS_python.MCMC import run_mcmc_main_cobaya
+
+## data_dict ##
+# Data structure description (loaded via joblib.load from a .pkl file)
+#
+# Required keys:
+#   - snap_ids_list: list - List of snap ID pairs, each element is a list of two snap IDs
+#   - fiducial_values: tuple - (omega_mf, w_f) fiducial parameter values
+#   - cov_matrix_inv: np.ndarray - Inverse covariance matrix
+#   - sys_array: np.ndarray - Systematic error array
+#   - xismu_source_dict_list: list or dict - Source xismu data list or dict
+#   - xismu_ass_dict_list: list or dict - Assistant xismu data list or dict
+#
+# Optional keys:
+#   - snap_ids_all: list - All snap IDs to load (inferred from snap_ids_list if not provided)
+#   - compressor_type: str - Compressor type, default "none"
+#   - compressor_model_paths: str or list - Compressor model paths (only needed when compressor_type != "none")
+#   - integrate_tpcf_func: callable - Custom integration function, default None
+#   - integrate_tpcf_kwargs: dict - Integration function parameters. When integrate_tpcf_func is
+#     None, unspecified keys fall back to defaults (smin=6.0, smax=40.0, mumax=0.97,
+#     remove_last_one=True, mupack=1). When integrate_tpcf_func is provided, no defaults
+#     are applied — all required kwargs must be specified by the user.
+#   - fisher_matrix: np.ndarray - Fisher matrix (used for MOPED sampler configuration, optional)
+
+def get_redshift_dict():
+    return {
+        # snap_id: redshift (Need to be consistent with data_dict)
+    }
+
+
+class Chi2Likelihood(Likelihood):
+    """
+    Cobaya Likelihood class for chi2 calculation with cosmological parameters.
+    Data is loaded from data_dict_path during initialization.
+    """
+
+    # Declare data members (must match keys in likelihood config)
+    data_dict_path: str  # Path to the data pickle file
+    
+    # Declare which parameters this likelihood uses
+    def get_can_support_params(self):
+        return ["omega_m", "w"]
+    
+    def initialize(self):
+        """Initialize the likelihood: load data_dict and process all data."""
+        # Load data_dict from file
+        data_dict = joblib.load(self.data_dict_path)
+        
+        # Extract basic data members
+        self.snap_ids_list = data_dict["snap_ids_list"]
+        self.snap_ids_all = data_dict.get(
+            "snap_ids_all", 
+            list(set([snap_id for snap_ids in self.snap_ids_list for snap_id in snap_ids]))
+        )
+        self.omega_mf, self.w_f = data_dict["fiducial_values"]
+        self.redshift_dict = get_redshift_dict()
+        self.cov_matrix_inv = data_dict["cov_matrix_inv"]
+        self.sys_array = data_dict["sys_array"]
+        
+        # Get compressor information
+        self.compressor_type = data_dict.get("compressor_type", "none")
+        compressor_model_paths = data_dict.get("compressor_model_paths", None)
+        
+        # Get integrate_tpcf configuration
+        self.integrate_tpcf_func = data_dict.get("integrate_tpcf_func", None)
+        if self.integrate_tpcf_func is None:
+            # Default mode: use built-in integrate_tpcf, allow override from data_dict
+            integrate_tpcf_kwargs_default = {
+                "smin": 6.0,
+                "smax": 40.0,
+                "mumax": 0.97,
+                "remove_last_one": True,
+                "mupack": 1
+            }
+            integrate_tpcf_kwargs_from_dict = data_dict.get("integrate_tpcf_kwargs", None)
+            if integrate_tpcf_kwargs_from_dict is not None:
+                self.integrate_tpcf_kwargs = {**integrate_tpcf_kwargs_default, **integrate_tpcf_kwargs_from_dict}
+            else:
+                self.integrate_tpcf_kwargs = integrate_tpcf_kwargs_default
+        else:
+            # Custom mode: user provides their own integrate_tpcf_func,
+            # kwargs must be fully provided by user, no defaults applicable
+            self.integrate_tpcf_kwargs = data_dict.get("integrate_tpcf_kwargs", {})
+        
+        # Get xismu data and unify data structure (dict to list)
+        xismu_source_dict_list = data_dict["xismu_source_dict_list"]
+        xismu_ass_dict_list = data_dict["xismu_ass_dict_list"]
+        
+        if isinstance(xismu_source_dict_list, dict):
+            self.xismus_source_dict_list = [xismu_source_dict_list]
+        else:
+            self.xismus_source_dict_list = xismu_source_dict_list
+
+        if isinstance(xismu_ass_dict_list, dict):
+            self.xismus_ass_dict_list = [xismu_ass_dict_list]
+        else:
+            self.xismus_ass_dict_list = xismu_ass_dict_list
+        
+        # Load xismu data for all snap_ids
+        for i in range(len(self.xismus_source_dict_list)):
+            for snap_id in self.snap_ids_all:
+                self.xismus_source_dict_list[i][snap_id] = xismu.load(
+                    self.xismus_source_dict_list[i][snap_id], 
+                    sbin=750, 
+                    mubin=600
+                )
+                self.xismus_ass_dict_list[i][snap_id] = xismu.load(
+                    self.xismus_ass_dict_list[i][snap_id]
+                )
+        
+        # Load compressor model (if needed)
+        if self.compressor_type != "none" and compressor_model_paths is not None:
+            from LSS_python.compressor import Compressor, CompressorSeries
+            if isinstance(compressor_model_paths, str):
+                compressor_model_paths = [compressor_model_paths]
+            
+            self.compressors_list = []
+            for compressor_model_path in compressor_model_paths:
+                if self.compressor_type == "Compressor":
+                    compressors = Compressor.load(compressor_model_path)
+                elif self.compressor_type == "CompressorSeries":
+                    compressors = CompressorSeries.load(compressor_model_path)
+                else:
+                    raise ValueError(f"Unsupported compressor_type: {self.compressor_type}")
+                self.compressors_list.append(compressors)
+        else:
+            self.compressors_list = None
+    
+    def logp(self, **params_values):
+        """
+        Calculate log-likelihood for given parameters.
+        Use get_diff_array to compute differences between snap pairs.
+        """
+        omega_mm = params_values['omega_m']
+        w_m = params_values['w']
+
+        # Prepare transformed xismu dicts for get_diff_array
+        # Each weipow_str corresponds to one tpcf_dict (snap_id -> xismu)
+        transformed_tpcf_dict_list = []
+        for source_dict, ass_dict in zip(self.xismus_source_dict_list, self.xismus_ass_dict_list):
+            # Merge source and assistant into a single dict for this weipow_str
+            # The key is snap_id, value is the transformed xismu
+            merged_dict = {}
+            for snap_id in source_dict.keys():
+                # Apply transformation
+                modified_xismu = tpcf_convert_main(
+                    source_dict[snap_id], self.omega_mf, self.w_f,
+                    omega_mm, w_m, self.redshift_dict[snap_id],
+                    assis_xismu=ass_dict[snap_id]
+                )
+                merged_dict[snap_id] = modified_xismu
+            transformed_tpcf_dict_list.append(merged_dict)
+
+        # Use get_diff_array to compute differences
+        # Build kwargs for get_diff_array
+        if self.integrate_tpcf_func is None:
+            get_diff_kwargs = self.integrate_tpcf_kwargs
+        else:
+            get_diff_kwargs = {
+                'integrate_tpcf_func': self.integrate_tpcf_func,
+                'integrate_tpcf_kwargs': self.integrate_tpcf_kwargs
+            }
+
+        # `get_diff_array` now takes the full `transformed_tpcf_dict_list`
+        # together with one two-element `snap_pair` each time, so we iterate
+        # over `self.snap_ids_list` and concatenate the partial results.
+        diff_array_list = []
+
+        if self.compressors_list is None:
+            for snap_pair in self.snap_ids_list:
+                diff_array_temp = get_diff_array(
+                    transformed_tpcf_dict_list,
+                    snap_pair,
+                    shift=0,
+                    return_mu=False,
+                    compressor=None,
+                    **get_diff_kwargs
+                )
+                diff_array_list.append(diff_array_temp)
+        else:
+            for snap_pair, compressor in zip(self.snap_ids_list, self.compressors_list):
+                diff_array_temp = get_diff_array(
+                    transformed_tpcf_dict_list,
+                    snap_pair,
+                    shift=0,
+                    return_mu=False,
+                    compressor=compressor,
+                    **get_diff_kwargs
+                )
+                diff_array_list.append(diff_array_temp)
+
+        diff_array = np.concatenate(diff_array_list, axis=0)
+
+
+        # The result diff_array has shape (total_size, n_bins)
+        # where total_size = size * n_weipows * n_snap_pairs
+        # Structure: for each snap_pair, for each weipow_str, size samples
+        # i.e., [snap_pair_0_weipow_0, snap_pair_0_weipow_1, ..., 
+        #         snap_pair_1_weipow_0, snap_pair_1_weipow_1, ...]
+
+        modify_array_temp = diff_array
+
+        # Calculate chi2
+        P_temp = (modify_array_temp - self.sys_array)[:, np.newaxis]
+        chi2_temp = (P_temp.T @ self.cov_matrix_inv @ P_temp)[0, 0]
+
+        return -0.5 * chi2_temp
+
+
+if __name__ == "__main__":
+    """Main function to parse arguments and run Cobaya MCMC."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("data_filename", help="Full path to the data file (.pkl)")
+
+    parser.add_argument("--omega_m_range", "-om_range", help="Default [0.2, 0.5]", type=float, nargs=2, default=[0.2, 0.5])
+    parser.add_argument("--w_range", "-wrange", help="Default [-1.5, -0.5]", type=float, nargs=2, default=[-1.5, -0.5])
+    # Remove is_2d argument as it's no longer needed
+    parser.add_argument("--max_iterator", "-mi", help="Default 8000", type=int, default=8000)
+    parser.add_argument("--converge_factor", "-cf", 
+                       help="Default 1.01 (GR convergence factor for Cobaya)", 
+                       type=float, default=1.01)
+    parser.add_argument("--resume", "-r", help="Resume from existing chain files (Default true).", action="store_true", default=True)
+
+    parser.add_argument("--force", "-f", help="Force run, even the output file exists.", action="store_true")
+    parser.add_argument("--debug", "-d", help="Enable debug mode for detailed output.", action="store_true")
+    # parser.add_argument("--verbose", "-v", help="Verbose output.", action="store_true")
+    
+    if len(sys.argv) == 1:
+        parser.print_help()
+        exit(0)
+    
+    argv = parser.parse_args()
+
+    force = argv.force 
+    resume = argv.resume
+    if force:
+        resume = False
+
+    # Set environment variable
+    os.environ["OMP_NUM_THREADS"] = "1"
+    
+    # Process data filename and paths
+    data_filename = argv.data_filename
+    
+    if not os.path.exists(data_filename):
+        raise FileNotFoundError(f"Data file not found: {data_filename}")
+    
+    # Setup backend directory
+    backend_dir = data_filename.replace(".pkl", "")
+    if not os.path.exists(backend_dir) and is_main_process():
+        os.makedirs(backend_dir)
+    
+    # Load data_dict to extract Fisher matrix (for sampler configuration)
+    data_dict = joblib.load(data_filename)
+    fisher_matrix = data_dict.get("fisher_matrix", None)
+    omega_mf, w_f = data_dict["fiducial_values"]
+    
+    # Build Cobaya configuration - 直接在likelihood中传递数据成员
+    omega_m_range = argv.omega_m_range
+    w_range = argv.w_range
+    
+    # Parameter definitions
+    params = {
+        'omega_m': {
+            'prior': {'dist': 'uniform', 'min': omega_m_range[0], 'max': omega_m_range[1]},
+            'latex': r'\Omega_m',
+            'ref': {
+                "dist": "norm",
+                "loc": omega_mf,
+                "scale": 0.001
+            },
+            'proposal': 0.001
+        },
+        'w': {
+            'prior': {'dist': 'uniform', 'min': w_range[0], 'max': w_range[1]},
+            'latex': r'w',
+            'ref': {
+                "dist": "norm",
+                "loc": w_f,
+                "scale": 0.005
+            },
+            'proposal': 0.001
+        }
+    }
+
+    # For MOPED: extract covariance matrix from Fisher matrix (used as proposal covmat)
+    covmat = None
+    if fisher_matrix is not None:
+        try:
+            # Compute covariance matrix from Fisher matrix (inverse)
+            covmat = np.linalg.inv(fisher_matrix)
+            print(f"Using Fisher matrix as proposal covmat for MOPED")
+        except np.linalg.LinAlgError:
+            print("Warning: Fisher matrix is singular, cannot use as covmat.")
+    
+    # Likelihood definition - 按照 test_cobaya.py 的方式直接传递数据成员
+    likelihood = {
+        'chi2_like': {
+            'external': Chi2Likelihood,
+            # 只需要传递数据文件路径，其他数据在 initialize 中加载
+            'data_dict_path': data_filename
+        }
+    }
+    
+    # Sampler configuration
+    sampler_config = {
+        'max_samples': argv.max_iterator,
+        'Rminus1_stop': argv.converge_factor - 1.0,
+        'drag': False,
+        'proposal_scale': 1.0,
+    }
+    
+    # For MOPED: add covmat to sampler configuration
+    if covmat is not None:
+        sampler_config['covmat'] = covmat
+        sampler_config['covmat_params'] = ["omega_m", "w"]
+    
+    # Build Cobaya info dictionary
+    info_dict = {
+        'params': params,
+        'likelihood': likelihood,
+        'sampler': {
+            'mcmc': sampler_config
+        },
+        'output': os.path.join(backend_dir, "cobaya")
+    }
+    
+    # Call the core MCMC function from LSS_python.MCMC
+    # Args:
+    #   info_dict: Cobaya configuration dictionary
+    #   resume: Resume from previous run (default: True)
+    #   force: Force overwrite existing output
+    #   debug: Enable debug mode for detailed output (default: False)
+    updated_info, sampler = run_mcmc_main_cobaya(
+        info_dict,  
+        resume=resume, 
+        force=force,
+        debug=argv.debug
+    )
