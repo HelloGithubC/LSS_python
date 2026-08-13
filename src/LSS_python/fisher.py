@@ -326,6 +326,7 @@ def get_fisher_from_tpcf(xismu_source_dict, xismu_assis_dict, snap_ids, redshift
         # Evaluate model at plus point
         if n_params == 2:
             omega_mm, w_m = plus_point
+            wa_m = 0.0
         else:
             omega_mm, w_m, wa_m = plus_point
         xismu_dict_temp = {}
@@ -343,6 +344,7 @@ def get_fisher_from_tpcf(xismu_source_dict, xismu_assis_dict, snap_ids, redshift
         # Evaluate model at minus point
         if n_params == 2:
             omega_mm, w_m = minus_point
+            wa_m = 0.0
         else:
             omega_mm, w_m, w_am = minus_point
         xismu_dict_temp = {}
@@ -351,7 +353,7 @@ def get_fisher_from_tpcf(xismu_source_dict, xismu_assis_dict, snap_ids, redshift
                 xismu_source_dict[snap_id], best_fit[0], best_fit[1],
                 omega_mm, w_m, redshift_dict[snap_id],
                 assis_xismu=xismu_assis_dict[snap_id],
-                wa_f=0.0, wa_m=w_am
+                wa_f=0.0, wa_m=wa_m
             )
             xismu_dict_temp[snap_id] = xismu_temp
         f_minus = get_diff_array(xismu_dict_temp, snap_ids, **kwargs)

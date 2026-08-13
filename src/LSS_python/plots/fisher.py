@@ -9,7 +9,7 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
                               sigma=1, color='C0', show_center=True,
                               ellipse_fill=True, visual_xylims=True,
                               param_indices=None, **kwargs):
-    """
+    r"""
     Plot error ellipse from Fisher matrix.
 
     The error ellipse represents the 1\sigma (68.3%) confidence region
