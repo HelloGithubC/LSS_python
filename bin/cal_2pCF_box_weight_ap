@@ -1,4 +1,4 @@
-#! /home/xiaoliang/.conda/envs/xiaoliang/bin/python -u
+#! /home/teamxdli_a/.conda/envs/xiaoliang/bin/python -u
 """
 Two-point correlation function (2pCF) calculator for simulation boxes.
 This script computes the 2D 2pCF (xi(s, mu)) using the Landy-Szalay estimator
@@ -11,6 +11,7 @@ Can save intermediate pair counts for re-use and supports weighted catalogs.
 import numpy as np 
 from LSS_python.tpcf import cal_tpCF_from_pairs, run_tpCF
 from LSS_python.AP import snap_box_convert_main
+from LSS_python.MCF import create_rho, create_rho_fix_r
 import joblib, os
 import argparse, sys
 
@@ -64,7 +65,7 @@ def read_data(filename, weight_set_one=False, with_weight=False):
 # Command-line argument parser
 # ============================================================================
 parser = argparse.ArgumentParser(
-    prog="cal_tpCF_box", 
+    prog="cal_tpCF_box_weight_ap", 
     usage="Calculate 2pCF with Corrfunc for simulation boxes",
     description="Compute two-point correlation function from data and random catalogs"
 )
@@ -145,6 +146,18 @@ parser.add_argument("--force_rr", "-forcerr",
 parser.add_argument("--verbose", "-v", 
                    action="store_true", 
                    help="Enable verbose output during computation")
+
+# MCF density re-calculation parameters (used after AP conversion)
+parser.add_argument("--rho-fix-n",
+                   action="store_true",
+                   help="Re-calculate rho using fixed neighbor number (create_rho). Must be used with --rho-param.")
+parser.add_argument("--rho-fix-r",
+                   action="store_true",
+                   help="Re-calculate rho using fixed radius (create_rho_fix_r). Must be used with --rho-param.")
+parser.add_argument("--rho-param",
+                   type=float,
+                   default=None,
+                   help="Parameter for rho re-calculation: k (neighbor number) for --rho-fix-n, or r (radius) for --rho-fix-r.")
 
 # Alcock-Paczyński conversion parameters
 parser.add_argument("--fiducial_values", "-fid",
@@ -258,6 +271,30 @@ if argv.fiducial_values is not None or argv.modify_values is not None:
           f"), z={redshift}, boxsize={boxsize}")
 
 # ============================================================================
+# MCF density re-calculation parameter validation
+# ============================================================================
+rho_fix_n = argv.rho_fix_n
+rho_fix_r = argv.rho_fix_r
+rho_param = argv.rho_param
+
+# Check mutual exclusivity of --rho-fix-n and --rho-fix-r
+if rho_fix_n and rho_fix_r:
+    parser.error("--rho-fix-n and --rho-fix-r are mutually exclusive, choose one")
+
+rho_recalc_enabled = rho_fix_n or rho_fix_r
+
+if ap_enabled:
+    # When AP is enabled, one of --rho-fix-n or --rho-fix-r must be provided
+    if not rho_recalc_enabled:
+        parser.error("When AP conversion is enabled, one of --rho-fix-n or --rho-fix-r must be provided")
+    if rho_param is None:
+        parser.error("--rho-param is required when using --rho-fix-n or --rho-fix-r")
+else:
+    # When AP is not enabled, warn if rho parameters are provided (they won't take effect)
+    if rho_recalc_enabled or rho_param is not None:
+        print("WARNING: --rho-fix-n/--rho-fix-r/--rho-param are ignored when AP conversion is not enabled")
+
+# ============================================================================
 # Load data catalog (if not in RR-only mode)
 # ============================================================================
 if not only_run_rr:
@@ -342,6 +379,22 @@ if ap_enabled:
         redshift, boxsize, wa_f=wa_f, wa_m=wa_m
     )
     print("AP conversion done.")
+
+    if with_weight and not only_run_rr:
+        print("Now creating rho again")
+        if rho_fix_n:
+            print(f"  Using create_rho with k={rho_param} (nthreads={nthreads})")
+            data_catalog[:, 3] = create_rho(
+                data_catalog[:, :3], boxsize=boxsize, k=int(rho_param),
+                nthreads=nthreads, only_return_rho=True
+            )
+        elif rho_fix_r:
+            print(f"  Using create_rho_fix_r with r={rho_param} (nthreads={nthreads})")
+            data_catalog[:, 3] = create_rho_fix_r(
+                data_catalog[:, :3], boxsize=boxsize, r=rho_param,
+                nthreads=nthreads, verbose=verbose
+            )
+
 
 # Dictionary to hold output filenames for pair counts
 # Will be passed to run_tpCF to save results to disk if specified
