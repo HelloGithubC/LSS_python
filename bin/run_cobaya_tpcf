@@ -16,7 +16,8 @@ from LSS_python.MCMC import run_mcmc_main_cobaya
 #
 # Required keys:
 #   - snap_ids_list: list - List of snap ID pairs, each element is a list of two snap IDs
-#   - fiducial_values: tuple - (omega_mf, w_f) fiducial parameter values
+#   - fiducial_values: tuple - (omega_mf, w_f) for 2-parameter mode,
+#                            or (omega_mf, w0_f, wa_f) for 3-parameter (w0wa) mode
 #   - cov_matrix_inv: np.ndarray - Inverse covariance matrix
 #   - sys_array: np.ndarray - Systematic error array
 #   - xismu_source_dict_list: list or dict - Source xismu data list or dict
@@ -36,6 +37,8 @@ from LSS_python.MCMC import run_mcmc_main_cobaya
 def get_redshift_dict():
     return {
         # snap_id: redshift (Need to be consistent with data_dict)
+        6: 1.0, 
+        8: 0.5
     }
 
 
@@ -50,6 +53,13 @@ class Chi2Likelihood(Likelihood):
     
     # Declare which parameters this likelihood uses
     def get_can_support_params(self):
+        # Lazy-detect 3-param mode from data_dict before initialize() runs
+        if not hasattr(self, '_is_3param'):
+            import joblib as _joblib
+            _dd = _joblib.load(self.data_dict_path)
+            self._is_3param = (len(_dd["fiducial_values"]) == 3)
+        if self._is_3param:
+            return ["omega_m", "w0", "wa"]
         return ["omega_m", "w"]
     
     def initialize(self):
@@ -63,7 +73,13 @@ class Chi2Likelihood(Likelihood):
             "snap_ids_all", 
             list(set([snap_id for snap_ids in self.snap_ids_list for snap_id in snap_ids]))
         )
-        self.omega_mf, self.w_f = data_dict["fiducial_values"]
+        fiducial_values = data_dict["fiducial_values"]
+        if len(fiducial_values) == 3:
+            self._is_3param = True
+            self.omega_mf, self.w0_f, self.wa_f = fiducial_values
+        else:
+            self._is_3param = False
+            self.omega_mf, self.w_f = fiducial_values
         self.redshift_dict = get_redshift_dict()
         self.cov_matrix_inv = data_dict["cov_matrix_inv"]
         self.sys_array = data_dict["sys_array"]
@@ -143,7 +159,11 @@ class Chi2Likelihood(Likelihood):
         Use get_diff_array to compute differences between snap pairs.
         """
         omega_mm = params_values['omega_m']
-        w_m = params_values['w']
+        if self._is_3param:
+            w0_m = params_values['w0']
+            wa_m = params_values['wa']
+        else:
+            w_m = params_values['w']
 
         # Prepare transformed xismu dicts for get_diff_array
         # Each weipow_str corresponds to one tpcf_dict (snap_id -> xismu)
@@ -154,11 +174,18 @@ class Chi2Likelihood(Likelihood):
             merged_dict = {}
             for snap_id in source_dict.keys():
                 # Apply transformation
-                modified_xismu = tpcf_convert_main(
-                    source_dict[snap_id], self.omega_mf, self.w_f,
-                    omega_mm, w_m, self.redshift_dict[snap_id],
-                    assis_xismu=ass_dict[snap_id]
-                )
+                if self._is_3param:
+                    modified_xismu = tpcf_convert_main(
+                        source_dict[snap_id], self.omega_mf, self.w0_f,
+                        omega_mm, w0_m, self.redshift_dict[snap_id],
+                        assis_xismu=ass_dict[snap_id], wa_f=self.wa_f, wa_m=wa_m
+                    )
+                else:
+                    modified_xismu = tpcf_convert_main(
+                        source_dict[snap_id], self.omega_mf, self.w_f,
+                        omega_mm, w_m, self.redshift_dict[snap_id],
+                        assis_xismu=ass_dict[snap_id]
+                    )
                 merged_dict[snap_id] = modified_xismu
             transformed_tpcf_dict_list.append(merged_dict)
 
@@ -225,6 +252,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--omega_m_range", "-om_range", help="Default [0.2, 0.5]", type=float, nargs=2, default=[0.2, 0.5])
     parser.add_argument("--w_range", "-wrange", help="Default [-1.5, -0.5]", type=float, nargs=2, default=[-1.5, -0.5])
+    parser.add_argument("--wa_range", "-warange", help="Default [-1.5, 0.5] (only used when fiducial_values has 3 values)", type=float, nargs=2, default=[-2.0, 2.0])
     # Remove is_2d argument as it's no longer needed
     parser.add_argument("--max_iterator", "-mi", help="Default 8000", type=int, default=8000)
     parser.add_argument("--converge_factor", "-cf", 
@@ -264,11 +292,17 @@ if __name__ == "__main__":
     # Load data_dict to extract Fisher matrix (for sampler configuration)
     data_dict = joblib.load(data_filename)
     fisher_matrix = data_dict.get("fisher_matrix", None)
-    omega_mf, w_f = data_dict["fiducial_values"]
+    fiducial_values = data_dict["fiducial_values"]
+    is_3param = (len(fiducial_values) == 3)
+    if is_3param:
+        omega_mf, w0_f, wa_f = fiducial_values
+    else:
+        omega_mf, w_f = fiducial_values
     
     # Build Cobaya configuration - 直接在likelihood中传递数据成员
     omega_m_range = argv.omega_m_range
     w_range = argv.w_range
+    wa_range = argv.wa_range
     
     # Parameter definitions
     params = {
@@ -281,8 +315,32 @@ if __name__ == "__main__":
                 "scale": 0.001
             },
             'proposal': 0.001
-        },
-        'w': {
+        }
+    }
+    
+    if is_3param:
+        params['w0'] = {
+            'prior': {'dist': 'uniform', 'min': w_range[0], 'max': w_range[1]},
+            'latex': r'w_0',
+            'ref': {
+                "dist": "norm",
+                "loc": w0_f,
+                "scale": 0.005
+            },
+            'proposal': 0.001
+        }
+        params['wa'] = {
+            'prior': {'dist': 'uniform', 'min': wa_range[0], 'max': wa_range[1]},
+            'latex': r'w_a',
+            'ref': {
+                "dist": "norm",
+                "loc": wa_f,
+                "scale": 0.005
+            },
+            'proposal': 0.001
+        }
+    else:
+        params['w'] = {
             'prior': {'dist': 'uniform', 'min': w_range[0], 'max': w_range[1]},
             'latex': r'w',
             'ref': {
@@ -292,7 +350,6 @@ if __name__ == "__main__":
             },
             'proposal': 0.001
         }
-    }
 
     # For MOPED: extract covariance matrix from Fisher matrix (used as proposal covmat)
     covmat = None
@@ -324,7 +381,10 @@ if __name__ == "__main__":
     # For MOPED: add covmat to sampler configuration
     if covmat is not None:
         sampler_config['covmat'] = covmat
-        sampler_config['covmat_params'] = ["omega_m", "w"]
+        if is_3param:
+            sampler_config['covmat_params'] = ["omega_m", "w0", "wa"]
+        else:
+            sampler_config['covmat_params'] = ["omega_m", "w"]
     
     # Build Cobaya info dictionary
     info_dict = {
