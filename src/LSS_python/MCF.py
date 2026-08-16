@@ -187,7 +187,7 @@ def create_rho(
     if not use_adaptive_h and (h is None or h <= 0.0):
         raise ValueError("h must be positive when use_adaptive_h is False")
     if boxsize is not None:
-        boxsize += 1e-5
+        boxsize += 1e-2
     kdtree = KDTree(pos, boxsize=boxsize)
     query_k = k + 1 if ignore_self else k
     distance_array, _ = kdtree.query(pos, k=query_k, workers=nthreads)
