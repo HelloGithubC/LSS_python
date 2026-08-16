@@ -369,12 +369,12 @@ random_catalog = read_data(random_dir + random_filename + random_fileext,
 if ap_enabled:
     print("Applying AP conversion to data catalog...")
     if not only_run_rr:
-        data_catalog[:, :3] = snap_box_convert_main(
+        data_catalog[:, :3], boxsize_new = snap_box_convert_main(
             data_catalog[:, :3], omega_mf, w_f, omega_mm, w_m,
-            redshift, boxsize, wa_f=wa_f, wa_m=wa_m
+            redshift, boxsize, wa_f=wa_f, wa_m=wa_m, return_boxsize_new=True
         )
     print("Applying AP conversion to random catalog...")
-    random_catalog[:, :3] = snap_box_convert_main(
+    random_catalog[:, :3], boxsize_new = snap_box_convert_main(
         random_catalog[:, :3], omega_mf, w_f, omega_mm, w_m,
         redshift, boxsize, wa_f=wa_f, wa_m=wa_m
     )
@@ -385,13 +385,13 @@ if ap_enabled:
         if rho_fix_n:
             print(f"  Using create_rho with k={rho_param} (nthreads={nthreads})")
             data_catalog[:, 3] = create_rho(
-                data_catalog[:, :3], boxsize=boxsize, k=int(rho_param),
+                data_catalog[:, :3], boxsize=boxsize_new, k=int(rho_param),
                 nthreads=nthreads, only_return_rho=True
             )
         elif rho_fix_r:
             print(f"  Using create_rho_fix_r with r={rho_param} (nthreads={nthreads})")
             data_catalog[:, 3] = create_rho_fix_r(
-                data_catalog[:, :3], boxsize=boxsize, r=rho_param,
+                data_catalog[:, :3], boxsize=boxsize_new, r=rho_param,
                 nthreads=nthreads, verbose=verbose
             )
 
