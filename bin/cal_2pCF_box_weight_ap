@@ -1,4 +1,4 @@
-#! /public4/home/a0s003156/miniforge3/envs/xiaoliang/bin/python -u
+#! /home/xiaoliang/.conda/envs/xiaoliang/bin/python -u
 """
 Two-point correlation function (2pCF) calculator for simulation boxes.
 This script computes the 2D 2pCF (xi(s, mu)) using the Landy-Szalay estimator
@@ -7,66 +7,57 @@ with pair counting via the Corrfunc library.
 Supports both data-data (DD), data-random (DR), and random-random (RR) pair counts.
 Can save intermediate pair counts for re-use and supports weighted catalogs.
 """
+
+import numpy as np 
+from LSS_python.tpcf import cal_tpCF_from_pairs, run_tpCF
+from LSS_python.AP import snap_box_convert_main
 import joblib, os
 import argparse, sys
 
-import numpy as np 
-
-from LSS_python.tpcf import cal_tpCF_from_pairs, run_tpCF
-from LSS_python.AP import snap_box_convert_main
-
-
-def read_data(filename, with_weight=False, weight_set_one=False):
+def read_data(filename, weight_set_one=False, with_weight=False):
     """
-    Read ordinary npy arrays, only supporting shapes of (N, 3) or (N, 4)
+    Read ordinary npy arrays and convert them to the required number of columns.
     
     Parameters
     ----------
     filename : str
         Path to the npy file containing catalog data
-    with_weight : bool, optional
-        If True, load the weight column (4th column), by default False
     weight_set_one : bool, optional
-        If True, force loaded weights to 1.0, by default False
+        If True, force the weight column (4th column) to 1.0, by default False
+    with_weight : bool, optional
+        If True, the returned array has 4 columns (x, y, z, weight).
+        If False, the returned array has 3 columns (x, y, z only).
         
     Returns
     -------
     numpy.ndarray
-        Processed catalog array with shape (N, 3) or (N, 4)
+        Catalog array with shape (N, 3) or (N, 4) as required
     """
     source = np.load(filename)
-    result_cols = 4 if with_weight else 3
-    result_array = np.zeros(shape=(source.shape[0], result_cols), dtype=source.dtype)
+    ncols = source.shape[1]
+    target_cols = 4 if with_weight else 3
 
-    result_array[:, :3] = source[:, :3]
+    # Fast path: input already has the required shape and no weight
+    # modification is needed, return directly without allocating new memory
+    if ncols == target_cols and not weight_set_one:
+        return source
+
+    # General path: convert to the required number of columns
+    result_array = np.zeros(shape=(source.shape[0], target_cols), dtype=source.dtype)
+    # Copy position columns (whatever is available, at most 3)
+    npos = min(ncols, 3)
+    result_array[:, :npos] = source[:, :npos]
+
+    # Handle the weight column if requested
     if with_weight:
-        result_array[:, 3] = 1.0 if weight_set_one else source[:, 3]
+        if weight_set_one or ncols < 4:
+            # Force weights to 1.0, or fill missing weights with 1.0
+            result_array[:, 3] = 1.0
+        else:
+            # Keep original weights
+            result_array[:, 3] = source[:, 3]
 
     return result_array
-
-
-def apply_fiducial_rr_volume_correction(rr_result, volume_factor):
-    """Return a float-pair-count copy of a fiducial RR result.
-
-    Corrfunc stores ``npairs`` as an unsigned integer field.  The AP volume
-    correction is generally non-integer, so the corrected result must use a
-    floating-point field while leaving the cached fiducial RR untouched.
-    """
-    if rr_result.dtype.names is None or "npairs" not in rr_result.dtype.names:
-        raise ValueError("RR result must be a structured array with an 'npairs' field")
-
-    corrected_dtype = []
-    for field_name in rr_result.dtype.names:
-        field_dtype = rr_result.dtype.fields[field_name][0]
-        if field_name == "npairs":
-            field_dtype = np.float64
-        corrected_dtype.append((field_name, field_dtype))
-
-    corrected_result = np.empty(rr_result.shape, dtype=corrected_dtype)
-    for field_name in rr_result.dtype.names:
-        corrected_result[field_name] = rr_result[field_name]
-    corrected_result["npairs"] *= volume_factor
-    return corrected_result
         
     
 # ============================================================================
@@ -114,6 +105,10 @@ parser.add_argument("--with_weight", "-ww",
 parser.add_argument("--set_weight_to_one", "-weightone", 
                    action="store_true", 
                    help="Force weights to 1.0 (valid only with --with_weight)")
+parser.add_argument("--weight_pow", "-weipow", 
+                   type=float, 
+                   default=1.0, 
+                   help="Raise data weights to this power, i.e. weight**weipow (valid only with --with_weight)")
 
 # Algorithm parameters
 parser.add_argument("--xyz_refine_factors", "-refine", 
@@ -172,9 +167,6 @@ parser.add_argument("--boxsize",
                    type=float,
                    default=None,
                    help="Box size of the simulation (required when using --fiducial_values/--modify_values)")
-parser.add_argument("--use_fiducial_rr",
-                   action="store_true",
-                   help="Treat -rr as a fiducial-coordinate RR cache and apply the AP volume correction in memory")
 
 # ============================================================================
 # Parse command-line arguments
@@ -202,6 +194,7 @@ sedges = np.linspace(smin, smax, sbin+1)  # Create separation bin edges
 # Weight configuration
 with_weight = argv.with_weight
 weight_set_one = argv.set_weight_to_one
+weight_pow = argv.weight_pow
 
 # Algorithm parameters
 xyz_refine_factors = argv.xyz_refine_factors
@@ -213,7 +206,6 @@ rr_filename = argv.rr_filename
 # Execution mode flags
 only_run_rr = argv.only_run_rr
 save_dd_dr = argv.save_dd_dr 
-use_fiducial_rr = argv.use_fiducial_rr
 
 # Force re-computation flags
 force = argv.force
@@ -225,6 +217,7 @@ verbose = argv.verbose
 # If weight is not used, ignore weight-related settings
 if not with_weight:
     weight_set_one = False
+    weight_pow = 1.0
 
 # ============================================================================
 # Alcock-Paczyński conversion parameter validation
@@ -264,11 +257,6 @@ if argv.fiducial_values is not None or argv.modify_values is not None:
           f") -> modify=({omega_mm}, {w_m}" + (f", {wa_m}" if ap_use_wa else "") +
           f"), z={redshift}, boxsize={boxsize}")
 
-if use_fiducial_rr and not ap_enabled:
-    parser.error("--use_fiducial_rr requires --fiducial_values and --modify_values")
-if use_fiducial_rr and only_run_rr:
-    parser.error("--use_fiducial_rr cannot be used with --only_run_rr")
-
 # ============================================================================
 # Load data catalog (if not in RR-only mode)
 # ============================================================================
@@ -283,11 +271,13 @@ if not only_run_rr:
     data_filename, data_fileext = os.path.splitext(data_filename)
 
     # Load data catalog with appropriate weight handling
-    data_catalog = read_data(
-        data_dir + data_filename + data_fileext,
-        with_weight=with_weight,
-        weight_set_one=weight_set_one,
-    )
+    data_catalog = read_data(data_dir + data_filename + data_fileext, 
+                             weight_set_one=weight_set_one, with_weight=with_weight)
+    
+    # Apply power to data weights: weight -> weight**weight_pow
+    if weight_pow != 1.0:
+        print(f"Applying weight power: weight**{weight_pow}")
+        data_catalog[:, 3] = data_catalog[:, 3] ** weight_pow
 
 # ============================================================================
 # Parse random catalog path
@@ -330,30 +320,10 @@ if not only_run_rr:
 
 # ============================================================================
 # Load random catalog
-# Preserve the weight column only when weighted pair counting is requested.
+# For random catalog, if weight is not used, set weight to 1
 # ============================================================================
-random_catalog = read_data(
-    random_dir + random_filename + random_fileext,
-    with_weight=with_weight,
-    weight_set_one=weight_set_one,
-)
-
-# In fiducial-RR mode, compute or load the cache before AP conversion.  The
-# corrected RR is created later only in memory and is never written to -rr.
-if use_fiducial_rr:
-    if not os.path.exists(RR_result_filename) or force_rr:
-        rr_dir, _ = os.path.split(RR_result_filename)
-        if rr_dir:
-            os.makedirs(rr_dir, exist_ok=True)
-        print(f"Computing fiducial RR and saving to {RR_result_filename}")
-        fiducial_rr_output = {"DD": None, "DR": None, "RR": RR_result_filename}
-        fiducial_RR_result = run_tpCF(
-            None, random_catalog, sedges, mubin, with_weight, ["RR"],
-            xyz_refine_factors, fiducial_rr_output, nthreads, verbose=verbose
-        )["RR"]
-    else:
-        print(f"Loading fiducial RR from {RR_result_filename}")
-        fiducial_RR_result = joblib.load(RR_result_filename)
+random_catalog = read_data(random_dir + random_filename + random_fileext, 
+                           weight_set_one=not with_weight, with_weight=with_weight)
 
 # ============================================================================
 # Apply Alcock-Paczyński conversion (if enabled)
@@ -367,24 +337,10 @@ if ap_enabled:
             redshift, boxsize, wa_f=wa_f, wa_m=wa_m
         )
     print("Applying AP conversion to random catalog...")
-    if use_fiducial_rr:
-        random_catalog[:, :3], boxsize_new = snap_box_convert_main(
-            random_catalog[:, :3], omega_mf, w_f, omega_mm, w_m,
-            redshift, boxsize, wa_f=wa_f, wa_m=wa_m, return_boxsize_new=True
-        )
-        fiducial_volume = boxsize ** 3
-        ap_volume = np.prod(boxsize_new)
-        rr_volume_factor = fiducial_volume / ap_volume
-        print(f"Fiducial RR volume correction: V_fid={fiducial_volume:.12g}, "
-              f"V_ap={ap_volume:.12g}, factor={rr_volume_factor:.12g}")
-        RR_result = apply_fiducial_rr_volume_correction(
-            fiducial_RR_result, rr_volume_factor
-        )
-    else:
-        random_catalog[:, :3] = snap_box_convert_main(
-            random_catalog[:, :3], omega_mf, w_f, omega_mm, w_m,
-            redshift, boxsize, wa_f=wa_f, wa_m=wa_m
-        )
+    random_catalog[:, :3] = snap_box_convert_main(
+        random_catalog[:, :3], omega_mf, w_f, omega_mm, w_m,
+        redshift, boxsize, wa_f=wa_f, wa_m=wa_m
+    )
     print("AP conversion done.")
 
 # Dictionary to hold output filenames for pair counts
@@ -407,8 +363,8 @@ if only_run_rr:
     
     # Create output directory if needed
     rr_dir, _ = os.path.split(RR_result_filename)
-    if rr_dir:
-        os.makedirs(rr_dir, exist_ok=True)
+    if not os.path.exists(rr_dir):
+        os.makedirs(rr_dir)
     
     # Compute RR pairs (data_catalog is None in RR-only mode)
     _ = run_tpCF(None, random_catalog, sedges, mubin, with_weight, run_parts, 
@@ -419,17 +375,14 @@ else:
     # Ensure output directories exist
     for need_filename in (RR_result_filename, tpCF_result_filename):
         need_dir, _ = os.path.split(need_filename)
-        if need_dir:
-            os.makedirs(need_dir, exist_ok=True)
+        if not os.path.exists(need_dir):
+            os.makedirs(need_dir)
     
     # Initialize list of pair types to compute
     run_parts = []
     
     # --- Handle RR pairs ---
-    if use_fiducial_rr:
-        # RR_result is the in-memory, volume-corrected copy prepared above.
-        pass
-    elif not os.path.exists(RR_result_filename) or force_rr:
+    if not os.path.exists(RR_result_filename) or force_rr:
         # Need to compute RR: mark for computation and set output filename
         output_dict["RR"] = RR_result_filename
         run_parts.append("RR")
