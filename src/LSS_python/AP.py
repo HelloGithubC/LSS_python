@@ -2,7 +2,7 @@ import numpy as np
 from numba import njit
 import math
 
-from .base import Hz, DA
+from .base import Hz, DA, Hz_w0wa
 from .tpcf import xismu
 from .HI import cal_HI_factor
 
@@ -176,7 +176,7 @@ def ps_2d_convert_main(fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift, mesh
 
     return fftpower_new
 
-def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxsize_old, los_axis=2, inplace=False, return_boxsize_new=False):
+def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxsize_old, wa_f=0.0, wa_m=None, los_axis=2, inplace=False, return_boxsize_new=False):
     """
     position: The position of the particles. ndarray with shape (N, 3)
     boxsize: The boxsize of the simulation. float or ndarray is OK.
@@ -186,8 +186,25 @@ def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxs
     """
     if not inplace:
         position = np.copy(position)
-    Hz_f, Hz_m = Hz(redshift, omega_mf, w_f), Hz(redshift, omega_mm, w_m)
-    DA_f, DA_m = DA(redshift, omega_mf, w_f), DA(redshift, omega_mm, w_m)
+    
+    if wa_m is not None:
+        if abs(omega_mm - omega_mf) < 1e-8 and abs(w_m - w_f) < 1e-8 and abs(wa_m - wa_f) < 1e-8 or redshift < 1e-5:
+            print("Warning: omega_mm, w_m and wa_m is too close to omega_mf, w_f and wa_f, or redshift is too small, return position directly")
+            if return_boxsize_new:
+                return position, boxsize_old
+            else:
+                return position
+        Hz_f, Hz_m = Hz_w0wa(redshift, omega_mf, w_f, wa_f), Hz_w0wa(redshift, omega_mm, w_m, wa_m)
+        DA_f, DA_m = DA(redshift, omega_mf, w_f, wa_f), DA(redshift, omega_mm, w_m, wa_m)
+    else:
+        if abs(omega_mm - omega_mf) < 1e-8 and abs(w_m - w_f) < 1e-8 or redshift < 1e-5:
+            print("Warning: omega_mm and w_m is too close to omega_mf and w_f, or redshift is too small, return position directly")
+            if return_boxsize_new:
+                return position, boxsize_old
+            else:
+                return position
+        Hz_f, Hz_m = Hz(redshift, omega_mf, w_f), Hz(redshift, omega_mm, w_m)
+        DA_f, DA_m = DA(redshift, omega_mf, w_f), DA(redshift, omega_mm, w_m)
     perp_convert_factor = DA_m / DA_f
     parallel_convert_factor = Hz_f / Hz_m
     convert_array = np.array(
