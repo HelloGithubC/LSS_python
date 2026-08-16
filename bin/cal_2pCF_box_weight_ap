@@ -376,7 +376,7 @@ if ap_enabled:
     print("Applying AP conversion to random catalog...")
     random_catalog[:, :3], boxsize_new = snap_box_convert_main(
         random_catalog[:, :3], omega_mf, w_f, omega_mm, w_m,
-        redshift, boxsize, wa_f=wa_f, wa_m=wa_m
+        redshift, boxsize, wa_f=wa_f, wa_m=wa_m, return_boxsize_new=True
     )
     print("AP conversion done.")
 
