@@ -1,4 +1,4 @@
-#!python -u
+#!/usr/bin/env python3
 """
 FFT power spectrum calculator for simulation boxes.
 This script computes the power spectrum (P(k)) from particle data using FFT-based methods.

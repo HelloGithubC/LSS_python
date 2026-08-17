@@ -1,4 +1,4 @@
-#! /home/teamxdli_a/.conda/envs/xiaoliang/bin/python -u
+#!/usr/bin/env python3
 """
 Two-point correlation function (2pCF) calculator for simulation boxes.
 This script computes the 2D 2pCF (xi(s, mu)) using the Landy-Szalay estimator
