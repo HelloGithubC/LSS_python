@@ -311,11 +311,6 @@ if not only_run_rr:
     # Load data catalog with appropriate weight handling
     data_catalog = read_data(data_dir + data_filename + data_fileext, 
                              weight_set_one=weight_set_one, with_weight=with_weight)
-    
-    # Apply power to data weights: weight -> weight**weight_pow
-    if weight_pow != 1.0:
-        print(f"Applying weight power: weight**{weight_pow}")
-        data_catalog[:, 3] = data_catalog[:, 3] ** weight_pow
 
 # ============================================================================
 # Parse random catalog path
@@ -395,6 +390,11 @@ if ap_enabled:
                 data_catalog[:, :3], boxsize=boxsize_new, r=rho_param,
                 nthreads=nthreads, verbose=verbose
             )
+
+# Apply power to data weights: weight -> weight**weight_pow
+    if weight_pow != 1.0:
+        print(f"Applying weight power: weight**{weight_pow}")
+        data_catalog[:, 3] = data_catalog[:, 3] ** weight_pow
 
 
 # Dictionary to hold output filenames for pair counts
