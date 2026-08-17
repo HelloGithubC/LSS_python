@@ -284,14 +284,15 @@ if rho_fix_n and rho_fix_r:
 rho_recalc_enabled = rho_fix_n or rho_fix_r
 
 if ap_enabled:
-    # When AP is enabled, one of --rho-fix-n or --rho-fix-r must be provided
-    if not rho_recalc_enabled:
-        parser.error("When AP conversion is enabled, one of --rho-fix-n or --rho-fix-r must be provided")
-    if rho_param is None:
-        parser.error("--rho-param is required when using --rho-fix-n or --rho-fix-r")
+    if with_weight:
+        # When AP is enabled, one of --rho-fix-n or --rho-fix-r must be provided
+        if not rho_recalc_enabled:
+            parser.error("When AP conversion is enabled, one of --rho-fix-n or --rho-fix-r must be provided")
+        if rho_param is None:
+            parser.error("--rho-param is required when using --rho-fix-n or --rho-fix-r")
 else:
     # When AP is not enabled, warn if rho parameters are provided (they won't take effect)
-    if rho_recalc_enabled or rho_param is not None:
+    if rho_recalc_enabled or rho_param is not None and with_weight:
         print("WARNING: --rho-fix-n/--rho-fix-r/--rho-param are ignored when AP conversion is not enabled")
 
 # ============================================================================
