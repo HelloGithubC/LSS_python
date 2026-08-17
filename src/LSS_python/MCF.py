@@ -2,7 +2,6 @@ import numpy as np
 from numba import njit, prange, set_num_threads
 from scipy.spatial import KDTree
 from tqdm import tqdm
-import freud
 
 from LSS_python.base import Hz, DA
 
@@ -342,6 +341,7 @@ def create_rho_fix_r(
     rho_array : ndarray
         Number-density mark for each position, shape ``(n_galaxy,)``.
     """
+    import freud
     if r <= 0.0:
         raise ValueError("r must be positive")
     if nthreads <= 0:
