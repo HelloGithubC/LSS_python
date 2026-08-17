@@ -1,15 +1,17 @@
-#! python -u
+#!/home/xiaoliang/.conda/envs/xiaoliang/bin/python -u
 
 import numpy as np
 import joblib, os
 import argparse, sys
 from cobaya.likelihood import Likelihood
 from cobaya.run import run
-from cobaya.mpi import is_main_process
+from cobaya.mpi import is_main_process, get_mpi
 
 from LSS_python.tpcf import xismu, get_diff_array
 from LSS_python.AP import tpcf_convert_main
 from LSS_python.MCMC import run_mcmc_main_cobaya
+
+from method import get_redshift_dict
 
 ## data_dict ##
 # Data structure description (loaded via joblib.load from a .pkl file)
@@ -33,13 +35,6 @@ from LSS_python.MCMC import run_mcmc_main_cobaya
 #     remove_last_one=True, mupack=1). When integrate_tpcf_func is provided, no defaults
 #     are applied — all required kwargs must be specified by the user.
 #   - fisher_matrix: np.ndarray - Fisher matrix (used for MOPED sampler configuration, optional)
-
-def get_redshift_dict():
-    return {
-        # snap_id: redshift (Need to be consistent with data_dict)
-        6: 1.0, 
-        8: 0.5
-    }
 
 
 class Chi2Likelihood(Likelihood):
@@ -262,6 +257,8 @@ if __name__ == "__main__":
 
     parser.add_argument("--force", "-f", help="Force run, even the output file exists.", action="store_true")
     parser.add_argument("--debug", "-d", help="Enable debug mode for detailed output.", action="store_true")
+    parser.add_argument("--dry-run", help="Only load data and evaluate logp without running MCMC.", action="store_true")
+    parser.add_argument("--test-params", help="Specific parameter values for dry-run (omega_m [w [wa]]). Only used with --dry-run. Only main process prints.", type=float, nargs='+')
     # parser.add_argument("--verbose", "-v", help="Verbose output.", action="store_true")
     
     if len(sys.argv) == 1:
@@ -298,7 +295,72 @@ if __name__ == "__main__":
         omega_mf, w0_f, wa_f = fiducial_values
     else:
         omega_mf, w_f = fiducial_values
-    
+
+    # Dry-run mode: load data and evaluate logp only (no MCMC)
+    if argv.dry_run:
+        likelihood = Chi2Likelihood({'data_dict_path': data_filename})
+        likelihood.initialize()
+
+        if argv.test_params is not None:
+            if not is_main_process():
+                exit(0)
+            test_values = argv.test_params
+            if is_3param:
+                if len(test_values) != 3:
+                    raise ValueError(f"3-param mode expects 3 values (omega_m w0 wa), got {len(test_values)}")
+                test_params = {'omega_m': test_values[0], 'w0': test_values[1], 'wa': test_values[2]}
+            else:
+                if len(test_values) != 2:
+                    raise ValueError(f"2-param mode expects 2 values (omega_m w), got {len(test_values)}")
+                test_params = {'omega_m': test_values[0], 'w': test_values[1]}
+            logp_value = likelihood.logp(**test_params)
+            chi2 = -2.0 * logp_value
+            print(f"\n{'='*60}")
+            print(f"Dry-run with --test-params")
+            print(f"{'='*60}")
+            print(f"Parameters: {test_params}")
+            print(f"Logp: {logp_value:.6f}")
+            print(f"Chi2: {chi2:.6f}")
+            print(f"{'='*60}\n")
+        else:
+            mpi = get_mpi()
+            if mpi is not None:
+                mpi_comm = mpi.COMM_WORLD
+                mpi_size = mpi_comm.Get_size()
+                mpi_rank = mpi_comm.Get_rank()
+            else:
+                mpi_comm = None
+                mpi_size = 1
+                mpi_rank = 0
+
+            n_samples = mpi_size
+            # Each MPI rank draws one random initial point and evaluates logp
+            if is_3param:
+                omega_m_val = np.random.normal(omega_mf, 0.001)
+                w0_val = np.random.normal(w0_f, 0.005)
+                wa_val = np.random.normal(wa_f, 0.005)
+                test_params = {'omega_m': omega_m_val, 'w0': w0_val, 'wa': wa_val}
+            else:
+                omega_m_val = np.random.normal(omega_mf, 0.001)
+                w_val = np.random.normal(w_f, 0.005)
+                test_params = {'omega_m': omega_m_val, 'w': w_val}
+            logp_value = likelihood.logp(**test_params)
+            chi2 = -2.0 * logp_value
+
+            if is_main_process():
+                print(f"\n{'='*60}")
+                print(f"Dry-run: evaluating logp at {n_samples} random initial points (MPI size = {mpi_size})")
+                print(f"{'='*60}")
+            # Barrier so header prints before per-rank outputs
+            if mpi_comm is not None:
+                mpi_comm.Barrier()
+            print(f"Rank {mpi_rank:3d}: params={test_params}, logp={logp_value:.6f}, chi2={chi2:.6f}")
+            if mpi_comm is not None:
+                mpi_comm.Barrier()
+            if is_main_process():
+                print(f"{'='*60}\n")
+        exit(0)
+
     # Build Cobaya configuration - 直接在likelihood中传递数据成员
     omega_m_range = argv.omega_m_range
     w_range = argv.w_range
