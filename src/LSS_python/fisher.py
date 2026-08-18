@@ -132,7 +132,8 @@ def cal_Fisher_matrix(func, best_fit, cov_matrix, delta=None, computed_jac=None,
         return fisher
 
 
-def cal_Fisher_matrix_from_precomputed(parameter_points, function_values, cov_matrix, return_jac=False):
+def cal_Fisher_matrix_from_precomputed(parameter_points, function_values, cov_matrix, return_jac=False,
+                                       best_fit=None, delta=None):
     """
     Calculate Fisher matrix from precomputed parameter-function value pairs.
 
@@ -160,6 +161,19 @@ def cal_Fisher_matrix_from_precomputed(parameter_points, function_values, cov_ma
     
     return_jac : bool, default False
         If True, return both Fisher matrix and Jacobian matrix.
+
+    best_fit : array_like, optional
+        Best-fit parameter values. Must be provided together with delta.
+        When provided, delta is computed as:
+            delta_i = parameter_points[i, 0, i] - best_fit[i]
+        This is useful when perturbation points are not symmetric around the
+        center, or when you want to explicitly specify the center point.
+    
+    delta : float or array_like, optional
+        Finite difference step sizes. Must be provided together with best_fit.
+        When provided together with best_fit, delta is used directly.
+        Can be a single float applied to all parameters, or an array matching
+        the number of parameters.
 
     Returns
     -------
@@ -191,9 +205,15 @@ def cal_Fisher_matrix_from_precomputed(parameter_points, function_values, cov_ma
     ...     for i in range(n_params)
     ... ])
     >>> 
-    >>> # Compute Fisher matrix
+    >>> # Compute Fisher matrix (delta inferred from parameter_points)
     >>> fisher = cal_Fisher_matrix_from_precomputed(
     ...     parameter_points, function_values, cov_matrix
+    ... )
+    >>> 
+    >>> # Compute Fisher matrix (delta computed from best_fit)
+    >>> fisher = cal_Fisher_matrix_from_precomputed(
+    ...     parameter_points, function_values, cov_matrix,
+    ...     best_fit=[1.0, 2.0]
     ... )
 
     Notes
@@ -201,10 +221,12 @@ def cal_Fisher_matrix_from_precomputed(parameter_points, function_values, cov_ma
     The function computes derivatives using central differences:
         ∂f/∂θ_i ≈ [f(θ + δ_i e_i) - f(θ - δ_i e_i)] / (2 δ_i)
     
-    where δ_i is inferred from the parameter points:
-        δ_i = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2
+    Two modes of operation:
+    1. If both `best_fit` and `delta` are provided, delta is used directly.
+    2. If neither is provided, delta is inferred from the perturbation points:
+           delta_i = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2
     
-    This approach is explicit and does not require separate best_fit or delta parameters.
+    Providing only one of `best_fit` or `delta` will raise a ValueError.
     """
     # Convert inputs to numpy arrays
     parameter_points = np.asarray(parameter_points, dtype=np.float64)
@@ -237,16 +259,48 @@ def cal_Fisher_matrix_from_precomputed(parameter_points, function_values, cov_ma
     if function_values.ndim == 2:
         function_values = function_values.reshape(n_params, 2, 1)
     
-    # Compute delta for each parameter from the points themselves
-    # delta_i = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2
-    delta = np.zeros(n_params, dtype=np.float64)
-    for i in range(n_params):
-        delta[i] = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2.0
-        if np.abs(delta[i]) < 1e-15:
+    # Compute delta for each parameter
+    # Two modes: (1) both best_fit and delta provided, (2) neither provided
+    if (best_fit is None) != (delta is None):
+        raise ValueError(
+            "best_fit and delta must be both provided or both omitted. "
+            "Got best_fit={} and delta={}.".format(
+                "provided" if best_fit is not None else "None",
+                "provided" if delta is not None else "None"
+            )
+        )
+    
+    if best_fit is not None and delta is not None:
+        # Both provided: use delta directly, validate best_fit length
+        best_fit = np.atleast_1d(np.asarray(best_fit, dtype=np.float64))
+        if len(best_fit) != n_params:
             raise ValueError(
-                f"delta for parameter {i} is too small: {delta[i]}. "
+                f"best_fit length {len(best_fit)} does not match "
+                f"number of parameters {n_params}"
+            )
+        if np.isscalar(delta):
+            delta_arr = np.full(n_params, float(delta), dtype=np.float64)
+        else:
+            delta_arr = np.atleast_1d(np.asarray(delta, dtype=np.float64))
+            if len(delta_arr) != n_params:
+                raise ValueError(
+                    f"delta length {len(delta_arr)} does not match "
+                    f"number of parameters {n_params}"
+                )
+    else:
+        # Neither provided: infer delta from perturbation points
+        # delta_i = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2
+        delta_arr = np.zeros(n_params, dtype=np.float64)
+        for i in range(n_params):
+            delta_arr[i] = (parameter_points[i, 0, i] - parameter_points[i, 1, i]) / 2.0
+
+    # Validate delta values
+    for i in range(n_params):
+        if np.abs(delta_arr[i]) < 1e-15:
+            raise ValueError(
+                f"delta for parameter {i} is too small: {delta_arr[i]}. "
                 f"Check that parameter_points[{i}, 0] and parameter_points[{i}, 1] "
-                f"differ in the {i}-th component."
+                f"differ in the {i}-th component, or provide best_fit/delta explicitly."
             )
     
     # Compute inverse covariance matrix
@@ -265,7 +319,7 @@ def cal_Fisher_matrix_from_precomputed(parameter_points, function_values, cov_ma
     for i in range(n_params):
         f_plus = function_values[i, 0]   # shape: (n_output,)
         f_minus = function_values[i, 1]  # shape: (n_output,)
-        jacobian[:, i] = (f_plus - f_minus) / (2 * delta[i])
+        jacobian[:, i] = (f_plus - f_minus) / (2 * delta_arr[i])
     
     # Compute Fisher matrix: F = J^T * C^{-1} * J
     fisher = jacobian.T @ cov_inv @ jacobian

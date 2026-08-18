@@ -86,6 +86,11 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         - center_zorder : float, optional
             Z-order for the center marker.
 
+        **Parameter names**:
+        - param_names : tuple of str, optional
+            (xlabel, ylabel) for the axes. If not provided, defaults to
+            ('Parameter 1', 'Parameter 2').
+
         **Axis limits**:
         - xlim : tuple, optional
             (xmin, xmax) for the axis. Auto-determined if not provided.
@@ -206,6 +211,12 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
     padding = kwargs.get('padding', 0.1)
     visual_xylims = kwargs.get('visual_xylims', visual_xylims)
 
+    # Parameter names for axis labels
+    param_names = kwargs.get('param_names', ('Parameter 1', 'Parameter 2'))
+
+    # Label for the ellipse (for legend)
+    label = kwargs.get('label', None)
+
     # Parametric ellipse parameters
     n_points = kwargs.get('n_points', 200)
 
@@ -244,7 +255,8 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
             alpha=ellipse_alpha,
             linewidth=ellipse_linewidth,
             linestyle=ellipse_linestyle,
-            zorder=ellipse_zorder
+            zorder=ellipse_zorder,
+            label=label
         )
         ax.add_patch(ellipse)
     
@@ -282,7 +294,8 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
                color=ellipse_edgecolor,
                linewidth=ellipse_linewidth,
                linestyle=ellipse_linestyle,
-               zorder=ellipse_zorder)
+               zorder=ellipse_zorder,
+               label=label)
 
     # Plot center point if requested
     if show_center:
@@ -404,8 +417,8 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
 
     # Set labels if not already set
     if ax.get_xlabel() == '':
-        ax.set_xlabel('Parameter 1')
+        ax.set_xlabel(param_names[0])
     if ax.get_ylabel() == '':
-        ax.set_ylabel('Parameter 2')
+        ax.set_ylabel(param_names[1])
 
     return ax
