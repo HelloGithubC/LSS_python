@@ -5,8 +5,30 @@
 #include <vector>
 #include <array>
 #include <algorithm>
+#include <atomic>
+#include <initializer_list>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 #include <omp.h>
 #include <iostream>
+
+inline bool checked_vector_size(
+    std::initializer_list<size_t> factors,
+    size_t& size_out
+) {
+    size_t size = 1;
+    const size_t max_size = std::vector<double>().max_size();
+    for (const size_t factor : factors) {
+        if (factor != 0 && size > max_size / factor) {
+            return false;
+        }
+        size *= factor;
+    }
+    size_out = size;
+    return true;
+}
 
 /**
  * @brief Perform Alcock-Paczynski cosmological conversion on (s, mu) coordinates
@@ -23,12 +45,22 @@ inline void smu_cosmo_convert(double s_f, double mu_f, double DA_f, double DA_t,
 /**
  * @brief Find dense grid index bounds from sparse grid points
  */
-inline void find_dense_in_sparse(
+inline bool find_dense_in_sparse(
     const double s_points_sparse[2], const double mu_points_sparse[2],
     double smin_all, double smax_all, double mumin_all, double mumax_all,
     double ds_dense, double dmu_dense,
     int& i_s_min, int& i_s_max, int& i_mu_min, int& i_mu_max
 ) {
+    if (!(std::isfinite(s_points_sparse[0]) && std::isfinite(s_points_sparse[1]) &&
+          std::isfinite(mu_points_sparse[0]) && std::isfinite(mu_points_sparse[1]) &&
+          std::isfinite(smin_all) && std::isfinite(smax_all) &&
+          std::isfinite(mumin_all) && std::isfinite(mumax_all) &&
+          std::isfinite(ds_dense) && std::isfinite(dmu_dense)) ||
+        ds_dense <= 0.0 || dmu_dense <= 0.0 ||
+        smax_all <= smin_all || mumax_all <= mumin_all) {
+        return false;
+    }
+
     double s_min = std::min(s_points_sparse[0], s_points_sparse[1]);
     double mu_min = std::min(mu_points_sparse[0], mu_points_sparse[1]);
     double s_max = std::max(s_points_sparse[0], s_points_sparse[1]);
@@ -43,6 +75,8 @@ inline void find_dense_in_sparse(
     i_mu_min = static_cast<int>(std::floor((mu_min - mumin_all) / dmu_dense));
     i_s_max = static_cast<int>(std::floor((s_max - smin_all) / ds_dense));
     i_mu_max = static_cast<int>(std::floor((mu_max - mumin_all) / dmu_dense));
+
+    return true;
 }
 
 /**
@@ -136,6 +170,16 @@ inline std::vector<double> mapping_smudata_dense(
     double smin_mapping, double smax_mapping,
     int nthreads = 1
 ) {
+    if (!(std::isfinite(Hz_f) && std::isfinite(Hz_m) &&
+          std::isfinite(DA_f) && std::isfinite(DA_m)) ||
+        Hz_f <= 0.0 || Hz_m <= 0.0 || DA_f <= 0.0 || DA_m <= 0.0 ||
+        sbin_dense == 0 || mubin_dense == 0 ||
+        sbin_sparse == 0 || mubin_sparse == 0) {
+        throw std::runtime_error(
+            "Invalid AP mapping inputs: cosmological distances/rates and grid "
+            "dimensions must be finite and strictly positive.");
+    }
+
     // Calculate bin sizes
     double delta_s = smax_all - smin_all;
     double delta_mu = mumax_all - mumin_all;
@@ -149,16 +193,33 @@ inline std::vector<double> mapping_smudata_dense(
     size_t element_size = smutabstd.size() / (sbin_dense * mubin_dense);
     
     // Allocate output array: (sbin_sparse, mubin_sparse, element_size)
-    std::vector<double> smutab2(sbin_sparse * mubin_sparse * element_size, 0.0);
+    size_t output_size = 0;
+    if (!checked_vector_size({sbin_sparse, mubin_sparse, element_size}, output_size)) {
+        throw std::runtime_error(
+            "Invalid AP mapping output size: vector size overflow for sparse grid.");
+    }
+    std::vector<double> smutab2(output_size, 0.0);
     
     // Scope parameters (from smu_scope_tuple=(1,5) in Python)
     const int s_scope = 1;
     const int mu_scope = 5;
     
+    std::atomic<bool> invalid_mapping(false);
+    std::string invalid_mapping_message;
+    const auto record_invalid_mapping = [&](const std::string& message) {
+        bool expected = false;
+        if (invalid_mapping.compare_exchange_strong(expected, true)) {
+            invalid_mapping_message = message;
+        }
+    };
+
     omp_set_num_threads(nthreads);
     #pragma omp parallel for schedule(static)
     for (size_t i_s_sparse = 0; i_s_sparse < sbin_sparse; ++i_s_sparse) {
         for (size_t i_mu_sparse = 0; i_mu_sparse < mubin_sparse; ++i_mu_sparse) {
+            if (invalid_mapping.load()) {
+                continue;
+            }
             // Step 1: Get sparse grid point coordinates (lower-left corner of sparse cell)
             double s_sparse_2 = smin_all + i_s_sparse * ds_sparse;
             double mu_sparse_2 = mumin_all + i_mu_sparse * dmu_sparse;
@@ -201,16 +262,43 @@ inline std::vector<double> mapping_smudata_dense(
                 smu_cosmo_convert(s_points_sparse_2[1], mu_points_sparse_2[1], DA_m, DA_f, Hz_m, Hz_f, 
                                  s_points_dense[1], mu_points_dense[1]);
                 
-                find_dense_in_sparse(s_points_dense, mu_points_dense,
-                                   smin_all, smax_all, mumin_all, mumax_all,
-                                   ds_dense, dmu_dense,
-                                   i_s_dense_min, i_s_dense_max, i_mu_dense_min, i_mu_dense_max);
+                if (!find_dense_in_sparse(s_points_dense, mu_points_dense,
+                                          smin_all, smax_all, mumin_all, mumax_all,
+                                          ds_dense, dmu_dense,
+                                          i_s_dense_min, i_s_dense_max,
+                                          i_mu_dense_min, i_mu_dense_max)) {
+                    std::ostringstream message;
+                    message << "Invalid AP coordinate transform at sparse bin ("
+                            << i_s_sparse << ", " << i_mu_sparse << "): "
+                            << "transformed coordinates are non-finite or grid spacing is invalid. "
+                            << "Hz_f=" << Hz_f << ", Hz_m=" << Hz_m
+                            << ", DA_f=" << DA_f << ", DA_m=" << DA_m;
+                    record_invalid_mapping(message.str());
+                    continue;
+                }
             } else {
                 // No conversion: use sparse points directly
-                find_dense_in_sparse(s_points_sparse_2, mu_points_sparse_2,
-                                   smin_all, smax_all, mumin_all, mumax_all,
-                                   ds_dense, dmu_dense,
-                                   i_s_dense_min, i_s_dense_max, i_mu_dense_min, i_mu_dense_max);
+                if (!find_dense_in_sparse(s_points_sparse_2, mu_points_sparse_2,
+                                          smin_all, smax_all, mumin_all, mumax_all,
+                                          ds_dense, dmu_dense,
+                                          i_s_dense_min, i_s_dense_max,
+                                          i_mu_dense_min, i_mu_dense_max)) {
+                    record_invalid_mapping("Invalid AP grid coordinates without conversion.");
+                    continue;
+                }
+            }
+
+            if (i_s_dense_min < 0 || i_s_dense_max < i_s_dense_min ||
+                i_s_dense_max > static_cast<int>(sbin_dense) ||
+                i_mu_dense_min < 0 || i_mu_dense_max < i_mu_dense_min ||
+                i_mu_dense_max > static_cast<int>(mubin_dense)) {
+                std::ostringstream message;
+                message << "Invalid AP dense-grid bounds at sparse bin ("
+                        << i_s_sparse << ", " << i_mu_sparse << "): s=["
+                        << i_s_dense_min << ", " << i_s_dense_max << "], mu=["
+                        << i_mu_dense_min << ", " << i_mu_dense_max << "]";
+                record_invalid_mapping(message.str());
+                continue;
             }
             
             // Step 4: Calculate i_s_add_temp and i_mu_add_temp
@@ -220,9 +308,26 @@ inline std::vector<double> mapping_smudata_dense(
             // Step 5: Build smu_points_dense_2 array
             int s_cubes_size = i_s_dense_max - i_s_dense_min + i_s_add_temp;
             int mu_cubes_size = i_mu_dense_max - i_mu_dense_min + i_mu_add_temp;
+
+            if (s_cubes_size < 1 || mu_cubes_size < 1) {
+                std::ostringstream message;
+                message << "Invalid AP temporary-grid size at sparse bin ("
+                        << i_s_sparse << ", " << i_mu_sparse << "): s_cubes_size="
+                        << s_cubes_size << ", mu_cubes_size=" << mu_cubes_size;
+                record_invalid_mapping(message.str());
+                continue;
+            }
+
+            size_t smu_points_size = 0;
+            if (!checked_vector_size({static_cast<size_t>(s_cubes_size),
+                                      static_cast<size_t>(mu_cubes_size), 2},
+                                     smu_points_size)) {
+                record_invalid_mapping("Invalid AP temporary-grid vector size overflow.");
+                continue;
+            }
             
             // Temporary storage for dense points: [i_s][i_mu][s_or_mu]
-            std::vector<double> smu_points_dense_2(s_cubes_size * mu_cubes_size * 2, 0.0);
+            std::vector<double> smu_points_dense_2(smu_points_size, 0.0);
             
             for (int is_dense = i_s_dense_min; is_dense < i_s_dense_max + i_s_add_temp; ++is_dense) {
                 for (int imu_dense = i_mu_dense_min; imu_dense < i_mu_dense_max + i_mu_add_temp; ++imu_dense) {
@@ -254,6 +359,14 @@ inline std::vector<double> mapping_smudata_dense(
             // Step 6: Calculate rates_dense
             int s_cubes_dense_size = s_cubes_size - 1;
             int mu_cubes_dense_size = mu_cubes_size - 1;
+
+            size_t rates_size = 0;
+            if (!checked_vector_size({static_cast<size_t>(s_cubes_dense_size),
+                                      static_cast<size_t>(mu_cubes_dense_size)},
+                                     rates_size)) {
+                record_invalid_mapping("Invalid AP rate-grid vector size overflow.");
+                continue;
+            }
             
             double s_sparse = ds_sparse * i_s_sparse;
             double mu_sparse = dmu_sparse * i_mu_sparse;
@@ -262,7 +375,7 @@ inline std::vector<double> mapping_smudata_dense(
             double mu_sparse_low = mu_sparse;
             double mu_sparse_high = mu_sparse + dmu_sparse;
             
-            std::vector<double> rates_dense(s_cubes_dense_size * mu_cubes_dense_size, 0.0);
+            std::vector<double> rates_dense(rates_size, 0.0);
             
             if (need_convert) {
                 for (int i_s_cube = 0; i_s_cube < s_cubes_dense_size; ++i_s_cube) {
@@ -342,6 +455,10 @@ inline std::vector<double> mapping_smudata_dense(
                 }
             }
         }
+    }
+
+    if (invalid_mapping.load()) {
+        throw std::runtime_error(invalid_mapping_message);
     }
     
     return smutab2;

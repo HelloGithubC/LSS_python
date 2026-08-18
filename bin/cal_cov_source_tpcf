@@ -9,15 +9,13 @@ Usage examples
 # Jackknife
 python cal_cov_source_xismu data.npy random.npy 2500.0 jk -n 8 -v
 
-# Subsample
-python cal_cov_source_xismu data.npy random.npy 2500.0 subsample --weight_key HImass -v
+# Subsample with weights (4th column of data.npy) raised to a power
+python cal_cov_source_xismu data.npy random.npy 2500.0 subsample -ww -weipow 1.5 -v
 """
 
 import argparse
 import os
 import sys
-import warnings
-from pathlib import Path
 
 import joblib
 import numpy as np
@@ -25,85 +23,60 @@ from LSS_python.cov import run_jackknife_tpCF, run_subsample_tpCF
 
 
 # ---------------------------------------------------------------------------
-# Data loading (mirrors cal_cov_source_fftpower2d.read_data)
+# Data loading (mirrors cal_2pCF_box_weight_ap.read_data)
 # ---------------------------------------------------------------------------
-def read_data(filename, weight_key=None):
+def read_data(filename, weight_set_one=False, with_weight=False):
     """
-    Load particle data from a ``.npy`` file.
-
-    Supports both structured arrays (with named fields) and plain arrays.
-    For structured arrays, positions are extracted from ``Pos`` (or ``X``,
-    ``Y``, ``Z``), and the weight field is looked up by name.
-    For plain arrays, *weight_key* acts as a boolean flag: when not ``None``,
-    the 4th column is treated as weight.
+    Read ordinary npy arrays (plain arrays only, no structured arrays) and
+    convert them to the required number of columns.
 
     Parameters
     ----------
     filename : str
-        Path to the ``.npy`` file.
-    weight_key : str or None
-        Field name for weights (structured array) or flag to enable the 4th
-        column (plain array).  ``None`` means no weights.
+        Path to the npy file containing catalog data.
+    weight_set_one : bool, optional
+        If True, force the weight column (4th column) to 1.0, by default False.
+    with_weight : bool, optional
+        If True, the returned array has 4 columns (x, y, z, weight).
+        If False, the returned array has 3 columns (x, y, z only).
 
     Returns
     -------
-    data : ndarray, shape (N, 3) or (N, 4)
-        Position array optionally concatenated with a weight column.
-    use_weight : bool
-        Whether a weight column is present.
+    numpy.ndarray
+        Catalog array with shape (N, 3) or (N, 4) as required.
     """
     source = np.load(filename)
-
-    # --- Structured array path (has named fields) ---
     if source.dtype.names is not None:
-        if "Pos" in source.dtype.names:
-            pos = source["Pos"]
-        elif all(f in source.dtype.names for f in ("X", "Y", "Z")):
-            pos = np.stack([source["X"], source["Y"], source["Z"]], axis=1)
+        raise ValueError(
+            f"Structured arrays are not supported: {filename} has named fields "
+            f"{source.dtype.names}. Please save the catalog as a plain array "
+            "with columns (x, y, z[, weight])."
+        )
+
+    ncols = source.shape[1]
+    target_cols = 4 if with_weight else 3
+
+    # Fast path: input already has the required shape and no weight
+    # modification is needed, return directly without allocating new memory
+    if ncols == target_cols and not weight_set_one:
+        return source
+
+    # General path: convert to the required number of columns
+    result_array = np.zeros(shape=(source.shape[0], target_cols), dtype=source.dtype)
+    # Copy position columns (whatever is available, at most 3)
+    npos = min(ncols, 3)
+    result_array[:, :npos] = source[:, :npos]
+
+    # Handle the weight column if requested
+    if with_weight:
+        if weight_set_one or ncols < 4:
+            # Force weights to 1.0, or fill missing weights with 1.0
+            result_array[:, 3] = 1.0
         else:
-            raise ValueError(
-                "Structured array must contain 'Pos' or ('X', 'Y', 'Z') fields"
-            )
+            # Keep original weights
+            result_array[:, 3] = source[:, 3]
 
-        use_weight = weight_key is not None
-        if use_weight and weight_key not in source.dtype.names:
-            raise ValueError(
-                f"weight_key '{weight_key}' not found in structured array fields"
-            )
-
-        dtypes = [pos.dtype]
-        if use_weight:
-            dtypes.append(source[weight_key].dtype)
-
-        final_dtype = np.result_type(*dtypes)
-        if final_dtype != pos.dtype:
-            warnings.warn(
-                f"Type mismatch: position dtype is {pos.dtype}, "
-                f"but weight field has dtype {source[weight_key].dtype}. "
-                f"Output array promoted to {final_dtype}."
-            )
-
-        ncols = 3 + (1 if use_weight else 0)
-        out = np.empty((source.shape[0], ncols), dtype=final_dtype)
-        out[:, :3] = pos
-        if use_weight:
-            out[:, 3] = source[weight_key]
-
-    # --- Plain array path (no named fields) ---
-    else:
-        use_weight = weight_key is not None
-        ncols = 3 + (1 if use_weight else 0)
-
-        if source.shape[1] < ncols:
-            raise ValueError(
-                f"Plain array has {source.shape[1]} columns, "
-                f"but {ncols} are needed (3 positions"
-                + (" + 1 weight" if use_weight else "")
-                + ")"
-            )
-        out = source[:, :ncols].copy()
-
-    return out, use_weight
+    return result_array
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +110,14 @@ def main():
                         help="RR pkl file for caching (default: RR_temp.pkl)")
     parser.add_argument("--tpcf_filename", "-tpcf", type=str, default="tpCF_temp.pkl",
                         help="Output tpCF pkl file (default: tpCF_temp.pkl)")
-    parser.add_argument("--weight_key", "-wei", type=str, default=None,
-                        help="Field name for particle weights (default: None)")
+
+    # --- Weight handling options ---
+    parser.add_argument("--with_weight", "-ww", action="store_true",
+                        help="Load weights from 4th column of catalog files")
+    parser.add_argument("--weight_pow", "-weipow", type=float, default=1.0,
+                        help="Raise data weights to this power, i.e. weight**weipow "
+                             "(valid only with --with_weight)")
+
     parser.add_argument("--nthreads", "-n", type=int, default=32,
                         help="Number of threads (default: 32)")
     parser.add_argument("--force", "-f", action="store_true", default=False,
@@ -158,6 +137,14 @@ def main():
     sedges = np.linspace(0.0, args.s_max, args.sbin + 1)
     rr_type_str = "JK" if args.cov_source_type == "jk" else "sub"
 
+    # --- Weight configuration (mirrors cal_2pCF_box_weight_ap) ---
+    with_weight = args.with_weight
+    weight_pow = args.weight_pow
+
+    # If weight is not used, ignore weight-related settings
+    if not with_weight:
+        weight_pow = 1.0
+
     # --- Print configuration ---
     if args.verbose:
         print("=" * 50, flush=True)
@@ -171,7 +158,8 @@ def main():
         print(f"  sbin:          {args.sbin}", flush=True)
         print(f"  mubin:         {args.mubin}", flush=True)
         print(f"  s_max:         {args.s_max}", flush=True)
-        print(f"  weight_key:    {args.weight_key}", flush=True)
+        print(f"  with_weight:   {with_weight}", flush=True)
+        print(f"  weight_pow:    {weight_pow}", flush=True)
         print(f"  rr_filename:   {args.rr_filename}", flush=True)
         print(f"  tpcf_filename: {args.tpcf_filename}", flush=True)
         print(f"  nthreads:      {args.nthreads}", flush=True)
@@ -181,13 +169,20 @@ def main():
 
     # --- Step 1: Load data ---
     print(f"[1/3] Loading data from {args.data_filename} ...", flush=True)
-    data, use_weight = read_data(args.data_filename, args.weight_key)
+    data = read_data(args.data_filename, weight_set_one=False, with_weight=with_weight)
     if args.verbose:
-        print(f"       data shape: {data.shape}, use_weight={use_weight}", flush=True)
+        print(f"       data shape: {data.shape}, with_weight={with_weight}", flush=True)
+
+    # Apply power to data weights: weight -> weight**weight_pow
+    if weight_pow != 1.0:
+        print(f"Applying weight power: weight**{weight_pow}", flush=True)
+        data[:, 3] = data[:, 3] ** weight_pow
 
     # --- Step 2: Load random ---
+    # For random catalog, if weight is not used, set weight to 1
     print(f"[2/3] Loading random from {args.random_filename} ...", flush=True)
-    random, _ = read_data(args.random_filename, args.weight_key)
+    random = read_data(args.random_filename,
+                       weight_set_one=not with_weight, with_weight=with_weight)
     if args.verbose:
         print(f"       random shape: {random.shape}", flush=True)
 
@@ -211,7 +206,7 @@ def main():
     if args.cov_source_type == "subsample":
         result_dict = run_subsample_tpCF(
             data, random, sedges, args.mubin,
-            with_weight=use_weight,
+            with_weight=with_weight,
             boxsize=args.boxsize,
             ngrids=args.ngrid,
             rr_filename=args.rr_filename,
@@ -223,7 +218,7 @@ def main():
     else:
         result_dict = run_jackknife_tpCF(
             data, random, sedges, args.mubin,
-            with_weight=use_weight,
+            with_weight=with_weight,
             boxsize=args.boxsize,
             ngrids=args.ngrid,
             rr_filename=args.rr_filename,
