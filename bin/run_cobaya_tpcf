@@ -11,12 +11,11 @@ from LSS_python.tpcf import xismu, get_diff_array
 from LSS_python.AP import tpcf_convert_main
 from LSS_python.MCMC import run_mcmc_main_cobaya
 
-from method import get_redshift_dict
-
 ## data_dict ##
 # Data structure description (loaded via joblib.load from a .pkl file)
 #
 # Required keys:
+#   - redshift_dict: dict - Dictionary mapping snap_id to redshift value
 #   - snap_ids_list: list - List of snap ID pairs, each element is a list of two snap IDs
 #   - fiducial_values: tuple - (omega_mf, w_f) for 2-parameter mode,
 #                            or (omega_mf, w0_f, wa_f) for 3-parameter (w0wa) mode
@@ -75,7 +74,9 @@ class Chi2Likelihood(Likelihood):
         else:
             self._is_3param = False
             self.omega_mf, self.w_f = fiducial_values
-        self.redshift_dict = get_redshift_dict()
+        self.redshift_dict = data_dict.get("redshift_dict", None)
+        if self.redshift_dict is None:
+            raise ValueError("redshift_dict is required in data_dict but not provided.")
         self.cov_matrix_inv = data_dict["cov_matrix_inv"]
         self.sys_array = data_dict["sys_array"]
         
