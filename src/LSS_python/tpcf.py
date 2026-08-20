@@ -831,7 +831,7 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
 
     return result_dict
 
-def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, compressor=None, **kwargs) -> np.ndarray:
+def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, remove_after_diff=False, compressor=None, **kwargs) -> np.ndarray:
     """
     kwargs:
         smin, smax: float, default 6.0, 40.0
@@ -853,6 +853,12 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, compresso
     if isinstance(tpcf_dict_list, dict):
         tpcf_dict_list = [tpcf_dict_list, ]
     snap1, snap2 = snap_ids[0], snap_ids[1]
+
+    if remove_last_one and remove_after_diff:
+        remove_last_one = False
+        do_remove_after_diff = True
+    else:
+        do_remove_after_diff = False
     
     # Ensure tpcf_dict_list[0][snap1] is a list, tuple, or array
     first_snap_data = tpcf_dict_list[0][snap1]
@@ -887,8 +893,12 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, compresso
             else:
                 mu_temp_1, xi_mu_temp_1 = xismu_first.integrate_tpcf(smin=smin, smax=smax, intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
                 mu_temp_2, xi_mu_temp_2 = xismu_second.integrate_tpcf(smin=smin, smax=smax,intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
-                
-            xi_mu_temp_diff = (xi_mu_temp_1 - xi_mu_temp_2)
+
+            if do_remove_after_diff:  
+                xi_mu_temp_diff = (xi_mu_temp_1 - xi_mu_temp_2)[:-1]
+                mu_temp_1 = mu_temp_1[:-1]
+            else:
+                xi_mu_temp_diff = xi_mu_temp_1 - xi_mu_temp_2
             tpcf_diff_list.append(xi_mu_temp_diff)
         tpcf_diff_list_list.append(np.array(tpcf_diff_list))
 
