@@ -1,0 +1,170 @@
+#!python -u
+
+"""Convert a set of correlation functions for one snap.
+
+All inputs are supplied via command-line arguments.  ``wrong_params`` must be
+an ``N×2`` or ``N×3`` .npy array whose column count matches the length of
+``fiducial_params``.
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+import joblib
+import numpy as np
+
+
+def _load_xismu(filename, sbin, mubin):
+    """Load an xismu object from a file."""
+    from LSS_python.tpcf import xismu
+
+    return xismu.load(filename, sbin=sbin, mubin=mubin)
+
+
+def _convert_snap(source_xismu, ass_xismu, fiducial_params, wrong_params, redshift,
+                  verbose=False):
+    """Run the core conversion for all rows in ``wrong_params``."""
+    from LSS_python.AP import tpcf_convert_main
+    from tqdm import tqdm
+
+    it = tqdm(wrong_params, disable=not verbose)
+
+    if len(fiducial_params) == 2:
+        omega_mf, w_f = fiducial_params
+        return [
+            tpcf_convert_main(
+                source_xismu,
+                omega_mf,
+                w_f,
+                wrong[0],
+                wrong[1],
+                redshift=redshift,
+                assis_xismu=ass_xismu,
+            )
+            for wrong in it
+        ]
+
+    omega_mf, w_f, wa_f = fiducial_params
+    return [
+        tpcf_convert_main(
+            source_xismu,
+            omega_mf,
+            w_f,
+            wrong[0],
+            wrong[1],
+            redshift=redshift,
+            assis_xismu=ass_xismu,
+            wa_f=wa_f,
+            wa_m=wrong[2],
+        )
+        for wrong in it
+    ]
+
+
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "xismu_source_filename",
+        help="Path to the source xismu file (pickle/joblib).",
+    )
+    parser.add_argument(
+        "xismu_ass_filename",
+        help="Path to the assistant xismu file (pickle/joblib).",
+    )
+    parser.add_argument(
+        "wrong_params",
+        help="Path to a .npy file of shape (N, 2) or (N, 3).",
+    )
+    parser.add_argument(
+        "fiducial_params", type=float, nargs="+",
+        help="Fiducial parameters: 2 values (Om, w) or 3 values (Om, w, wa).",
+    )
+    parser.add_argument(
+        "out_filename",
+        help="Output joblib file for the conversion results (a plain list).",
+    )
+    parser.add_argument(
+        "--redshift", type=float, required=True,
+        help="Redshift of the snap being converted.",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Show tqdm progress on rank 0 during conversion.",
+    )
+    parser.add_argument(
+        "--message-filename", default=None,
+        help="Optional joblib file to save fiducial_params and wrong_params.",
+    )
+
+    arguments = sys.argv[1:] if argv is None else argv
+    if not arguments:
+        parser.print_help()
+        return None
+    return parser.parse_args(arguments)
+
+
+def main(argv=None):
+    args = _parse_args(argv)
+    if args is None:
+        return 0
+
+    fiducial_params = np.asarray(args.fiducial_params, dtype=float)
+    if fiducial_params.ndim != 1 or fiducial_params.size not in (2, 3):
+        raise ValueError("fiducial_params must contain 2 or 3 values")
+
+    wrong_params = np.load(args.wrong_params)
+    if wrong_params.ndim == 1:
+        wrong_params = wrong_params.reshape(1, -1)
+    if wrong_params.ndim != 2 or wrong_params.shape[1] != fiducial_params.size:
+        raise ValueError(
+            f"wrong_params must have shape (N, {fiducial_params.size}); "
+            f"got {wrong_params.shape}"
+        )
+
+    source_xismu = _load_xismu(args.xismu_source_filename, sbin=750, mubin=600)
+    ass_xismu = _load_xismu(args.xismu_ass_filename, sbin=150, mubin=120)
+
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    nproc = comm.Get_size()
+
+    parameter_splits = np.array_split(wrong_params, nproc) if rank == 0 else None
+    local_params = comm.scatter(parameter_splits, root=0)
+
+    if rank == 0:
+        print(f"Converting {len(wrong_params)} parameter sets (redshift={args.redshift})")
+
+    local_results = _convert_snap(
+        source_xismu,
+        ass_xismu,
+        fiducial_params,
+        local_params,
+        args.redshift,
+        verbose=(rank == 0 and args.verbose),
+    )
+
+    gathered = comm.gather(local_results, root=0)
+    if rank == 0:
+        results = [item for part in gathered for item in part]
+        output_path = Path(args.out_filename)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(results, output_path)
+        print(f"Saved {len(wrong_params)} results to {output_path}")
+        if args.message_filename is not None:
+            message = {
+                "fiducial_params": fiducial_params,
+                "wrong_params": wrong_params,
+            }
+            message_path = Path(args.message_filename)
+            message_path.parent.mkdir(parents=True, exist_ok=True)
+            joblib.dump(message, message_path)
+            print(f"Saved message to {message_path}")
+    comm.Barrier()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

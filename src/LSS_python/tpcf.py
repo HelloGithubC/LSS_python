@@ -236,6 +236,78 @@ class xismu(object):
         if self.xis is None:
             self.xis = (self.DD - 2.0 * self.DR + self.RR) / self.RR 
         return self.xis
+
+    def intximu(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97,
+                with_s2=False, mupack=1, is_norm=False,
+                remove_last_one=True) -> tuple:
+        """Integrate over ``s`` after packing pair counts along ``mu``.
+
+        Unlike the ``intximu`` branch of :meth:`integrate_tpcf`, this method
+        packs ``DD``, ``DR``, and ``RR`` before evaluating the correlation
+        function. This makes it suitable for comparing pair-count packing
+        against packing an already calculated correlation function.
+        """
+        if hasattr(self, "s_array"):
+            s_array = self.s_array
+            if s_array is None:
+                if self.S is None:
+                    raise ValueError("S must be set before getting s_array")
+                s_array = np.mean(self.S, axis=1)
+        else:
+            if self.S is None:
+                raise ValueError("S must be set before getting s_array")
+            s_array = np.mean(self.S, axis=1)
+
+        if hasattr(self, "mu_array"):
+            mu_array = self.mu_array
+            if mu_array is None:
+                if self.Mu is None:
+                    raise ValueError("Mu must be set before getting mu_array")
+                mu_array = np.mean(self.Mu, axis=0)
+        else:
+            if self.Mu is None:
+                raise ValueError("Mu must be set before getting mu_array")
+            mu_array = np.mean(self.Mu, axis=0)
+
+        if s_array is None or mu_array is None:
+            raise ValueError("s_array and mu_array must be set before integrating")
+        if self.DD is None or self.DR is None or self.RR is None:
+            raise ValueError("DD, DR, RR must be set before integrating")
+
+        smin_index_source = np.where(s_array >= smin)[0]
+        smin_index = smin_index_source[0] if len(smin_index_source) else 0
+        smax_index_source = np.where(s_array >= smax)[0]
+        smax_index = smax_index_source[0] if len(smax_index_source) else len(s_array)
+
+        mumin_index_source = np.where(mu_array >= mumin)[0]
+        mumin_index = mumin_index_source[0] if len(mumin_index_source) else 0
+        mumax_index_source = np.where(mu_array >= mumax)[0]
+        mumax_index = mumax_index_source[0] if len(mumax_index_source) else len(mu_array)
+
+        s = s_array[smin_index:smax_index]
+        mu = mu_array[mumin_index:mumax_index]
+        DD_need = self.DD[smin_index:smax_index, mumin_index:mumax_index]
+        DR_need = self.DR[smin_index:smax_index, mumin_index:mumax_index]
+        RR_need = self.RR[smin_index:smax_index, mumin_index:mumax_index]
+
+        if mupack > 1:
+            DD_need = packarray2d(DD_need, mupack, axis=1)
+            DR_need = packarray2d(DR_need, mupack, axis=1)
+            RR_need = packarray2d(RR_need, mupack, axis=1)
+            mu = packarray1d(mu, mupack)
+
+        xis_need = (DD_need - 2.0 * DR_need + RR_need) / RR_need
+        if with_s2:
+            xis_need = xis_need * s[:, np.newaxis] ** 2
+        xis_mu = np.mean(xis_need, axis=0)
+
+        if is_norm:
+            xis_mu = meannorm(xis_mu)
+            if remove_last_one:
+                xis_mu = xis_mu[:-1]
+                mu = mu[:-1]
+
+        return mu, xis_mu
     
     def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=True, remove_last_one=True) -> dict | tuple:
         """ A powerful function to integrate the tpcf
@@ -831,8 +903,14 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
 
     return result_dict
 
-def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, remove_after_diff=False, compressor=None, **kwargs) -> np.ndarray:
+def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False,
+                   compressor=None, intximu_new=False, **kwargs) -> np.ndarray:
     """
+    intximu_new: bool, default False
+        Use :meth:`xismu.intximu`, which packs pair counts before evaluating
+        the correlation function. This cannot be used with
+        ``integrate_tpcf_func``.
+
     kwargs:
         smin, smax: float, default 6.0, 40.0
         mumax: float, default 0.97
@@ -841,7 +919,16 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, remove_af
         integrate_tpcf_func: function, default None and use integrate_tpcf. If not None, it will use this function to integrate tpcf and use integrate_tpcf_kwargs to pass kwargs to this function. The first parameter of this function must be xismu.
         integrate_tpcf_kwargs: dict, default None and use {}
     """
+    if "remove_after_diff" in kwargs:
+        raise TypeError("remove_after_diff has been removed and is no longer supported")
+
     integrate_tpcf_func = kwargs.get("integrate_tpcf_func", None)
+    if intximu_new and integrate_tpcf_func is not None:
+        raise ValueError(
+            "intximu_new cannot be used with integrate_tpcf_func; "
+            "the custom integration function must select its own behavior"
+        )
+
     if integrate_tpcf_func is None:
         smin = kwargs.get("smin", 6.0)
         smax = kwargs.get("smax", 40.0)
@@ -853,12 +940,6 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, remove_af
     if isinstance(tpcf_dict_list, dict):
         tpcf_dict_list = [tpcf_dict_list, ]
     snap1, snap2 = snap_ids[0], snap_ids[1]
-
-    if remove_last_one and remove_after_diff:
-        remove_last_one = False
-        do_remove_after_diff = True
-    else:
-        do_remove_after_diff = False
     
     # Ensure tpcf_dict_list[0][snap1] is a list, tuple, or array
     first_snap_data = tpcf_dict_list[0][snap1]
@@ -890,15 +971,20 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False, remove_af
             if integrate_tpcf_func is not None:
                 mu_temp_1, xi_mu_temp_1 = integrate_tpcf_func(xismu_first, **integrate_tpcf_kwargs)
                 mu_temp_2, xi_mu_temp_2 = integrate_tpcf_func(xismu_second, **integrate_tpcf_kwargs)
+            elif intximu_new:
+                mu_temp_1, xi_mu_temp_1 = xismu_first.intximu(
+                    smin=smin, smax=smax, mupack=mupack, is_norm=True,
+                    mumax=mumax, remove_last_one=remove_last_one,
+                )
+                mu_temp_2, xi_mu_temp_2 = xismu_second.intximu(
+                    smin=smin, smax=smax, mupack=mupack, is_norm=True,
+                    mumax=mumax, remove_last_one=remove_last_one,
+                )
             else:
                 mu_temp_1, xi_mu_temp_1 = xismu_first.integrate_tpcf(smin=smin, smax=smax, intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
                 mu_temp_2, xi_mu_temp_2 = xismu_second.integrate_tpcf(smin=smin, smax=smax,intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
 
-            if do_remove_after_diff:  
-                xi_mu_temp_diff = (xi_mu_temp_1 - xi_mu_temp_2)[:-1]
-                mu_temp_1 = mu_temp_1[:-1]
-            else:
-                xi_mu_temp_diff = xi_mu_temp_1 - xi_mu_temp_2
+            xi_mu_temp_diff = xi_mu_temp_1 - xi_mu_temp_2
             tpcf_diff_list.append(xi_mu_temp_diff)
         tpcf_diff_list_list.append(np.array(tpcf_diff_list))
 

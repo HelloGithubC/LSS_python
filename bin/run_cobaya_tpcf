@@ -238,6 +238,12 @@ class Chi2Likelihood(Likelihood):
         P_temp = (modify_array_temp - self.sys_array)[:, np.newaxis]
         chi2_temp = (P_temp.T @ self.cov_matrix_inv @ P_temp)[0, 0]
 
+        if not np.isfinite(chi2_temp) or chi2_temp < -1:
+            raise FloatingPointError(
+                "Non-finite or large minus chi2 value encountered: "
+                f"chi2_temp={chi2_temp!r}, params={params_values!r}"
+            )
+
         return -0.5 * chi2_temp
 
 
