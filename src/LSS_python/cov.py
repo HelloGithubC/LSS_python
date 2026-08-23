@@ -719,7 +719,7 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
     
     # RR self-pair correction
     RR_corrected = RR.copy()
-    if sedges[0] == 0.0:
+    if sedges[0] == 0.0 and RR_corrected[0, 0] >= nr:
         RR_corrected[0, 0] -= nr
     
     # Process each subvolume
