@@ -22,44 +22,65 @@ def _load_xismu(filename, sbin, mubin):
     return xismu.load(filename, sbin=sbin, mubin=mubin)
 
 
+def _format_cosmology(params):
+    """Return a precise, labeled representation of one cosmology point."""
+    labels = ("omega_m", "w0", "wa")
+    if len(params) not in (2, 3):
+        raise ValueError("A cosmology point must contain 2 or 3 parameters")
+    return ", ".join(
+        f"{label}={float(value)!r}"
+        for label, value in zip(labels, params)
+    )
+
+
 def _convert_snap(source_xismu, ass_xismu, fiducial_params, wrong_params, redshift,
-                  verbose=False):
-    """Run the core conversion for all rows in ``wrong_params``."""
+                  verbose=False, start_index=0, rank=None):
+    """Run the core conversion for all rows in ``wrong_params``.
+
+    Errors are annotated with the exact cosmology point so failed AP mappings
+    can be reproduced directly from the input parameter array.
+    """
     from LSS_python.AP import tpcf_convert_main
     from tqdm import tqdm
 
     it = tqdm(wrong_params, disable=not verbose)
-
-    if len(fiducial_params) == 2:
-        omega_mf, w_f = fiducial_params
-        return [
-            tpcf_convert_main(
-                source_xismu,
-                omega_mf,
-                w_f,
-                wrong[0],
-                wrong[1],
-                redshift=redshift,
-                assis_xismu=ass_xismu,
-            )
-            for wrong in it
-        ]
-
-    omega_mf, w_f, wa_f = fiducial_params
-    return [
-        tpcf_convert_main(
-            source_xismu,
-            omega_mf,
-            w_f,
-            wrong[0],
-            wrong[1],
-            redshift=redshift,
-            assis_xismu=ass_xismu,
-            wa_f=wa_f,
-            wa_m=wrong[2],
-        )
-        for wrong in it
-    ]
+    results = []
+    for local_index, wrong in enumerate(it):
+        try:
+            if len(fiducial_params) == 2:
+                converted = tpcf_convert_main(
+                    source_xismu,
+                    fiducial_params[0],
+                    fiducial_params[1],
+                    wrong[0],
+                    wrong[1],
+                    redshift=redshift,
+                    assis_xismu=ass_xismu,
+                )
+            else:
+                converted = tpcf_convert_main(
+                    source_xismu,
+                    fiducial_params[0],
+                    fiducial_params[1],
+                    wrong[0],
+                    wrong[1],
+                    redshift=redshift,
+                    assis_xismu=ass_xismu,
+                    wa_f=fiducial_params[2],
+                    wa_m=wrong[2],
+                )
+        except RuntimeError as exc:
+            rank_text = "" if rank is None else f", mpi_rank={rank}"
+            raise RuntimeError(
+                "TPCF AP conversion failed for cosmology point "
+                f"(global_index={start_index + local_index}, "
+                f"local_index={local_index}{rank_text}): "
+                f"fiducial=({_format_cosmology(fiducial_params)}); "
+                f"target=({_format_cosmology(wrong)}); "
+                f"redshift={float(redshift):.17g}; original_error={exc}"
+            ) from exc
+        results.append(converted)
+    return results
 
 
 def _parse_args(argv=None):
@@ -133,6 +154,8 @@ def main(argv=None):
 
     parameter_splits = np.array_split(wrong_params, nproc) if rank == 0 else None
     local_params = comm.scatter(parameter_splits, root=0)
+    base_size, extra_items = divmod(len(wrong_params), nproc)
+    local_start_index = rank * base_size + min(rank, extra_items)
 
     if rank == 0:
         print(f"Converting {len(wrong_params)} parameter sets (redshift={args.redshift})")
@@ -144,6 +167,8 @@ def main(argv=None):
         local_params,
         args.redshift,
         verbose=(rank == 0 and args.verbose),
+        start_index=local_start_index,
+        rank=rank,
     )
 
     gathered = comm.gather(local_results, root=0)

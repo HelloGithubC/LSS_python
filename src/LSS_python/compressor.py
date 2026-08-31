@@ -14,6 +14,81 @@ from sklearn.decomposition import PCA
 import joblib
 
 
+def get_PCA_n_from_noise(X_signal, X_noise):
+    """Determine the number of PCA components to keep by comparing signal and
+    noise standard deviations in the PCA space.
+
+    Algorithm:
+        1. Fit a full PCA (all components) on ``X_signal``.
+        2. Transform both ``X_signal`` and ``X_noise`` into the PCA space.
+        3. Compute the per-component covariance matrices for the transformed
+           signal and noise, and take the square root of the diagonal
+           (i.e. standard deviations).
+        4. Count how many leading components satisfy
+           ``std_signal > std_noise``.
+
+    Parameters
+    ----------
+    X_signal : ndarray, shape (n_samples, n_features)
+        Training signal data.
+    X_noise : ndarray, shape (n_samples_var, n_features)
+        Noise / variance data. The first dimension may differ from
+        ``X_signal``, but the second dimension (n_features) must match.
+
+    Returns
+    -------
+    n_selected : int
+        Number of components whose signal standard deviation exceeds the
+        corresponding noise standard deviation.
+
+    Raises
+    ------
+    ValueError
+        If inputs are not 2D, feature dimensions mismatch, or no component
+        satisfies the criterion.
+    """
+    X_signal = np.asarray(X_signal, dtype=np.float64)
+    X_noise = np.asarray(X_noise, dtype=np.float64)
+
+    if X_signal.ndim != 2:
+        raise ValueError(f"X_signal must be 2D, got shape {X_signal.shape}")
+    if X_noise.ndim != 2:
+        raise ValueError(f"X_noise must be 2D, got shape {X_noise.shape}")
+    if X_noise.shape[1] != X_signal.shape[1]:
+        raise ValueError(
+            f"X_noise has {X_noise.shape[1]} features, "
+            f"but X_signal has {X_signal.shape[1]} features"
+        )
+
+    # Fit a full PCA on signal data
+    pca_full = PCA(n_components=None)
+    pca_full.fit(X_signal)
+
+    # Transform both datasets to the PCA space
+    signal_transformed = pca_full.transform(X_signal)
+    noise_transformed = pca_full.transform(X_noise)
+
+    # Compute covariance matrices in PCA space and extract std per component
+    cov_signal = np.cov(signal_transformed, rowvar=False)
+    cov_noise = np.cov(noise_transformed, rowvar=False)
+
+    std_signal = np.sqrt(np.diag(cov_signal))
+    std_noise = np.sqrt(np.diag(cov_noise))
+
+    # Select components where signal std exceeds noise std
+    mask = std_signal > std_noise
+    selected_indices = np.where(mask)[0]
+
+    if len(selected_indices) == 0:
+        raise ValueError(
+            "No components satisfy std_signal > std_noise. "
+            "All signal standard deviations are smaller than noise "
+            "standard deviations. Consider adjusting the data or providing "
+            "an explicit n_components value."
+        )
+
+    return int(len(selected_indices))
+
 class Compressor:
     """Data compression using various algorithms (PCA, KL, MOPED).
 
@@ -427,42 +502,10 @@ class Compressor:
         self._pca.fit(X_signal)
 
         if X_noise is not None:
-            # Validate X_noise shape
-            X_noise = np.asarray(X_noise, dtype=np.float64)
-            if X_noise.ndim != 2:
-                raise ValueError(f"X_noise must be 2D, got shape {X_noise.shape}")
-            if X_noise.shape[1] != X_signal.shape[1]:
-                raise ValueError(
-                    f"X_noise has {X_noise.shape[1]} features, "
-                    f"but X_signal has {X_signal.shape[1]} features"
-                )
-
-            # Transform both datasets to the PCA space
-            signal_transformed = self._pca.transform(X_signal)
-            noise_transformed = self._pca.transform(X_noise)
-
-            # Compute covariance matrices separately
-            cov_signal = np.cov(signal_transformed, rowvar=False)
-            cov_noise = np.cov(noise_transformed, rowvar=False)
-
-            # Extract diagonal elements (variances) and take square root (std)
-            std_signal = np.sqrt(np.diag(cov_signal))
-            std_noise = np.sqrt(np.diag(cov_noise))
-
-            # Select components where std_signal > std_noise
-            mask = std_signal > std_noise
-            selected_indices = np.where(mask)[0]
-
-            if len(selected_indices) == 0:
-                raise ValueError(
-                    "No components satisfy std_signal > std_noise. "
-                    "All signal standard deviations are smaller than noise "
-                    "standard deviations. Consider adjusting the data or providing "
-                    "an explicit n_components value."
-                )
+            # Use external helper to determine the number of components
+            n_selected = get_PCA_n_from_noise(X_signal, X_noise)
 
             # Retrain PCA with the selected number of components
-            n_selected = len(selected_indices)
             self._pca = PCA(n_components=n_selected)
             self._pca.fit(X_signal)
             self.n_components = n_selected

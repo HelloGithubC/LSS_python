@@ -9,11 +9,8 @@ from .compressor import Compressor
 def meannorm(X, axis=0):
     if len(X.shape) == 1:
         axis = None
-    if np.mean(X) > 0:
-        return X / np.mean(X, axis=axis)
-    else:
-        # The mean value is from -1 to 1
-        return X / abs(np.mean(X, axis=axis)) + 2
+    mean_value = np.mean(X, axis=axis)
+    return 1 + (X - mean_value) / np.abs(mean_value)
     
 def packarray2d(X, rat, axis=1):
     subCount = int(X.shape[axis] / rat)
@@ -240,12 +237,11 @@ class xismu(object):
     def intximu(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97,
                 with_s2=False, mupack=1, is_norm=False,
                 remove_last_one=True) -> tuple:
-        """Integrate over ``s`` after packing pair counts along ``mu``.
+        """Integrate over ``s`` after evaluating the correlation function.
 
-        Unlike the ``intximu`` branch of :meth:`integrate_tpcf`, this method
-        packs ``DD``, ``DR``, and ``RR`` before evaluating the correlation
-        function. This makes it suitable for comparing pair-count packing
-        against packing an already calculated correlation function.
+        This method preserves the original integration order: evaluate xi on
+        the original mu bins, integrate over s, normalize, and pack the
+        resulting mu-dependent curve last.
         """
         if hasattr(self, "s_array"):
             s_array = self.s_array
@@ -290,12 +286,6 @@ class xismu(object):
         DR_need = self.DR[smin_index:smax_index, mumin_index:mumax_index]
         RR_need = self.RR[smin_index:smax_index, mumin_index:mumax_index]
 
-        if mupack > 1:
-            DD_need = packarray2d(DD_need, mupack, axis=1)
-            DR_need = packarray2d(DR_need, mupack, axis=1)
-            RR_need = packarray2d(RR_need, mupack, axis=1)
-            mu = packarray1d(mu, mupack)
-
         xis_need = (DD_need - 2.0 * DR_need + RR_need) / RR_need
         if with_s2:
             xis_need = xis_need * s[:, np.newaxis] ** 2
@@ -306,6 +296,10 @@ class xismu(object):
             if remove_last_one:
                 xis_mu = xis_mu[:-1]
                 mu = mu[:-1]
+
+        if mupack > 1:
+            xis_mu = packarray1d(xis_mu, mupack)
+            mu = packarray1d(mu, mupack)
 
         return mu, xis_mu
     
@@ -385,11 +379,6 @@ class xismu(object):
         else:
             mumax_index = mumax_index_source[0]
 
-        if remove_last_one and intximu and is_norm:
-            need_slice = slice(None, -1, None)
-        else:
-            need_slice = slice(None, None, None)
-
         if self.DD is None or self.DR is None or self.RR is None:
             raise ValueError("DD, DR, RR must be set before getting xis")
         
@@ -412,18 +401,24 @@ class xismu(object):
                 return s, xis_s * s**2
         
         if intximu:
+            # Pack pair counts first, then evaluate xi and integrate over s.
+            # Normalization is deliberately applied after the integration.
             mu = mu_array[mumin_index: mumax_index]
             s = s_array[smin_index: smax_index]
+            if mupack > 1:
+                DD_need = packarray2d(DD_need, mupack, axis=1)
+                DR_need = packarray2d(DR_need, mupack, axis=1)
+                RR_need = packarray2d(RR_need, mupack, axis=1)
+                mu = packarray1d(mu, mupack)
             Xis_need = (DD_need - 2 * DR_need + RR_need) / RR_need
             if with_s2:
-                Xis_need = Xis_need * s[:,np.newaxis]**2
+                Xis_need = Xis_need * s[:, np.newaxis]**2
             xis_mu = np.mean(Xis_need, axis=0)
             if is_norm:
-                xis_mu = meannorm(xis_mu)[need_slice]
-                mu = mu[need_slice]
-            if mupack > 1:
-                xis_mu = packarray1d(xis_mu, mupack)
-                mu = packarray1d(mu, mupack)
+                xis_mu = meannorm(xis_mu)
+                if remove_last_one:
+                    xis_mu = xis_mu[:-1]
+                    mu = mu[:-1]
             result_dict["mu"] = mu
             result_dict["xis_mu"] = xis_mu
             if not s_xis and quick_return:
@@ -581,7 +576,7 @@ class xismu(object):
         redshift = max(redshift, 0.0001)
         Hstd = Hz_w0wa(redshift, omstd, wstd, wastd)
         Hnew = Hz_w0wa(redshift, omwrong, wwrong, wawrong)
-        DAstd = DA(redshift, omstd, wstd, wawrong)
+        DAstd = DA(redshift, omstd, wstd, wastd)
         DAnew = DA(redshift, omwrong, wwrong, wawrong)
 
         if self.DD is None or self.DR is None or self.RR is None:
@@ -903,19 +898,17 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
 
     return result_dict
 
-def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False,
-                   compressor=None, intximu_new=False, **kwargs) -> np.ndarray:
+def get_diff_array(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
+                   compressor=None, intximu_new=False, mupack=1, remove_last_one=True, **kwargs) -> np.ndarray:
     """
     intximu_new: bool, default False
-        Use :meth:`xismu.intximu`, which packs pair counts before evaluating
-        the correlation function. This cannot be used with
+        Use the standalone :meth:`xismu.intximu` implementation, which keeps
+        the original integrate-tpcf ordering. This cannot be used with
         ``integrate_tpcf_func``.
 
     kwargs:
         smin, smax: float, default 6.0, 40.0
         mumax: float, default 0.97
-        mupack: int, default 6
-        remove_last_one: bool, default True
         integrate_tpcf_func: function, default None and use integrate_tpcf. If not None, it will use this function to integrate tpcf and use integrate_tpcf_kwargs to pass kwargs to this function. The first parameter of this function must be xismu.
         integrate_tpcf_kwargs: dict, default None and use {}
     """
@@ -932,8 +925,6 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False,
     if integrate_tpcf_func is None:
         smin = kwargs.get("smin", 6.0)
         smax = kwargs.get("smax", 40.0)
-        mupack = kwargs.get("mupack", 1)
-        remove_last_one = kwargs.get("remove_last_one", True)
         mumax = kwargs.get("mumax", 0.97)
     else:
         integrate_tpcf_kwargs = kwargs.get("integrate_tpcf_kwargs", {})
@@ -957,8 +948,7 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=5, return_mu=False,
     if compressor is None:
         use_compressor = False 
     else:
-        use_compressor  = True 
-        mupack = 1
+        use_compressor = True
 
     for i_list in range(len(tpcf_dict_list)):
         tpcf_diff_list = []

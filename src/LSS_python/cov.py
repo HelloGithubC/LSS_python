@@ -1924,6 +1924,88 @@ def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, None, None),
 
     return cov
 
+
+def get_cov_matrix_from_list(array_list, cov_type="normal", need_slice=slice(None, None, None),
+                             use_Hartlab=False, volume_factor=1.0, cont_only_diag=True):
+    """Compute a covariance matrix from a list of arrays.
+
+    Parameters
+    ----------
+    array_list : sequence of ndarray
+        Arrays containing samples in the same format accepted by
+        :func:`get_cov_matrix`.  Each array is interpreted as a separate
+        (uncorrelated) data set when ``cont_only_diag`` is ``True``.
+    cov_type : str, optional
+        Covariance type passed to :func:`get_cov_matrix`.
+    need_slice : slice, optional
+        Feature slice passed to :func:`get_cov_matrix`.
+    use_Hartlab : bool, optional
+        Whether to apply the Hartlap correction, passed to
+        :func:`get_cov_matrix`.
+    volume_factor : float, optional
+        Additional covariance scaling, passed to :func:`get_cov_matrix`.
+    cont_only_diag : bool, optional
+        If ``True`` (default), compute one covariance matrix per array and
+        combine them as a block diagonal matrix.  If ``False``, concatenate
+        all arrays along the sample axis before computing one covariance
+        matrix.
+
+    Returns
+    -------
+    ndarray
+        The resulting covariance matrix.
+
+    Raises
+    ------
+    ValueError
+        If ``array_list`` is empty or arrays cannot be concatenated when
+        ``cont_only_diag`` is ``False``.
+    """
+    if not isinstance(array_list, (list, tuple)):
+        raise TypeError("array_list must be a list or tuple of arrays")
+    if len(array_list) == 0:
+        raise ValueError("array_list must contain at least one array")
+
+    if not cont_only_diag:
+        # Let numpy raise a useful error if arrays have incompatible feature
+        # dimensions; get_cov_matrix then performs the requested slicing and
+        # covariance correction.
+        try:
+            concatenated_array = np.concatenate(
+                [np.asarray(array) for array in array_list], axis=0
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "All arrays must have compatible shapes for concatenation"
+            ) from exc
+        return get_cov_matrix(
+            concatenated_array, cov_type=cov_type, need_slice=need_slice,
+            use_Hartlab=use_Hartlab, volume_factor=volume_factor
+        )
+
+    covariance_list = [
+        np.atleast_2d(get_cov_matrix(
+            np.asarray(array), cov_type=cov_type, need_slice=need_slice,
+            use_Hartlab=use_Hartlab, volume_factor=volume_factor
+        ))
+        for array in array_list
+    ]
+
+    total_features = sum(cov.shape[0] for cov in covariance_list)
+    covariance_matrix = np.zeros(
+        (total_features, total_features),
+        dtype=np.result_type(*[cov.dtype for cov in covariance_list])
+    )
+    offset = 0
+    for cov in covariance_list:
+        n_features = cov.shape[0]
+        covariance_matrix[offset:offset + n_features,
+                          offset:offset + n_features] = cov
+        offset += n_features
+
+    return covariance_matrix
+
+
 def get_std_array_from_cov(cov_matrix):
     return np.sqrt(np.diag(cov_matrix))
 
