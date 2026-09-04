@@ -62,76 +62,81 @@ def run_jaccknife_fftpower(data, boxsize, Nmesh, ngrids, nthreads=1, with_weight
 
     n_subboxes = int(np.prod(ngrids))
 
-    # Divide data into subboxes (keep global coordinates)
-    data_subboxes = get_sub_box_shift(data, boxsize, ngrids, shift=False)
+    # The Jackknife split is intentionally non-periodic.  Validate this
+    # contract before assigning particles to subboxes so that no particles
+    # are silently dropped by get_sub_box_shift.
+    positions = data[:, :3]
+    invalid_position_rows = np.any(
+        ~np.isfinite(positions) | (positions < 0) | (positions > boxsize),
+        axis=1,
+    )
+    if np.any(invalid_position_rows):
+        first_invalid = int(np.flatnonzero(invalid_position_rows)[0])
+        raise ValueError(
+            "All particle positions must lie within [0, BoxSize] for "
+            "non-periodic Jackknife subbox assignment. "
+            f"First invalid row is {first_invalid}: "
+            f"{positions[first_invalid]!r}, BoxSize={boxsize!r}."
+        )
 
-    # Build list of subbox data in order and record index ranges
+    # Divide data into subboxes (keep global coordinates)
+    data_subboxes = get_sub_box_shift(
+        data, boxsize, ngrids, perodic=False, shift=False
+    )
+
+    # Build an ordered list of subbox views.  Keep these views throughout the
+    # Jackknife loop instead of stacking the complete catalog for every sample.
     subbox_data_list = []
-    subbox_slices = []  # List of (start_idx, end_idx) for each subbox in the stacked array
     for i in range(ngrids[0]):
         for j in range(ngrids[1]):
             for k in range(ngrids[2]):
                 subbox_data = data_subboxes[i, j, k]
-                start_idx = len(subbox_data_list)  # Will be updated after stacking
                 subbox_data_list.append(subbox_data)
 
-    # Stack all subbox data into a single array
-    all_data = np.vstack(subbox_data_list)
-
-    # Now compute the actual slices
-    current_idx = 0
-    for idx, subbox_data in enumerate(subbox_data_list):
-        n_points = len(subbox_data)
-        subbox_slices.append((current_idx, current_idx + n_points))
-        current_idx += n_points
-
-    # Release memory for subbox_data_list and data_subboxes
-    del subbox_data_list
+    # The list above retains the underlying subbox arrays, so the object grid
+    # is no longer needed.
     del data_subboxes
 
-    # Compute Jackknife samples: for each subbox, leave it out and compute P(k) on the rest
+    # Compute Jackknife samples: for each subbox, leave it out and compute
+    # P(k) directly from the remaining subbox arrays.
     fftpower2d_list = []
     indices = range(n_subboxes)
     if verbose:
         indices = tqdm(indices, total=n_subboxes, desc="Computing Jackknife samples")
     for idx in indices:
-        # Create bool mask: True for points to keep, False for points to exclude
-        mask = np.ones(len(all_data), dtype=bool)
-        start_idx, end_idx = subbox_slices[idx]
-        mask[start_idx:end_idx] = False
-
-        # Check if we have any data left
-        if not np.any(mask):
+        kept_subboxes = [
+            subbox for subbox_idx, subbox in enumerate(subbox_data_list)
+            if subbox_idx != idx and len(subbox) > 0
+        ]
+        if not kept_subboxes:
             raise ValueError(f"All data is in one subbox; cannot create Jackknife sample by removing subbox {idx}")
 
-        # Extract positions from all_data
-        pos = all_data[:, :3]
+        pos = [subbox[:, :3] for subbox in kept_subboxes]
 
-        # Prepare weights and values based on column configuration
+        # Prepare the fields for each retained subbox without allocating
+        # full-catalog mask, weight, or value arrays.
         if with_weights and with_values:
-            # Original weights and values
-            w_orig = all_data[:, 3]
-            v_orig = all_data[:, 4]
-            # Apply mask as weights: multiply original weights by mask
-            w = w_orig * mask.astype(w_orig.dtype)
-            v = v_orig * mask.astype(v_orig.dtype)
+            w = [subbox[:, 3] for subbox in kept_subboxes]
+            v = [subbox[:, 4] for subbox in kept_subboxes]
         elif with_weights:
-            w_orig = all_data[:, 3]
-            w = w_orig * mask.astype(w_orig.dtype)
+            w = [subbox[:, 3] for subbox in kept_subboxes]
             v = None
         elif with_values:
-            v_orig = all_data[:, 3]
             w = None
-            v = v_orig * mask.astype(v_orig.dtype)
+            v = [subbox[:, 3] for subbox in kept_subboxes]
         else:
-            # No original weights or values: use mask as weights
-            w = mask.astype(pos.dtype)
+            w = None
             v = None
 
         # Create mesh for the full box
         mesh = Mesh(Nmesh, boxsize)
         mesh.to_mesh(pos, values=v, weights=w, nthreads=nthreads, c_api=True, pybind=True)
+        # Deposition is complete, so these sample-specific arrays are no longer needed.
+        del pos, w, v, kept_subboxes
         mesh.r2c(compensated=True, nthreads=nthreads, c_api=True, pybind=True)
+        # FFTPower2D consumes only the complex field.  Releasing the real
+        # field reduces the per-sample peak memory footprint.
+        mesh.real_field = None
 
         # Correct the number count: N should equal W (since W_total correctly reflects kept particles)
         mesh.attrs["N"] = int(mesh.attrs["W"])
@@ -142,7 +147,9 @@ def run_jaccknife_fftpower(data, boxsize, Nmesh, ngrids, nthreads=1, with_weight
         fftpower_2d.cal_ps_2d_from_mesh(mesh, nthreads=nthreads, dk=dk)
 
         fftpower2d_list.append(fftpower_2d)
+        del mesh
 
+    del subbox_data_list
     return fftpower2d_list
     
 

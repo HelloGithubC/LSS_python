@@ -194,11 +194,14 @@ class Mesh:
             N_total += pos_e.shape[0]
             if weight_e is not None or value_e is not None:
                 if weight_e is None:
-                    weight_temp = 1.0 
+                    weight_temp = 1.0
                     value_temp = value_e
-                if value_e is None:
-                    value_temp = 1.0
+                elif value_e is None:
                     weight_temp = weight_e
+                    value_temp = 1.0
+                else:
+                    weight_temp = weight_e
+                    value_temp = value_e
                 W_total += np.sum(weight_temp * value_temp)
                 W2_total += np.sum(weight_temp**2 * value_temp**2)
             else:
@@ -532,4 +535,3 @@ class Mesh:
                     self.real_field = cp.asnumpy(self.real_field_gpu)
                 if self.complex_field_gpu is not None:
                     self.complex_field = cp.asnumpy(self.complex_field_gpu)
-

@@ -11,6 +11,26 @@ from LSS_python.tpcf import xismu, get_diff_array
 from LSS_python.AP import tpcf_convert_main
 from LSS_python.MCMC import run_mcmc_main_cobaya
 
+
+def w0wa_early_prior(w0: float, wa: float) -> float:
+    """Return the CPL early-time prior: w0 + wa must be negative."""
+    return 0.0 if w0 + wa < 0.0 else -np.inf
+
+
+_AP_DOMAIN_ERROR_PREFIXES = (
+    "Invalid AP dense-grid bounds",
+    "Invalid AP coordinate transform",
+    "Invalid AP temporary-grid size",
+    "Invalid AP temporary-grid vector size overflow",
+    "Invalid AP rate-grid vector size overflow",
+)
+
+
+def _is_ap_domain_error(error: RuntimeError) -> bool:
+    """Return whether an AP RuntimeError denotes an invalid parameter point."""
+    return str(error).startswith(_AP_DOMAIN_ERROR_PREFIXES)
+
+
 ## data_dict ##
 # Data structure description (loaded via joblib.load from a .pkl file)
 #
@@ -34,6 +54,8 @@ from LSS_python.MCMC import run_mcmc_main_cobaya
 #     None, unspecified keys fall back to defaults (smin=6.0, smax=40.0, mumax=0.97,
 #     remove_last_one=True, mupack=1). When integrate_tpcf_func is provided, no defaults
 #     are applied — all required kwargs must be specified by the user.
+#   - ap_mapping_kwargs: dict - AP conversion parameters. Currently supports
+#     smax_mapping (default 60.0), the upper separation used by dense AP mapping.
 #   - fisher_matrix: np.ndarray - Fisher matrix (used for MOPED sampler configuration, optional)
 
 
@@ -81,6 +103,17 @@ class Chi2Likelihood(Likelihood):
         self.cov_matrix_inv = data_dict["cov_matrix_inv"]
         self.sys_array = data_dict["sys_array"]
         self.mupack = data_dict.get("mupack", 1)
+        ap_mapping_kwargs = data_dict.get("ap_mapping_kwargs", {})
+        if not isinstance(ap_mapping_kwargs, dict):
+            raise ValueError("ap_mapping_kwargs must be a dictionary")
+        try:
+            self.smax_mapping = float(ap_mapping_kwargs.get("smax_mapping", 60.0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "ap_mapping_kwargs.smax_mapping must be a finite number"
+            ) from exc
+        if not np.isfinite(self.smax_mapping) or not 0.0 < self.smax_mapping <= 150.0:
+            raise ValueError("ap_mapping_kwargs.smax_mapping must lie in (0, 150]")
         
         # Get compressor information
         self.compressor_type = data_dict.get("compressor_type", "none")
@@ -158,6 +191,10 @@ class Chi2Likelihood(Likelihood):
         if self._is_3param:
             w0_m = params_values['w0']
             wa_m = params_values['wa']
+            # Keep invalid CPL points out of the AP calculation as well as the
+            # Cobaya prior, including direct logp/dry-run evaluations.
+            if w0_m + wa_m >= 0.0:
+                return -np.inf
         else:
             w_m = params_values['w']
 
@@ -170,18 +207,25 @@ class Chi2Likelihood(Likelihood):
             merged_dict = {}
             for snap_id in source_dict.keys():
                 # Apply transformation
-                if self._is_3param:
-                    modified_xismu = tpcf_convert_main(
-                        source_dict[snap_id], self.omega_mf, self.w0_f,
-                        omega_mm, w0_m, self.redshift_dict[snap_id],
-                        assis_xismu=ass_dict[snap_id], wa_f=self.wa_f, wa_m=wa_m
-                    )
-                else:
-                    modified_xismu = tpcf_convert_main(
-                        source_dict[snap_id], self.omega_mf, self.w_f,
-                        omega_mm, w_m, self.redshift_dict[snap_id],
-                        assis_xismu=ass_dict[snap_id]
-                    )
+                try:
+                    if self._is_3param:
+                        modified_xismu = tpcf_convert_main(
+                            source_dict[snap_id], self.omega_mf, self.w0_f,
+                            omega_mm, w0_m, self.redshift_dict[snap_id],
+                            assis_xismu=ass_dict[snap_id], wa_f=self.wa_f, wa_m=wa_m,
+                            smax_mapping=self.smax_mapping,
+                        )
+                    else:
+                        modified_xismu = tpcf_convert_main(
+                            source_dict[snap_id], self.omega_mf, self.w_f,
+                            omega_mm, w_m, self.redshift_dict[snap_id],
+                            assis_xismu=ass_dict[snap_id],
+                            smax_mapping=self.smax_mapping,
+                        )
+                except RuntimeError as error:
+                    if _is_ap_domain_error(error):
+                        return -np.inf
+                    raise
                 merged_dict[snap_id] = modified_xismu
             transformed_tpcf_dict_list.append(merged_dict)
 
@@ -313,10 +357,9 @@ if __name__ == "__main__":
     if not os.path.exists(data_filename):
         raise FileNotFoundError(f"Data file not found: {data_filename}")
     
-    # Setup backend directory
+    # Define the backend directory.  Creation is deferred until after dry-run
+    # handling, because dry runs do not produce Cobaya output files.
     backend_dir = data_filename.replace(".pkl", "")
-    if not os.path.exists(backend_dir) and is_main_process():
-        os.makedirs(backend_dir)
     
     # Load data_dict to extract Fisher matrix (for sampler configuration)
     data_dict = joblib.load(data_filename)
@@ -392,6 +435,10 @@ if __name__ == "__main__":
             if is_main_process():
                 print(f"{'='*60}\n")
         exit(0)
+
+    # Only an actual MCMC run needs an output directory.
+    if not os.path.exists(backend_dir) and is_main_process():
+        os.makedirs(backend_dir)
 
     # Build Cobaya configuration - 直接在likelihood中传递数据成员
     if is_3param:
@@ -498,6 +545,10 @@ if __name__ == "__main__":
         },
         'output': os.path.join(backend_dir, "cobaya")
     }
+    if is_3param:
+        info_dict['prior'] = {
+            'w0wa_early': w0wa_early_prior,
+        }
     
     # Call the core MCMC function from LSS_python.MCMC
     # Args:

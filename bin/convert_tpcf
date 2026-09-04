@@ -34,7 +34,7 @@ def _format_cosmology(params):
 
 
 def _convert_snap(source_xismu, ass_xismu, fiducial_params, wrong_params, redshift,
-                  verbose=False, start_index=0, rank=None):
+                  smax_mapping=60.0, verbose=False, start_index=0, rank=None):
     """Run the core conversion for all rows in ``wrong_params``.
 
     Errors are annotated with the exact cosmology point so failed AP mappings
@@ -56,6 +56,7 @@ def _convert_snap(source_xismu, ass_xismu, fiducial_params, wrong_params, redshi
                     wrong[1],
                     redshift=redshift,
                     assis_xismu=ass_xismu,
+                    smax_mapping=smax_mapping,
                 )
             else:
                 converted = tpcf_convert_main(
@@ -68,6 +69,7 @@ def _convert_snap(source_xismu, ass_xismu, fiducial_params, wrong_params, redshi
                     assis_xismu=ass_xismu,
                     wa_f=fiducial_params[2],
                     wa_m=wrong[2],
+                    smax_mapping=smax_mapping,
                 )
         except RuntimeError as exc:
             rank_text = "" if rank is None else f", mpi_rank={rank}"
@@ -110,6 +112,10 @@ def _parse_args(argv=None):
         help="Redshift of the snap being converted.",
     )
     parser.add_argument(
+        "--smax-mapping", type=float, default=60.0,
+        help="Upper separation used by the AP mapping (default: 60).",
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true",
         help="Show tqdm progress on rank 0 during conversion.",
     )
@@ -133,6 +139,8 @@ def main(argv=None):
     fiducial_params = np.asarray(args.fiducial_params, dtype=float)
     if fiducial_params.ndim != 1 or fiducial_params.size not in (2, 3):
         raise ValueError("fiducial_params must contain 2 or 3 values")
+    if not 0.0 < args.smax_mapping <= 150.0:
+        raise ValueError("smax-mapping must lie in (0, 150]")
 
     wrong_params = np.load(args.wrong_params)
     if wrong_params.ndim == 1:
@@ -166,6 +174,7 @@ def main(argv=None):
         fiducial_params,
         local_params,
         args.redshift,
+        smax_mapping=args.smax_mapping,
         verbose=(rank == 0 and args.verbose),
         start_index=local_start_index,
         rank=rank,
