@@ -1867,7 +1867,14 @@ def get_cov_factor(array, cov_type="normal", use_Hartlab=False, volume_factor=1.
     return factor * volume_factor
 
 
-def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, None, None), use_Hartlab=False, volume_factor=1.0):
+def get_cov_matrix(
+    array,
+    cov_type="normal",
+    need_slice=slice(None, None, None),
+    use_Hartlab=False,
+    volume_factor=1.0,
+    symmetrize=True,
+):
     """ To get the covariance matrix of specific array
     
     Parameters
@@ -1879,6 +1886,9 @@ def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, None, None),
     use_Hartlab : bool, optional
         Whether to apply Hartlab correction for biased estimation,
         only applicable for "subsample" and "jk" types, by default False
+    symmetrize : bool, optional
+        Whether to explicitly symmetrize the covariance matrix as
+        ``0.5 * (cov + cov.T)`` before returning it, by default True.
     
     Returns
     -------
@@ -1929,11 +1939,15 @@ def get_cov_matrix(array, cov_type="normal", need_slice=slice(None, None, None),
     cov_factor = get_cov_factor(array, cov_type, use_Hartlab, volume_factor)
     cov = cov * cov_factor
 
+    if symmetrize:
+        cov = 0.5 * (cov + cov.T)
+
     return cov
 
 
 def get_cov_matrix_from_list(array_list, cov_type="normal", need_slice=slice(None, None, None),
-                             use_Hartlab=False, volume_factor=1.0, cont_only_diag=True):
+                             use_Hartlab=False, volume_factor=1.0, cont_only_diag=True,
+                             symmetrize=True):
     """Compute a covariance matrix from a list of arrays.
 
     Parameters
@@ -1951,6 +1965,9 @@ def get_cov_matrix_from_list(array_list, cov_type="normal", need_slice=slice(Non
         :func:`get_cov_matrix`.
     volume_factor : float, optional
         Additional covariance scaling, passed to :func:`get_cov_matrix`.
+    symmetrize : bool, optional
+        Whether to explicitly symmetrize each covariance block before
+        returning the result, by default True.
     cont_only_diag : bool, optional
         If ``True`` (default), compute one covariance matrix per array and
         combine them as a block diagonal matrix.  If ``False``, concatenate
@@ -1987,13 +2004,15 @@ def get_cov_matrix_from_list(array_list, cov_type="normal", need_slice=slice(Non
             ) from exc
         return get_cov_matrix(
             concatenated_array, cov_type=cov_type, need_slice=need_slice,
-            use_Hartlab=use_Hartlab, volume_factor=volume_factor
+            use_Hartlab=use_Hartlab, volume_factor=volume_factor,
+            symmetrize=symmetrize,
         )
 
     covariance_list = [
         np.atleast_2d(get_cov_matrix(
             np.asarray(array), cov_type=cov_type, need_slice=need_slice,
-            use_Hartlab=use_Hartlab, volume_factor=volume_factor
+            use_Hartlab=use_Hartlab, volume_factor=volume_factor,
+            symmetrize=symmetrize,
         ))
         for array in array_list
     ]

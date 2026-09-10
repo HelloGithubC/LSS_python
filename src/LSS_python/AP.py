@@ -54,7 +54,7 @@ def tpcf_convert_main(xismu:xismu, omega_mf, w_f, omega_mm, w_m, redshift, conve
     else:
         raise ValueError("convert_method must be 'simple' or 'dense'")
 
-def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh_done_norm=True, device_id=-1, pybind=False, **kargs):
+def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh_done_norm=True, device_id=-1, pybind=True, **kargs):
     """
     ps_3d: The 3d PS after removing the shot noise and including kernel
     boxsize: The boxsize of the simulation. float or ndarray is OK.

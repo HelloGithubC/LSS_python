@@ -690,7 +690,7 @@ class FFTPower2D:
             obj_list.append(obj)
         return obj_list
 
-def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, kmin=0.1, kmax=2.1, dk=0.02, shift=5,integrate_func=None, integrate_kwargs=None, **kwargs):
+def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.02, shift=5,integrate_func=None, integrate_kwargs=None, **kwargs):
     """Compute the difference of integrated power spectra between two snapshots.
 
     For each snapshot in ``snap_ids``, the corresponding ``FFTPower2D`` (or
@@ -711,10 +711,10 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, kmin=0.1, kmax=2.1, dk=0.02,
         ID are rolled by ``shift`` before the difference is taken.
     Nmu : int
         Number of mu bins used in ``cal_pkmu_from_ps_2d``.
-    kmin : float, optional
-        Minimum k for ``cal_pkmu_from_ps_2d`` conversion (default: 0.1).
-    kmax : float, optional
-        Maximum k for ``cal_pkmu_from_ps_2d`` conversion (default: 2.1).
+    k_min : float, optional
+        Minimum k for integration (default: 0.3).
+    k_max : float, optional
+        Maximum k for integration (default: 0.8).
     dk : float, optional
         k bin width for ``cal_pkmu_from_ps_2d`` conversion (default: 0.02).
     shift : int, optional
@@ -729,10 +729,12 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, kmin=0.1, kmax=2.1, dk=0.02,
         Additional keyword arguments passed to ``integrate_func``.  Required
         when ``integrate_func`` is not ``None``.
     **kwargs : optional
-        Additional keyword arguments forwarded to the built-in integration:
+        Additional keyword arguments:
 
-        - ``k_min`` (float): Minimum k for integration (default: 0.3).
-        - ``k_max`` (float): Maximum k for integration (default: 0.8).
+        - ``kmin`` (float): Minimum k for ``cal_pkmu_from_ps_2d`` conversion
+          (default: 0.1).
+        - ``kmax`` (float): Maximum k for ``cal_pkmu_from_ps_2d`` conversion
+          (default: 2.1).
         - ``mu_min`` (float): Minimum mu for integration (default: -1.0,
           meaning use all bins).
         - ``mu_max`` (float): Maximum mu for integration (default: -1.0,
@@ -751,12 +753,9 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, kmin=0.1, kmax=2.1, dk=0.02,
         1-D array P(mu).  Otherwise returns a 2-D array of shape
         ``(n_objects, n_mu_bins)``.
     """
-    if integrate_func is None:
-        k_min = kwargs.get("k_min", 0.3)
-        k_max = kwargs.get("k_max", 0.8)
-    else:
-        k_min = k_max = 0.0
-    
+    kmin = kwargs.get("kmin", 0.1)
+    kmax = kwargs.get("kmax", 2.1)
+
     mu_min = kwargs.get("mu_min", -1.0)
     mu_max = kwargs.get("mu_max", -1.0)
 

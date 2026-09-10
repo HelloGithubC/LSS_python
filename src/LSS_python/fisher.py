@@ -4,39 +4,40 @@ from scipy.stats import chi2, norm
 from LSS_python.AP import tpcf_convert_main
 
 
-def cal_Fisher_matrix(func, best_fit, cov_matrix, delta=None, computed_jac=None, return_jac=False):
+def cal_jacobian(func, best_fit, delta=None, args=()):
     """
-    Calculate Fisher matrix from covariance matrix and model function.
+    Compute the Jacobian matrix of a model function via central finite differences.
 
-    The Fisher information matrix is computed using the finite difference
-    approximation of the gradient of the model function with respect to
-    parameters:
+    The Jacobian is defined as J[k, i] = ∂μ_k / ∂θ_i, where μ = func(θ, *args)
+    is the model prediction. Each partial derivative is approximated by
+    the central difference:
 
-    F = (∂μ/∂θ)^T * C^{-1} * (∂μ/∂θ)
-
-    where μ = func(θ) is the model prediction, C is the covariance matrix,
-    and ∂μ/∂θ is the Jacobian matrix.
+        ∂f/∂θ_i ≈ [f(θ + δ_i e_i, *args) - f(θ - δ_i e_i, *args)] / (2 δ_i)
 
     Parameters
     ----------
     func : callable
-        Model function that takes parameters as individual arguments.
-        Example: for 2 parameters, func(x1, x2).
+        Model function whose first argument is the parameter vector
+        (list, tuple or ndarray, same length as `best_fit`), followed by
+        any additional arguments collected in `args`.
+        Example: for 2 parameters, func(params, a) with params = [x1, x2].
     best_fit : array_like
-        Best-fit parameter values.
-    cov_matrix : ndarray
-        Covariance matrix of the parameters.
+        Parameter values at which to evaluate the Jacobian.
     delta : float or array_like, optional
         Finite difference step size. If None, automatically determined
         using optimal step size δ = ε^(1/3) * max(|θ|, 1) for each parameter,
         where ε ≈ 2.22e-16 is machine epsilon. This gives 4th order
         accuracy for central differences. Can also be a single float
         applied to all parameters, or an array matching best_fit length.
+    args : tuple, optional
+        Extra positional arguments passed to `func` after the parameter
+        vector, in the same way as `scipy.integrate.quad`.
 
     Returns
     -------
-    ndarray
-        Fisher information matrix with shape (n_params, n_params).
+    jacobian : ndarray, shape (n_output, n_params)
+        Jacobian matrix. n_output is the model output dimension (1 for
+        scalar models) and n_params is the number of parameters.
 
     Notes
     -----
@@ -48,82 +49,121 @@ def cal_Fisher_matrix(func, best_fit, cov_matrix, delta=None, computed_jac=None,
     where ε is machine epsilon. This balances the truncation error
     (∝ δ²) and round-off error (∝ 1/δ) in central differences.
     """
-    if computed_jac is None:
-        # Convert inputs to numpy arrays
-        best_fit = np.atleast_1d(best_fit)
-        n_params = len(best_fit)
+    # Convert inputs to numpy arrays
+    best_fit = np.atleast_1d(best_fit)
+    n_params = len(best_fit)
 
-        # Determine step sizes for each parameter
-        if delta is None:
-            # Automatic step size: δ = ε^(1/3) * max(|θ|, 1)
-            # ε^(1/3) ≈ 6.05e-6 for double precision
-            machine_eps = np.finfo(float).eps
-            delta_factor = machine_eps ** (1/3)
-            delta = delta_factor * np.maximum(np.abs(best_fit), 1.0)
-        elif np.isscalar(delta):
-            delta = np.full(n_params, delta)
-        else:
-            delta = np.atleast_1d(delta)
-            if len(delta) != n_params:
-                raise ValueError(f"delta length {len(delta)} does not match "
+    # Determine step sizes for each parameter
+    if delta is None:
+        # Automatic step size: δ = ε^(1/3) * max(|θ|, 1)
+        # ε^(1/3) ≈ 6.05e-6 for double precision
+        machine_eps = np.finfo(float).eps
+        delta_factor = machine_eps ** (1/3)
+        delta = delta_factor * np.maximum(np.abs(best_fit), 1.0)
+    elif np.isscalar(delta):
+        delta = np.full(n_params, delta)
+    else:
+        delta = np.atleast_1d(delta)
+        if len(delta) != n_params:
+            raise ValueError(f"delta length {len(delta)} does not match "
                             f"number of parameters {n_params}")
 
-        # Compute inverse covariance matrix
-        try:
-            cov_inv = np.linalg.inv(cov_matrix)
-        except np.linalg.LinAlgError:
-            raise ValueError("Covariance matrix is singular, cannot compute inverse")
+    # Evaluate function at best fit point to determine output dimension
+    f0 = func(best_fit, *args)
 
-        # Compute Jacobian: ∂μ/∂θ for each parameter
-        # We use central difference: (f(x+δ) - f(x-δ)) / (2δ)
-        jacobian = np.zeros(n_params)
+    # Determine if model output is scalar or vector
+    if hasattr(f0, '__len__') and not isinstance(f0, (float, int)):
+        f0 = np.asarray(f0)
+        n_output = f0.shape[0] if f0.ndim > 0 else 1
+    else:
+        n_output = 1
 
-        # Evaluate function at best fit point to determine output dimension
-        f0 = func(*best_fit)
+    # Initialize Jacobian matrix (n_output x n_params)
+    jacobian = np.zeros((n_output, n_params))
 
-        # Determine if model output is scalar or vector
-        if hasattr(f0, '__len__') and not isinstance(f0, (float, int)):
-            f0 = np.asarray(f0)
-            n_output = f0.shape[0] if f0.ndim > 0 else 1
+    # Compute gradient for each parameter using central differences
+    for i in range(n_params):
+        # Forward point
+        theta_plus = best_fit.copy()
+        theta_plus[i] += delta[i]
+        f_plus = func(theta_plus, *args)
+
+        # Backward point
+        theta_minus = best_fit.copy()
+        theta_minus[i] -= delta[i]
+        f_minus = func(theta_minus, *args)
+
+        # Central difference
+        if n_output == 1:
+            jacobian[0, i] = (f_plus - f_minus) / (2 * delta[i])
         else:
-            f0 = float(f0)
-            n_output = 1
+            jacobian[:, i] = (np.asarray(f_plus) - np.asarray(f_minus)) / (2 * delta[i])
 
-        # Validate cov_matrix shape
-        cov_matrix = np.atleast_2d(cov_matrix)
-        if cov_matrix.shape != (n_output, n_output):
-            raise ValueError(f"cov_matrix shape {cov_matrix.shape} does not match "
-                            f"model output dimension {n_output}")
+    return jacobian
 
-        # Initialize Jacobian matrix (n_output x n_params)
-        jacobian = np.zeros((n_output, n_params))
 
-        # Compute gradient for each parameter using central differences
-        for i in range(n_params):
-            # Forward point
-            theta_plus = best_fit.copy()
-            theta_plus[i] += delta[i]
-            f_plus = func(*theta_plus)
+def cal_Fisher_matrix(func, best_fit, cov_matrix, delta=None, computed_jac=None, return_jac=False,
+                      args=()):
+    """
+    Calculate Fisher matrix from covariance matrix and model function.
 
-            # Backward point
-            theta_minus = best_fit.copy()
-            theta_minus[i] -= delta[i]
-            f_minus = func(*theta_minus)
+    The Fisher information matrix is computed from the Jacobian of the
+    model function with respect to parameters:
 
-            # Central difference
-            if n_output == 1:
-                jacobian[0, i] = (f_plus - f_minus) / (2 * delta[i])
-            else:
-                jacobian[:, i] = (np.asarray(f_plus) - np.asarray(f_minus)) / (2 * delta[i])
+    F = (∂μ/∂θ)^T * C^{-1} * (∂μ/∂θ)
+
+    where μ = func(θ, *args) is the model prediction, C is the covariance
+    matrix, and ∂μ/∂θ is the Jacobian matrix.
+
+    Parameters
+    ----------
+    func : callable
+        Model function whose first argument is the parameter vector
+        (list, tuple or ndarray, same length as `best_fit`), followed by
+        any additional arguments collected in `args`.
+        Example: for 2 parameters, func(params, a) with params = [x1, x2].
+    best_fit : array_like
+        Best-fit parameter values.
+    cov_matrix : ndarray
+        Covariance matrix of the model outputs.
+    delta : float or array_like, optional
+        Finite difference step size, passed to :func:`cal_jacobian`.
+        See :func:`cal_jacobian` for details.
+    computed_jac : ndarray, optional
+        Precomputed Jacobian matrix of shape (n_output, n_params).
+        If given, `func` is not evaluated and `delta` and `args` are ignored.
+    args : tuple, optional
+        Extra positional arguments passed to `func` after the parameter
+        vector, in the same way as `scipy.integrate.quad`.
+
+    Returns
+    -------
+    ndarray
+        Fisher information matrix with shape (n_params, n_params).
+    """
+    if computed_jac is None:
+        jacobian = cal_jacobian(func, best_fit, delta=delta, args=args)
+    else:
+        jacobian = computed_jac
+
+    # Validate cov_matrix shape against model output dimension
+    n_output = jacobian.shape[0]
+    cov_matrix = np.atleast_2d(cov_matrix)
+    if cov_matrix.shape != (n_output, n_output):
+        raise ValueError(f"cov_matrix shape {cov_matrix.shape} does not match "
+                        f"model output dimension {n_output}")
+
+    # Compute inverse covariance matrix
+    try:
+        cov_inv = np.linalg.inv(cov_matrix)
+    except np.linalg.LinAlgError:
+        raise ValueError("Covariance matrix is singular, cannot compute inverse")
 
     # Compute Fisher matrix: F = J^T * C^{-1} * J
     # jacobian shape: (n_output, n_params)
-    # cov_inv shape: (n_params, n_params)
-    # Result: (n_params, n_output) @ (n_params, n_params) @ (n_output, n_params)
-    #        = (n_params, n_params) @ (n_output, n_params) -> need to transpose jacobian
-    else:
-        jacobian = computed_jac
-        cov_inv = np.linalg.inv(cov_matrix)
+    # cov_inv shape: (n_output, n_output)
+    # Result: (n_params, n_output) @ (n_output, n_output) @ (n_output, n_params)
+    #        = (n_params, n_params)
     fisher = jacobian.T @ cov_inv @ jacobian
 
     if return_jac:
