@@ -5,9 +5,9 @@ from scipy.stats import norm, chi2
 
 from LSS_python.fisher import _compute_ellipse_params_from_fisher
 
-def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
-                              sigma=1, color='C0', show_center=True,
-                              ellipse_fill=True, visual_xylims=True,
+def plot_ellipse_from_fisher(fisher, best_fit, central_values=None, ax=None,
+                              plot_engine='Ellipse', sigma=1, color='C0', plot_fiducial=True,
+                              plot_center=False, ellipse_fill=True, visual_xylims=True,
                               param_indices=None, **kwargs):
     r"""
     Plot error ellipse from Fisher matrix.
@@ -21,9 +21,18 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         Fisher information matrix. Can be 2x2 (direct ellipse plot) or
         NxN (N >= 2, requires param_indices to select which two parameters).
     best_fit : array_like
-        Best-fit parameter values for the ellipse center.
-        If fisher is NxN (N > 2), must have N elements.
+        Best-fit parameter values, used as the position argument of the
+        function (e.g. for Fisher plots it is the fiducial point of the
+        parameter set). If fisher is NxN (N > 2), must have N elements.
         If fisher is 2x2, must have 2 elements.
+    central_values : array_like, optional
+        Values at the center of the ellipse (i.e. where the likelihood is
+        assumed to be maximal, visually the translated center). If None,
+        defaults to best_fit, so the ellipse is centered on best_fit.
+        Can be set different from best_fit to draw the ellipse around a
+        shifted center. Must have the same length as best_fit.
+        When fisher is NxN, must also have N elements; the 2 entries
+        selected by param_indices are used as the ellipse center.
     ax : matplotlib.axes.Axes, optional
         Matplotlib axis to plot on. If None, creates a new figure and axis.
     plot_engine : str, default 'Ellipse'
@@ -44,8 +53,13 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         The ellipse size scales with sqrt(χ² quantile) based on this confidence level.
     color : str, default 'C0'
         Color of the ellipse edge.
-    show_center : bool, default True
-        Whether to show a marker at the best-fit center point.
+    plot_fiducial : bool, default True
+        Whether to show a marker at the best-fit (fiducial) point.
+    plot_center : bool, default False
+        Whether to show a marker at the ellipse center (central_values).
+        Useful when central_values differs from best_fit: the fiducial
+        marker shows the original point while the center marker shows the
+        shifted ellipse center.
     ellipse_fill : bool, default True
         Whether to fill the ellipse.
     visual_xylims : bool, default True
@@ -76,12 +90,22 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         - n_points : int, default 200
             Number of points for parametric ellipse (only used when plot_engine='parametric').
 
-        **Center marker**:
-        - center_marker : str, default 'x'
-            Marker style for the center point.
-        - center_color / center_markercolor : str, default 'C3'
+        **Best-fit (fiducial) marker**:
+        - fiducial_marker : str, default 'x'
+            Marker style for the fiducial (best-fit) point.
+        - fiducial_color / fiducial_markercolor : str, default 'C3'
+            Color of the fiducial marker.
+        - fiducial_size / markersize : float, default 8
+            Size of the fiducial marker.
+        - fiducial_zorder : float, optional
+            Z-order for the fiducial marker.
+
+        **Ellipse-center marker**:
+        - center_marker : str, default 'o'
+            Marker style for the ellipse-center point (when plot_center=True).
+        - center_color / center_markercolor : str, default 'C1'
             Color of the center marker.
-        - center_size / markersize : float, default 8
+        - center_size : float, default 8
             Size of the center marker.
         - center_zorder : float, optional
             Z-order for the center marker.
@@ -146,6 +170,15 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         raise ValueError(f"best_fit must have {n_params} elements (matching fisher), "
                         f"got {len(best_fit)}")
 
+    # Resolve the ellipse center: defaults to best_fit when not given
+    if central_values is None:
+        center = best_fit
+    else:
+        center = np.atleast_1d(central_values)
+        if len(center) != n_params:
+            raise ValueError(f"central_values must have {n_params} elements (matching fisher), "
+                            f"got {len(center)}")
+
     # Handle param_indices: extract 2x2 sub-matrix if needed
     if n_params == 2:
         # 2x2 fisher: use directly, param_indices ignored
@@ -156,6 +189,7 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
                 raise ValueError(f"param_indices must have 2 elements, got {len(param_indices)}")
         fisher_2d = fisher
         best_fit_2d = best_fit
+        center_2d = center
     else:
         # NxN fisher (N > 2): param_indices is required
         if param_indices is None:
@@ -171,10 +205,11 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         if i == j:
             raise ValueError(f"param_indices must specify two different parameters, "
                             f"got ({i}, {j})")
-        # Extract 2x2 sub-matrix and corresponding best_fit values
+        # Extract 2x2 sub-matrix and corresponding center values
         idx = np.array([i, j])
         fisher_2d = fisher[np.ix_(idx, idx)]
         best_fit_2d = best_fit[idx]
+        center_2d = center[idx]
 
     # Validate plot_engine
     if plot_engine not in ['Ellipse', 'parametric']:
@@ -199,9 +234,15 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
     ellipse_fill = kwargs.get('ellipse_fill', kwargs.get('fill', ellipse_fill))
     ellipse_zorder = kwargs.get('ellipse_zorder', kwargs.get('zorder', 1))
 
-    # Center marker
-    center_marker = kwargs.get('center_marker', 'x')
-    center_color = kwargs.get('center_color', kwargs.get('center_markercolor', 'C3'))
+    # Fiducial marker
+    fiducial_marker = kwargs.get('fiducial_marker', 'x')
+    fiducial_color = kwargs.get('fiducial_color', kwargs.get('fiducial_markercolor', 'C3'))
+    fiducial_size = kwargs.get('fiducial_size', kwargs.get('markersize', 8))
+    fiducial_zorder = kwargs.get('fiducial_zorder', 2)
+
+    # Ellipse-center marker
+    center_marker = kwargs.get('center_marker', 'o')
+    center_color = kwargs.get('center_color', kwargs.get('center_markercolor', 'C1'))
     center_size = kwargs.get('center_size', kwargs.get('markersize', 8))
     center_zorder = kwargs.get('center_zorder', 2)
 
@@ -246,7 +287,7 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         # Use matplotlib.patches.Ellipse
         # Note: When aspect ratio is not 'equal', angle is interpreted in screen space
         ellipse = Ellipse(
-            xy=best_fit_2d,
+            xy=center_2d,
             width=2 * a,      # full width (2 * semi-axis)
             height=2 * b,     # full height (2 * semi-axis)
             angle=angle_deg,
@@ -279,8 +320,8 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         y_rotated = x_ellipse * sin_angle + y_ellipse * cos_angle
         
         # Translate to center
-        x_final = x_rotated + best_fit_2d[0]
-        y_final = y_rotated + best_fit_2d[1]
+        x_final = x_rotated + center_2d[0]
+        y_final = y_rotated + center_2d[1]
         
         # Draw filled ellipse if requested
         if ellipse_fill:
@@ -297,9 +338,16 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
                zorder=ellipse_zorder,
                label=label)
 
-    # Plot center point if requested
-    if show_center:
+    # Plot markers if requested
+    if plot_fiducial:
         ax.plot(best_fit_2d[0], best_fit_2d[1],
+                marker=fiducial_marker,
+                color=fiducial_color,
+                markersize=fiducial_size,
+                zorder=fiducial_zorder,
+                linestyle='None')
+    if plot_center:
+        ax.plot(center_2d[0], center_2d[1],
                 marker=center_marker,
                 color=center_color,
                 markersize=center_size,
@@ -329,19 +377,19 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         elif xlim is not None:
             # Only xlim provided, set ylim based on ellipse
             x_min, x_max = xlim
-            y_min = best_fit_2d[1] - half_height
-            y_max = best_fit_2d[1] + half_height
+            y_min = center_2d[1] - half_height
+            y_max = center_2d[1] + half_height
         elif ylim is not None:
             # Only ylim provided, set xlim based on ellipse
             y_min, y_max = ylim
-            x_min = best_fit_2d[0] - half_width
-            x_max = best_fit_2d[0] + half_width
+            x_min = center_2d[0] - half_width
+            x_max = center_2d[0] + half_width
         else:
             # Neither provided, use ellipse bounding box
-            x_min = best_fit_2d[0] - half_width
-            x_max = best_fit_2d[0] + half_width
-            y_min = best_fit_2d[1] - half_height
-            y_max = best_fit_2d[1] + half_height
+            x_min = center_2d[0] - half_width
+            x_max = center_2d[0] + half_width
+            y_min = center_2d[1] - half_height
+            y_max = center_2d[1] + half_height
         
         # Calculate ranges and apply padding
         x_range = x_max - x_min
@@ -367,19 +415,19 @@ def plot_ellipse_from_fisher(fisher, best_fit, ax=None, plot_engine='Ellipse',
         elif xlim is not None:
             # Only xlim provided, set ylim based on ellipse
             x_min, x_max = xlim
-            y_min = best_fit_2d[1] - half_height
-            y_max = best_fit_2d[1] + half_height
+            y_min = center_2d[1] - half_height
+            y_max = center_2d[1] + half_height
         elif ylim is not None:
             # Only ylim provided, set xlim based on ellipse
             y_min, y_max = ylim
-            x_min = best_fit_2d[0] - half_width
-            x_max = best_fit_2d[0] + half_width
+            x_min = center_2d[0] - half_width
+            x_max = center_2d[0] + half_width
         else:
             # Neither provided, use ellipse bounding box
-            x_min = best_fit_2d[0] - half_width
-            x_max = best_fit_2d[0] + half_width
-            y_min = best_fit_2d[1] - half_height
-            y_max = best_fit_2d[1] + half_height
+            x_min = center_2d[0] - half_width
+            x_max = center_2d[0] + half_width
+            y_min = center_2d[1] - half_height
+            y_max = center_2d[1] + half_height
         
         # Calculate ranges
         x_range = x_max - x_min

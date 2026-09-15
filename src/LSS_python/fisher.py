@@ -4,7 +4,7 @@ from scipy.stats import chi2, norm
 from LSS_python.AP import tpcf_convert_main
 
 
-def cal_jacobian(func, best_fit, delta=None, args=()):
+def _legacy_cal_jacobian(func, best_fit, delta=None, args=()):
     """
     Compute the Jacobian matrix of a model function via central finite differences.
 
@@ -102,8 +102,655 @@ def cal_jacobian(func, best_fit, delta=None, args=()):
     return jacobian
 
 
-def cal_Fisher_matrix(func, best_fit, cov_matrix, delta=None, computed_jac=None, return_jac=False,
-                      args=()):
+def _legacy_cal_parameter_bias(func, target, initial_value, cov_matrix, delta=None,
+                       tol=1e-3, max_iter=10, return_details=False, args=(),
+                       adaptive_delta=False):
+    """
+    Compute the parameter bias induced by a biased (distorted) statistics.
+
+    Suppose the observed statistics is a fixed target vector `target` y
+    (e.g. a data vector distorted by systematic effects), while the reference
+    (unbiased) parameter point is theta_0 = `initial_value`. The parameter
+    bias is the shift theta_final - theta_0 that would be obtained by fitting
+    y, i.e. by minimizing
+
+        chi^2(theta) = (y - mu(theta))^T C^{-1} (y - mu(theta)),
+
+    where mu = func(theta, *args) is the model prediction.
+
+    The first-order correction, evaluated at theta_0, is
+
+        delta_theta = F^{-1} b,
+        F = J^T C^{-1} J,   b = J^T C^{-1} (y - mu(theta_0)),
+
+    where J = dmu/dtheta is the Jacobian at theta_0. When the bias is large
+    or the model is strongly nonlinear around theta_0, the first-order
+    correction may be insufficient. This function therefore supports an
+    iterative (Gauss-Newton) refinement:
+
+        J_k = cal_jacobian(func, theta_k),
+        F_k = J_k^T C^{-1} J_k,
+        delta_theta_k = F_k^{-1} J_k^T C^{-1} (y - mu(theta_k)),
+        theta_{k+1} = theta_k + delta_theta_k,
+
+    iterated until |delta_theta_k, i| < tol * sigma_i for all parameters,
+    where sigma_i = sqrt((F_k^{-1})_ii) is the 1-sigma uncertainty. The
+    first iteration reproduces the purely first-order correction, so
+    ``max_iter=1`` gives the linearized result only. This is an actual
+    "shooting" procedure: the iteration finds the parameter point whose
+    model prediction hits the target within tolerance.
+
+    Parameters
+    ----------
+    func : callable
+        Model function whose first argument is the parameter vector
+        (list, tuple or ndarray, same length as `initial_value`), followed by
+        any additional arguments collected in `args`, in the same way as
+        :func:`cal_jacobian` and :func:`cal_Fisher_matrix`.
+    target : array_like, shape (n_output,)
+        Biased statistics (data vector) y to hit. Must have the same shape
+        as the model output.
+    initial_value : array_like
+        Reference (unbiased) parameter values theta_0. The returned bias is
+        the shift away from this point, and the iteration starts here.
+    cov_matrix : ndarray, shape (n_output, n_output)
+        Covariance matrix of the model outputs.
+    delta : float or array_like, optional
+        Finite difference step size, passed to :func:`cal_jacobian`. Either
+        a scalar applied to all parameters, or a sequence matching
+        ``len(initial_value)`` giving one step per parameter.
+        With ``adaptive_delta=True`` the first iteration uses the automatic step
+        (``delta=None``) or the user ``delta`` as-is, and later iterations
+        shrink it down (never up), bounded below by 1% of the first step.
+    adaptive_delta : bool, default False
+        Enable feedback adjustment of the finite-difference steps based on
+        the size of the previous Gauss-Newton update: each parameter's step
+        becomes ``clip(10 * |update|, 0.01 * delta_first, delta_first)``.
+        Near convergence the update is small while the fallback step
+        (proportional to max(|theta|, 1)) can be large enough that the
+        Jacobian truncation error dominates, making the update oscillate
+        across the target; shrinking the step with the update avoids this.
+        Only effective from the second iteration onward.
+    tol : float, default 1e-3
+        Convergence tolerance in units of the parameter 1-sigma error:
+        iteration stops when |delta_theta_i| < tol * sigma_i for all i.
+    max_iter : int, default 10
+        Maximum number of Gauss-Newton iterations. Set to 1 to obtain the
+        purely first-order correction.
+    return_details : bool, default False
+        If True, return a dictionary with the final parameter vector, the
+        number of iterations performed, whether convergence was reached,
+        and the list of per-iteration parameter updates.
+    args : tuple, optional
+        Extra positional arguments passed to `func` after the parameter
+        vector.
+
+    Returns
+    -------
+    parameter_bias : ndarray, shape (n_params,)
+        Final estimate of the parameter bias delta_theta = theta_final - theta_0.
+        With max_iter=1 this is the first-order correction.
+    details : dict, optional
+        Only returned if return_details=True. Keys:
+        - 'theta_final' : ndarray - final parameter vector
+        - 'n_iter' : int - number of iterations performed
+        - 'converged' : bool - whether the tolerance was met
+        - 'updates' : list of ndarray - parameter updates per iteration
+        - 'sigmas' : list of ndarray - parameter 1-sigma uncertainties
+          sqrt(diag(F^{-1})) at each iteration, used in the convergence test
+        - 'sigma_updates' : list of ndarray - per-iteration |update|/sigma,
+          i.e. the update magnitude in units of the parameter 1-sigma error;
+          convergence requires all elements < tol
+
+    Notes
+    -----
+    Equivalently, y = mu(theta_0) + delta_mu defines a statistics bias
+    delta_mu in the model-output space; the first-iteration result then
+    reduces to the standard result that a bias delta_mu propagates into a
+    parameter bias F^{-1} J^T C^{-1} delta_mu at the fiducial point. The
+    iteration simply re-expands about the updated point, which is exactly
+    the Gauss-Newton method for the generalized least-squares problem above.
+    """
+    theta = np.atleast_1d(np.asarray(initial_value, dtype=np.float64))
+    y = np.atleast_1d(np.asarray(target, dtype=np.float64))
+
+    cov_matrix = np.atleast_2d(np.asarray(cov_matrix, dtype=np.float64))
+    try:
+        cov_inv = np.linalg.inv(cov_matrix)
+    except np.linalg.LinAlgError:
+        raise ValueError("Covariance matrix is singular, cannot compute inverse")
+
+    updates = []
+    sigmas = []
+    converged = False
+    n_iter = 0
+    theta_final = theta.copy()
+
+    # Adaptive finite-difference steps (enabled for delta=None always, and
+    # for explicit delta when adaptive_delta=True): iteration 1 uses the baseline
+    # step (cal_jacobian's automatic delta_0 = eps^(1/3)*max(|theta|,1), or
+    # the user-provided delta as-is); later iterations shrink with the
+    # Gauss-Newton update: delta_k = clip(10*|update|, 0.01*delta_first,
+    # delta_first). Near convergence the update is small while the baseline
+    # step (proportional to max(|theta|,1), can be large far from theta=1)
+    # is big enough that truncation error in the Jacobian dominates the
+    # local curvature, causing the update to oscillate across the target.
+    # The 0.01 lower bound keeps round-off noise (proportional to eps/delta)
+    # from dominating. Never grows above the first-iteration step.
+    adaptive_delta_enabled = adaptive_delta or delta is None
+    delta_first = None
+    delta_current = None
+    update = None
+
+    for iteration in range(max_iter):
+        n_iter = iteration + 1
+
+        if adaptive_delta_enabled:
+            if delta_current is None:
+                if delta is None:
+                    delta_current = (
+                        np.finfo(float).eps ** (1.0 / 3.0)
+                        * np.maximum(np.abs(theta_final), 1.0)
+                    )
+                else:
+                    delta_array = np.atleast_1d(np.asarray(delta, dtype=np.float64))
+                    if len(delta_array) == 1:
+                        delta_array = np.full(theta.shape, delta_array[0])
+                    elif len(delta_array) != len(theta):
+                        raise ValueError(
+                            f"delta length {len(delta_array)} does not match "
+                            f"number of parameters {len(theta)}"
+                        )
+                    delta_current = delta_array
+                delta_first = np.copy(delta_current)
+            else:
+                delta_current = np.clip(
+                    10.0 * np.abs(update), 0.01 * delta_first, delta_first
+                )
+        else:
+            delta_current = delta
+
+        jacobian = cal_jacobian(func, theta_final, delta=delta_current, args=args)
+        if np.allclose(jacobian, 0.0):
+            raise ValueError(
+                f"Jacobian is all zero at iteration {n_iter} "
+                f"(within numerical tolerance). The model output "
+                f"does not respond to finite-difference steps of size "
+                f"{delta!r} around theta = {theta_final.tolist()}; the "
+                f"model may be returning a constant (e.g. an early-return "
+                f"path in the AP conversion), or delta is too small. "
+                f"Provide an explicit larger delta, or skip the bias "
+                f"computation."
+            )
+        fisher = jacobian.T @ cov_inv @ jacobian
+        try:
+            fisher_inv = np.linalg.inv(fisher)
+        except np.linalg.LinAlgError:
+            raise ValueError(
+                f"Fisher matrix is singular at iteration {n_iter}; "
+                f"parameters may be degenerate"
+            )
+
+        residual = y - np.atleast_1d(np.asarray(func(theta_final, *args), dtype=np.float64))
+        update = fisher_inv @ (jacobian.T @ cov_inv @ residual)
+        updates.append(update)
+        theta_final = theta_final + update
+
+        sigma = np.sqrt(np.diag(fisher_inv))
+        sigmas.append(sigma)
+        if np.all(np.abs(update) < tol * sigma):
+            converged = True
+            break
+
+    parameter_bias = theta_final - theta
+    if return_details:
+        sigma_updates = [
+            np.abs(update) / sigma
+            for update, sigma in zip(updates, sigmas)
+        ]
+        return parameter_bias, {
+            'theta_final': theta_final,
+            'n_iter': n_iter,
+            'converged': converged,
+            'updates': updates,
+            'sigmas': sigmas,
+            'sigma_updates': sigma_updates,
+        }
+    return parameter_bias
+
+
+class _RejectedParameterPoint(ValueError):
+    """Internal marker used when a validator rejects a trial point."""
+
+
+def _as_parameter_vector(values, name="parameter values"):
+    """Return a non-empty, finite one-dimensional parameter vector."""
+    array = np.asarray(values, dtype=np.float64)
+    if array.ndim == 0:
+        array = array.reshape(1)
+    if array.ndim != 1 or array.size == 0:
+        raise ValueError(f"{name} must be a non-empty one-dimensional vector")
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{name} contains NaN or infinite values")
+    return array
+
+
+def _as_model_vector(value, label="model output"):
+    """Normalize a scalar/vector model result and reject malformed values."""
+    array = np.asarray(value, dtype=np.float64)
+    if array.ndim == 0:
+        array = array.reshape(1)
+    if array.ndim != 1:
+        raise ValueError(f"{label} must be a scalar or one-dimensional vector")
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{label} contains NaN or infinite values")
+    return array
+
+
+def _call_parameter_validator(parameter_validator, point):
+    """Call a user validator without embedding project-specific constraints."""
+    if parameter_validator is None:
+        return
+    accepted = parameter_validator(np.asarray(point, dtype=np.float64).copy())
+    try:
+        accepted = bool(accepted)
+    except (TypeError, ValueError) as error:
+        raise ValueError("parameter_validator must return a scalar boolean") from error
+    if not accepted:
+        raise _RejectedParameterPoint(
+            "parameter_validator rejected point "
+            f"{np.asarray(point, dtype=float).tolist()}"
+        )
+
+
+def _normalise_difference_steps(delta, n_params, reference):
+    """Return validated central-difference steps."""
+    if delta is None:
+        steps = np.finfo(float).eps ** (1.0 / 3.0) * np.maximum(np.abs(reference), 1.0)
+    elif np.isscalar(delta):
+        steps = np.full(n_params, float(delta), dtype=np.float64)
+    else:
+        steps = np.asarray(delta, dtype=np.float64)
+    if steps.shape != (n_params,):
+        raise ValueError(
+            f"delta must be one scalar or a sequence of length {n_params}; got shape {steps.shape}"
+        )
+    if not np.all(np.isfinite(steps)) or np.any(steps <= 0.0):
+        raise ValueError("delta must contain only finite positive values")
+    return steps
+
+
+def _prepare_precision(cov_matrix, covariance_inverse, n_output):
+    """Validate covariance/precision input and return a symmetric precision matrix."""
+    if (cov_matrix is None) == (covariance_inverse is None):
+        raise ValueError("provide exactly one of cov_matrix or covariance_inverse")
+    matrix = np.asarray(
+        cov_matrix if covariance_inverse is None else covariance_inverse,
+        dtype=np.float64,
+    )
+    if matrix.ndim == 0:
+        matrix = matrix.reshape(1, 1)
+    if matrix.ndim != 2 or matrix.shape != (n_output, n_output):
+        label = "cov_matrix" if covariance_inverse is None else "covariance_inverse"
+        raise ValueError(
+            f"{label} must be a square ({n_output}, {n_output}) matrix; got {matrix.shape}"
+        )
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError("covariance/precision matrix contains NaN or infinite values")
+    if not np.allclose(matrix, matrix.T, rtol=1.0e-10, atol=1.0e-12):
+        raise ValueError("covariance/precision matrix must be symmetric")
+    eigenvalues = np.linalg.eigvalsh(matrix)
+    scale = max(float(np.max(np.abs(eigenvalues))), 1.0)
+    if float(np.min(eigenvalues)) <= np.finfo(float).eps * scale:
+        label = "covariance" if covariance_inverse is None else "precision"
+        raise ValueError(f"{label} matrix must be positive definite")
+    if covariance_inverse is None:
+        try:
+            matrix = np.linalg.solve(matrix, np.eye(n_output, dtype=np.float64))
+        except np.linalg.LinAlgError as error:
+            raise ValueError("Covariance matrix is singular, cannot compute inverse") from error
+    return 0.5 * (matrix + matrix.T)
+
+
+def _fisher_diagnostics(jacobian, precision, iteration=None):
+    """Validate a Jacobian/Fisher matrix and return its inverse and sigmas."""
+    jacobian = np.asarray(jacobian, dtype=np.float64)
+    if jacobian.ndim != 2 or not np.all(np.isfinite(jacobian)):
+        raise ValueError("Jacobian must be a finite two-dimensional matrix")
+    column_norms = np.linalg.norm(jacobian, axis=0)
+    if np.any(column_norms == 0.0):
+        suffix = "" if iteration is None else f" at iteration {iteration}"
+        raise ValueError(f"Jacobian contains an exactly zero parameter column{suffix}")
+    raw_fisher = jacobian.T @ precision @ jacobian
+    fisher = 0.5 * (raw_fisher + raw_fisher.T)
+    if not np.all(np.isfinite(fisher)):
+        raise ValueError("Fisher matrix contains NaN or infinite values")
+    eigenvalues = np.linalg.eigvalsh(fisher)
+    scale = max(float(np.max(np.abs(eigenvalues))), 1.0)
+    if float(np.min(eigenvalues)) <= np.finfo(float).eps * scale:
+        suffix = "" if iteration is None else f" at iteration {iteration}"
+        raise ValueError(f"Fisher matrix is singular or not positive definite{suffix}")
+    condition_number = float(np.max(eigenvalues) / np.min(eigenvalues))
+    if condition_number > 1.0e12:
+        suffix = "" if iteration is None else f" at iteration {iteration}"
+        raise ValueError(
+            f"Fisher matrix is too ill-conditioned{suffix} "
+            f"(condition number {condition_number:.3e})"
+        )
+    try:
+        covariance = np.linalg.solve(fisher, np.eye(fisher.shape[0], dtype=np.float64))
+    except np.linalg.LinAlgError as error:
+        raise ValueError("Cannot invert Fisher matrix") from error
+    covariance = 0.5 * (covariance + covariance.T)
+    sigmas = np.sqrt(np.diag(covariance))
+    if not np.all(np.isfinite(sigmas)) or np.any(sigmas <= 0.0):
+        raise ValueError("Fisher parameter uncertainties are not finite and positive")
+    return fisher, covariance, sigmas
+
+
+def _evaluate_model(func, point, args, expected_size=None):
+    """Evaluate a model and enforce a stable output dimension."""
+    result = _as_model_vector(func(point, *args))
+    if expected_size is not None and result.size != expected_size:
+        raise ValueError(
+            f"model output has length {result.size}, expected {expected_size}"
+        )
+    return result
+
+
+def cal_jacobian(func, best_fit, delta=None, args=(), parameter_validator=None):
+    """Compute a checked central finite-difference Jacobian."""
+    point = _as_parameter_vector(best_fit, "best_fit")
+    _call_parameter_validator(parameter_validator, point)
+    steps = _normalise_difference_steps(delta, point.size, point)
+    f0 = _evaluate_model(func, point, args)
+    jacobian = np.empty((f0.size, point.size), dtype=np.float64)
+    for index, step in enumerate(steps):
+        plus = point.copy()
+        minus = point.copy()
+        plus[index] += step
+        minus[index] -= step
+        _call_parameter_validator(parameter_validator, plus)
+        _call_parameter_validator(parameter_validator, minus)
+        f_plus = _evaluate_model(func, plus, args, f0.size)
+        f_minus = _evaluate_model(func, minus, args, f0.size)
+        jacobian[:, index] = (f_plus - f_minus) / (2.0 * step)
+    if not np.all(np.isfinite(jacobian)):
+        raise ValueError("Jacobian contains NaN or infinite values")
+    return jacobian
+
+
+def _jacobian_with_stability(func, point, steps, args, parameter_validator, stability_tolerance):
+    """Compute a Jacobian and optionally compare it with a half-step estimate."""
+    jacobian = cal_jacobian(
+        func, point, delta=steps, args=args, parameter_validator=parameter_validator
+    )
+    if stability_tolerance is None:
+        return jacobian, np.full(steps.shape, np.nan, dtype=np.float64)
+    if not np.isfinite(stability_tolerance) or stability_tolerance <= 0.0:
+        raise ValueError("stability_tolerance must be positive or None")
+    half_jacobian = cal_jacobian(
+        func,
+        point,
+        delta=steps / 2.0,
+        args=args,
+        parameter_validator=parameter_validator,
+    )
+    denominator = np.maximum(np.linalg.norm(half_jacobian, axis=0), np.finfo(float).tiny)
+    relative_change = np.linalg.norm(jacobian - half_jacobian, axis=0) / denominator
+    if not np.all(np.isfinite(relative_change)):
+        raise ValueError("Finite-difference stability diagnostic is non-finite")
+    if np.any(relative_change > stability_tolerance):
+        raise ValueError(
+            "Finite-difference Jacobian is unstable when the step is halved: "
+            f"relative changes {relative_change.tolist()} exceed "
+            f"stability_tolerance={stability_tolerance:g}"
+        )
+    return jacobian, relative_change
+
+
+def _chi_square(residual, precision):
+    """Evaluate a non-negative quadratic form with round-off tolerance."""
+    residual = np.asarray(residual, dtype=np.float64)
+    value = float(residual @ precision @ residual)
+    if not np.isfinite(value):
+        raise ValueError("chi-square is NaN or infinite")
+    if value < -1.0e-8:
+        raise ValueError(f"chi-square is negative: {value}")
+    return max(value, 0.0)
+
+
+def _joint_sigma(displacement, fisher):
+    """Return a displacement length in the local Fisher metric."""
+    displacement = np.asarray(displacement, dtype=np.float64)
+    value = float(displacement @ fisher @ displacement)
+    if not np.isfinite(value):
+        raise ValueError("Fisher-metric displacement is non-finite")
+    return float(np.sqrt(max(value, 0.0)))
+
+
+def cal_parameter_bias(
+    func,
+    target,
+    initial_value,
+    cov_matrix=None,
+    delta=None,
+    tol=1e-3,
+    max_iter=10,
+    return_details=False,
+    args=(),
+    adaptive_delta=False,
+    covariance_inverse=None,
+    parameter_validator=None,
+    step_control="none",
+    stability_tolerance=None,
+):
+    """Estimate a parameter bias with first-order or iterative Fisher updates.
+
+    ``max_iter=1`` returns the complete first-order Fisher update.  For more
+    iterations, ``step_control='none'`` accepts full Gauss--Newton updates,
+    while ``step_control='backtracking'`` selects the first validator-valid
+    candidate that does not increase exact chi-square.  A validator is an
+    optional callback supplied by the calling project for physical domains.
+    """
+    if not isinstance(max_iter, (int, np.integer)) or isinstance(max_iter, bool) or max_iter <= 0:
+        raise ValueError("max_iter must be a positive integer")
+    if not np.isfinite(tol) or tol <= 0.0:
+        raise ValueError("tol must be positive and finite")
+    if step_control not in ("none", "backtracking"):
+        raise ValueError("step_control must be 'none' or 'backtracking'")
+    theta0 = _as_parameter_vector(initial_value, "initial_value")
+    target_vector = _as_model_vector(target, "target")
+    _call_parameter_validator(parameter_validator, theta0)
+    model0 = _evaluate_model(func, theta0, args)
+    if model0.shape != target_vector.shape:
+        raise ValueError(
+            f"target shape {target_vector.shape} does not match model output shape {model0.shape}"
+        )
+    precision = _prepare_precision(cov_matrix, covariance_inverse, target_vector.size)
+    base_steps = _normalise_difference_steps(delta, theta0.size, theta0)
+    adaptive = bool(adaptive_delta or delta is None)
+
+    current = theta0.copy()
+    current_model = model0
+    current_chi2 = _chi_square(target_vector - current_model, precision)
+    initial_chi2 = current_chi2
+    previous_update = None
+    updates = []
+    proposed_updates = []
+    sigmas = []
+    sigma_updates = []
+    proposed_sigma_updates = []
+    joint_sigma_updates = []
+    proposed_joint_sigma_updates = []
+    fisher_matrices = []
+    parameter_covariances = []
+    steps_used = []
+    derivative_changes = []
+    current_chi2s = []
+    candidate_chi2s = []
+    candidate_points = []
+    line_search_factors = []
+    last_unaccepted_update = None
+    last_unaccepted_candidate = None
+    last_unaccepted_candidate_chi2 = np.nan
+    converged = False
+    termination_reason = "max_iter_reached"
+    n_iter = 0
+
+    for iteration in range(int(max_iter)):
+        n_iter = iteration + 1
+        if adaptive and previous_update is not None:
+            steps = np.clip(10.0 * np.abs(previous_update), 0.01 * base_steps, base_steps)
+        else:
+            steps = base_steps.copy()
+        steps_used.append(steps.copy())
+        jacobian, relative_change = _jacobian_with_stability(
+            func, current, steps, args, parameter_validator, stability_tolerance
+        )
+        derivative_changes.append(relative_change.copy())
+        fisher, parameter_covariance, sigma = _fisher_diagnostics(jacobian, precision, n_iter)
+        fisher_matrices.append(fisher.copy())
+        parameter_covariances.append(parameter_covariance.copy())
+        sigmas.append(sigma.copy())
+        residual = target_vector - current_model
+        proposed_update = np.linalg.solve(fisher, jacobian.T @ precision @ residual)
+        if not np.all(np.isfinite(proposed_update)):
+            raise ValueError(f"Fisher update contains NaN or infinite values at iteration {n_iter}")
+        proposed_update = np.asarray(proposed_update, dtype=np.float64)
+        proposed_updates.append(proposed_update.copy())
+        proposed_sigma_updates.append(np.abs(proposed_update) / sigma)
+        proposed_joint_sigma_updates.append(_joint_sigma(proposed_update, fisher))
+        current_chi2s.append(float(current_chi2))
+
+        accepted_update = None
+        accepted_point = None
+        accepted_model = None
+        accepted_chi2 = np.nan
+        accepted_factor = np.nan
+        full_point = current + proposed_update
+
+        if int(max_iter) == 1 or step_control == "none":
+            _call_parameter_validator(parameter_validator, full_point)
+            full_model = _evaluate_model(func, full_point, args, target_vector.size)
+            accepted_update = proposed_update
+            accepted_point = full_point
+            accepted_model = full_model
+            accepted_chi2 = _chi_square(target_vector - full_model, precision)
+            accepted_factor = 1.0
+        else:
+            for factor in 0.5 ** np.arange(0, 21, dtype=np.float64):
+                trial_point = current + factor * proposed_update
+                try:
+                    _call_parameter_validator(parameter_validator, trial_point)
+                except _RejectedParameterPoint:
+                    continue
+                trial_model = _evaluate_model(func, trial_point, args, target_vector.size)
+                trial_chi2 = _chi_square(target_vector - trial_model, precision)
+                if trial_chi2 <= current_chi2:
+                    accepted_update = factor * proposed_update
+                    accepted_point = trial_point
+                    accepted_model = trial_model
+                    accepted_chi2 = trial_chi2
+                    accepted_factor = float(factor)
+                    break
+            if accepted_update is None:
+                last_unaccepted_update = proposed_update.copy()
+                last_unaccepted_candidate = full_point.copy()
+                try:
+                    _call_parameter_validator(parameter_validator, full_point)
+                    full_model = _evaluate_model(func, full_point, args, target_vector.size)
+                    last_unaccepted_candidate_chi2 = _chi_square(
+                        target_vector - full_model, precision
+                    )
+                except _RejectedParameterPoint:
+                    last_unaccepted_candidate_chi2 = np.nan
+                candidate_chi2s.append(float(last_unaccepted_candidate_chi2))
+                candidate_points.append(full_point.copy())
+                termination_reason = "no_acceptable_step"
+                break
+
+        if accepted_update is None or accepted_point is None or accepted_model is None:
+            raise RuntimeError("Internal Fisher update bookkeeping error")
+        updates.append(accepted_update.copy())
+        sigma_updates.append(np.abs(accepted_update) / sigma)
+        joint_sigma_updates.append(_joint_sigma(accepted_update, fisher))
+        line_search_factors.append(float(accepted_factor))
+        candidate_chi2s.append(float(accepted_chi2))
+        candidate_points.append(accepted_point.copy())
+        current = accepted_point
+        current_model = accepted_model
+        current_chi2 = float(accepted_chi2)
+        previous_update = accepted_update.copy()
+        if np.all(np.abs(accepted_update) <= tol * sigma):
+            converged = True
+            termination_reason = "update_below_tolerance"
+            break
+
+    if updates:
+        final_steps = (
+            np.clip(10.0 * np.abs(previous_update), 0.01 * base_steps, base_steps)
+            if adaptive and previous_update is not None
+            else base_steps.copy()
+        )
+        try:
+            final_jacobian, final_relative_change = _jacobian_with_stability(
+                func, current, final_steps, args, parameter_validator, stability_tolerance
+            )
+            final_fisher, final_covariance, final_sigmas = _fisher_diagnostics(
+                final_jacobian, precision, "final"
+            )
+        except ValueError:
+            final_fisher = fisher_matrices[-1]
+            final_covariance = parameter_covariances[-1]
+            final_sigmas = sigmas[-1]
+            final_relative_change = derivative_changes[-1]
+    else:
+        final_fisher = fisher_matrices[-1]
+        final_covariance = parameter_covariances[-1]
+        final_sigmas = sigmas[-1]
+        final_relative_change = derivative_changes[-1]
+
+    parameter_bias = current - theta0
+    if not return_details:
+        return parameter_bias
+    return parameter_bias, {
+        "theta_final": current.copy(),
+        "n_iter": n_iter,
+        "iterations": len(updates),
+        "converged": converged,
+        "termination_reason": termination_reason,
+        "initial_chi2": float(initial_chi2),
+        "chi2": float(current_chi2),
+        "current_chi2s": current_chi2s,
+        "candidate_chi2s": candidate_chi2s,
+        "candidate_points": candidate_points,
+        "updates": updates,
+        "proposed_updates": proposed_updates,
+        "sigmas": sigmas,
+        "parameter_sigmas": final_sigmas.copy(),
+        "sigma_updates": sigma_updates,
+        "proposed_sigma_updates": proposed_sigma_updates,
+        "joint_sigma_updates": joint_sigma_updates,
+        "proposed_joint_sigma_updates": proposed_joint_sigma_updates,
+        "line_search_factors": line_search_factors,
+        "finite_difference_steps": steps_used,
+        "derivative_relative_changes": derivative_changes,
+        "final_derivative_relative_changes": final_relative_change,
+        "fisher_matrix": final_fisher,
+        "fisher_matrices": fisher_matrices,
+        "parameter_covariance": final_covariance,
+        "parameter_covariances": parameter_covariances,
+        "parameter_bias_in_sigma": parameter_bias / final_sigmas,
+        "parameter_bias_joint_sigma": _joint_sigma(parameter_bias, final_fisher),
+        "last_unaccepted_update": last_unaccepted_update,
+        "last_unaccepted_candidate": last_unaccepted_candidate,
+        "last_unaccepted_candidate_chi2": last_unaccepted_candidate_chi2,
+    }
+
+
+def cal_Fisher_matrix(func, best_fit, cov_matrix=None, delta=None, computed_jac=None, return_jac=False,
+                      args=(), covariance_inverse=None):
     """
     Calculate Fisher matrix from covariance matrix and model function.
 
@@ -144,32 +791,14 @@ def cal_Fisher_matrix(func, best_fit, cov_matrix, delta=None, computed_jac=None,
     if computed_jac is None:
         jacobian = cal_jacobian(func, best_fit, delta=delta, args=args)
     else:
-        jacobian = computed_jac
-
-    # Validate cov_matrix shape against model output dimension
-    n_output = jacobian.shape[0]
-    cov_matrix = np.atleast_2d(cov_matrix)
-    if cov_matrix.shape != (n_output, n_output):
-        raise ValueError(f"cov_matrix shape {cov_matrix.shape} does not match "
-                        f"model output dimension {n_output}")
-
-    # Compute inverse covariance matrix
-    try:
-        cov_inv = np.linalg.inv(cov_matrix)
-    except np.linalg.LinAlgError:
-        raise ValueError("Covariance matrix is singular, cannot compute inverse")
-
-    # Compute Fisher matrix: F = J^T * C^{-1} * J
-    # jacobian shape: (n_output, n_params)
-    # cov_inv shape: (n_output, n_output)
-    # Result: (n_params, n_output) @ (n_output, n_output) @ (n_output, n_params)
-    #        = (n_params, n_params)
-    fisher = jacobian.T @ cov_inv @ jacobian
-
+        jacobian = np.asarray(computed_jac, dtype=np.float64)
+    if jacobian.ndim != 2 or not np.all(np.isfinite(jacobian)):
+        raise ValueError("computed_jac must be a finite two-dimensional matrix")
+    precision = _prepare_precision(cov_matrix, covariance_inverse, jacobian.shape[0])
+    fisher, _, _ = _fisher_diagnostics(jacobian, precision)
     if return_jac:
         return fisher, jacobian
-    else:
-        return fisher
+    return fisher
 
 
 def cal_Fisher_matrix_from_precomputed(parameter_points, function_values, cov_matrix, return_jac=False,

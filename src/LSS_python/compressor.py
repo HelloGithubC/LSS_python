@@ -117,9 +117,14 @@ class Compressor:
     >>> compressor.fit(X_signal_train, n_components=10)
     >>> X_compressed = compressor.transform(X_test)
 
-    >>> # KL compression with signal and noise arrays
+    >>> # KL compression with signal and noise arrays.  The threshold applies
+    >>> # to the signal-to-noise *variance ratio* lambda.
     >>> compressor = Compressor(method='kl')
-    >>> compressor.fit(X_signal=signal_train, X_noise=noise_train, snr_threshold=1.0)
+    >>> compressor.fit(
+    ...     X_signal=signal_train,
+    ...     X_noise=noise_train,
+    ...     snr_variance_threshold=1.0,
+    ... )
     >>> X_compressed = compressor.transform(X_test)
 
     >>> # MOPED compression with precomputed parameter points and function values
@@ -162,7 +167,8 @@ class Compressor:
         self._pca = None  # sklearn PCA instance
         self._mean = None  # Mean vector for centering
         self._projection = None  # Projection matrix (for KL and MOPED)
-        self._eigenvalues_all = None # eigenvalues (for KL)
+        self._eigenvalues_all = None  # Backward-compatible KL eigenvalue alias.
+        self._kl_variance_ratios = None  # Signal/noise variance ratios for KL.
         self._moped_coefficients = None  # MOPED compression coefficients
         self._fisher_matrix = None  # Fisher information matrix (for MOPED)
 
@@ -191,8 +197,10 @@ class Compressor:
             )
         return self._fisher_matrix
 
-    def fit(self, X_signal=None, *, n_components=None, pca_ratio_sum_max=None, X_noise=None, snr_threshold=None,
-            fiducial_array=None, parameter_points=None, function_values=None, cov_matrix=None):
+    def fit(self, X_signal=None, *, n_components=None, pca_ratio_sum_max=None,
+            X_noise=None, snr_variance_threshold=None, snr_threshold=None,
+            fiducial_array=None, parameter_points=None, function_values=None,
+            cov_matrix=None):
         """Fit the compression model.
 
         Parameters
@@ -207,19 +215,26 @@ class Compressor:
             provided. If None and X_noise is provided, automatically determine
             components using std_signal > std_noise criterion.
         pca_ratio_sum_max : float, optional
-            Maximum cumulative explained variance ratio (between 0 and 1).
+            Minimum cumulative explained variance ratio (between 0 and 1).
             When provided, n_components is automatically determined to retain
-            all components whose cumulative explained variance ratio is less
-            than or equal to this value. If n_components is also provided,
+            the minimum prefix whose cumulative explained variance ratio
+            reaches this value (>= threshold). If n_components is also provided,
             a warning is issued and n_components is ignored.
         X_noise : ndarray, shape (n_samples_var, n_features), optional
             Noise/variance data for automatic component selection. Only used
             when n_components is None.
 
         # KL-specific parameters
+        snr_variance_threshold : float, optional
+            Signal-to-noise variance-ratio threshold required for KL
+            compression.  The generalized KL eigenvalue is
+            ``lambda = Var(signal_mode) / Var(noise_mode)``; retain modes
+            with ``lambda >= snr_variance_threshold``.  This is a
+            power/variance ratio, not an amplitude SNR.  For an amplitude
+            SNR threshold ``rho``, pass ``rho ** 2`` here.
         snr_threshold : float, optional
-            Signal-to-noise ratio threshold. Required for KL compression.
-            Keep all modes with SNR >= threshold.
+            Deprecated alias for ``snr_variance_threshold``.  It is retained
+            for compatibility and has the same variance-ratio meaning.
 
         # MOPED-specific parameters
         fiducial_array : ndarray, shape (n_features,), optional
@@ -262,9 +277,13 @@ class Compressor:
         >>> compressor = Compressor(method='pca')
         >>> compressor.fit(X_signal_train, pca_ratio_sum_max=0.95)
 
-        >>> # KL compression
+        >>> # KL compression; lambda is a signal/noise variance ratio
         >>> compressor = Compressor(method='kl')
-        >>> compressor.fit(X_signal_train, X_noise=noise_train, snr_threshold=1.0)
+        >>> compressor.fit(
+        ...     X_signal_train,
+        ...     X_noise=noise_train,
+        ...     snr_variance_threshold=1.0,
+        ... )
 
         >>> # MOPED compression
         >>> compressor = Compressor(method='moped')
@@ -276,6 +295,25 @@ class Compressor:
         >>> print(compressor.get_fisher_matrix())
     """
         import warnings
+
+        if self.method == 'kl':
+            if (
+                snr_variance_threshold is not None
+                and snr_threshold is not None
+            ):
+                raise ValueError(
+                    "Specify only snr_variance_threshold; snr_threshold is "
+                    "its deprecated compatibility alias."
+                )
+            if snr_variance_threshold is None and snr_threshold is not None:
+                warnings.warn(
+                    "snr_threshold is deprecated; use "
+                    "snr_variance_threshold to make the KL variance-ratio "
+                    "meaning explicit.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
+                snr_variance_threshold = snr_threshold
 
         # Handle pca_ratio_sum_max: if provided, n_components will be ignored with a warning
         if pca_ratio_sum_max is not None and n_components is not None:
@@ -318,7 +356,11 @@ class Compressor:
         if self.method == 'pca':
             self._fit_pca(X_signal, n_components=n_components, pca_ratio_sum_max=pca_ratio_sum_max, X_noise=X_noise)
         elif self.method == 'kl':
-            self._fit_kl(X_signal, X_noise=X_noise, snr_threshold=snr_threshold)
+            self._fit_kl(
+                X_signal,
+                X_noise=X_noise,
+                snr_variance_threshold=snr_variance_threshold,
+            )
         elif self.method == 'moped':
             self._fit_moped(
                 X_signal,
@@ -374,9 +416,10 @@ class Compressor:
 
         # Apply method-specific transform
         if self.method == 'pca':
-            # PCA: center the data first
-            X_centered = X - self._mean
-            X_compressed = self._transform_pca(X_centered)
+            # sklearn's PCA.transform performs the centering itself.  Do not
+            # subtract ``self._mean`` here, otherwise the data are centered
+            # twice and the result is not a standard PCA score.
+            X_compressed = self._transform_pca(X)
         elif self.method == 'kl':
             # KL: center the data first
             X_centered = X - self._mean
@@ -429,10 +472,10 @@ class Compressor:
             std_signal > std_noise. If an integer is provided, use that exact
             number of components from standard PCA (X_noise is ignored).
         pca_ratio_sum_max : float, optional
-            Maximum cumulative explained variance ratio (between 0 and 1).
-            When provided, n_components is automatically determined to retain
-            all components whose cumulative explained variance ratio is less
-            than or equal to this value. Takes precedence over n_components.
+            Minimum cumulative explained variance ratio (between 0 and 1).
+            When provided, n_components is automatically determined as the
+            minimum prefix whose cumulative explained variance ratio reaches
+            this value (>= threshold). Takes precedence over n_components.
         X_noise : ndarray, shape (n_samples_var, n_features), optional
             Noise/variance data containing cosmological variance information.
             The first dimension can differ from X_signal, but the second dimension
@@ -451,7 +494,10 @@ class Compressor:
         n_components by explained variance.
 
         When pca_ratio_sum_max is provided, it takes precedence and n_components
-        is ignored (with a warning issued in the fit method).
+        is ignored (with a warning issued in the fit method). The selection is
+        the minimum prefix length k whose cumulative explained-variance ratio
+        reaches pca_ratio_sum_max (>= threshold). If even the full cumulative
+        ratio cannot reach the threshold, a ValueError is raised.
 
         When n_components is None and X_noise is provided, the algorithm
         separately computes the covariance matrices for signal and noise data
@@ -469,14 +515,18 @@ class Compressor:
             self._pca.fit(X_signal)
             # Get cumulative explained variance ratio
             cum_ratio = np.cumsum(self._pca.explained_variance_ratio_)
-            # Find the number of components where cumulative ratio <= pca_ratio_sum_max
-            # Use searchsorted to find the first index where cum_ratio > pca_ratio_sum_max
-            n_selected = np.searchsorted(cum_ratio, pca_ratio_sum_max, side='right')
-            if n_selected == 0:
+            # Find the minimum prefix length whose cumulative ratio reaches
+            # pca_ratio_sum_max (>= threshold)
+            n_selected = int(np.searchsorted(cum_ratio, pca_ratio_sum_max, side='left') + 1)
+            if n_selected > cum_ratio.size or cum_ratio[n_selected - 1] < pca_ratio_sum_max:
                 raise ValueError(
-                    f"pca_ratio_sum_max={pca_ratio_sum_max} is too small; "
-                    f"even the first component exceeds this threshold "
-                    f"(first component ratio: {cum_ratio[0]:.6f})"
+                    f"No PCA prefix reaches pca_ratio_sum_max={pca_ratio_sum_max}; "
+                    f"total cumulative ratio is {cum_ratio[-1]:.6f}"
+                )
+            if n_selected > 1 and cum_ratio[n_selected - 2] >= pca_ratio_sum_max:
+                # Consistency check: the prefix must be minimal
+                raise RuntimeError(
+                    "Variance-prefix search did not return the minimal valid mode count"
                 )
             # Retrain PCA with the selected number of components
             self._pca = PCA(n_components=n_selected)
@@ -521,12 +571,13 @@ class Compressor:
     # KL (Karhunen-Loève) implementation
     # =========================================================================
 
-    def _fit_kl(self, X_signal, X_noise=None, snr_threshold=None):
+    def _fit_kl(self, X_signal, X_noise=None, snr_variance_threshold=None):
         """Fit KL compression using generalized eigenvalue decomposition.
 
         Solves the generalized eigenvalue problem:
             C_signal * v = λ * C_noise * v
-        where λ represents the signal-to-noise ratio (SNR) of each mode.
+        where λ is the signal-to-noise variance ratio of each mode.  Its
+        square root is the corresponding amplitude SNR.
 
         Parameters
         ----------
@@ -536,8 +587,10 @@ class Compressor:
             Noise/variance data. If provided, cov_noise is computed from this array.
             The first dimension can differ from X_signal, but the second dimension
             (n_features) must match. If None, an identity matrix is used (no noise).
-        snr_threshold : float, required
-            Signal-to-noise ratio threshold. Keep all modes with SNR >= threshold.
+        snr_variance_threshold : float, required
+            Signal-to-noise variance-ratio threshold. Keep all modes with
+            λ >= snr_variance_threshold.  To select an amplitude SNR of at
+            least rho, use snr_variance_threshold=rho**2.
 
         Raises
         ------
@@ -545,8 +598,19 @@ class Compressor:
             If any required parameter is missing or shapes mismatch.
         """
         # Validate required parameters
-        if snr_threshold is None:
-            raise ValueError("snr_threshold is required for KL compression")
+        if snr_variance_threshold is None:
+            raise ValueError(
+                "snr_variance_threshold is required for KL compression"
+            )
+        if (
+            not np.isscalar(snr_variance_threshold)
+            or not np.isfinite(snr_variance_threshold)
+            or snr_variance_threshold < 0.0
+        ):
+            raise ValueError(
+                "snr_variance_threshold must be a finite scalar greater "
+                "than or equal to zero"
+            )
 
         # Compute cov_signal from X_signal
         cov_signal = np.cov(X_signal, rowvar=False)
@@ -584,25 +648,29 @@ class Compressor:
         # eigenvalues are sorted in ascending order
         eigenvalues, eigenvectors = eigh(cov_signal, cov_noise)
 
-        # Compute SNR for each mode (generalized eigenvalues)
-        # Sort by descending SNR
+        # The generalized eigenvalues are signal/noise variance ratios.
+        # Sort by descending ratio.
         idx = np.argsort(eigenvalues)[::-1]
         eigenvalues = eigenvalues[idx]
         eigenvectors = eigenvectors[:, idx]
 
-        # Select modes with SNR >= threshold
-        mask = eigenvalues >= snr_threshold
+        # Select modes with signal/noise variance ratio >= threshold.
+        mask = eigenvalues >= snr_variance_threshold
         n_selected = np.sum(mask)
 
         if n_selected == 0:
             raise ValueError(
-                f"No modes with SNR >= {snr_threshold}. "
-                f"Maximum SNR is {np.max(eigenvalues):.3f}"
+                "No modes with signal/noise variance ratio >= "
+                f"{snr_variance_threshold}. Maximum ratio is "
+                f"{np.max(eigenvalues):.3f}"
             )
 
         # Store projection matrix (each column is an eigenvector)
         self._projection = eigenvectors[:, mask]
         self.n_components = n_selected
+        self._kl_variance_ratios = eigenvalues
+        # Keep the previous private attribute for serialized-model and
+        # downstream compatibility.  Its values have always been lambda.
         self._eigenvalues_all = eigenvalues
 
     def _transform_kl(self, X_centered):

@@ -4,7 +4,6 @@ from .lib.fftpower_pybind import deal_ps_3d_float, deal_ps_3d_double # type: ign
 from .lib.fftpower_pybind import cal_ps_float, cal_ps_double # type: ignore
 from .lib.fftpower_pybind import cal_ps_2d_from_mesh_float, cal_ps_2d_from_mesh_double # type: ignore
 from .lib.fftpower_pybind import cal_ps_from_ps_2d # type: ignore
-from .lib.fftpower_pybind import cal_ps_from_ps_2d_ap as cal_ps_from_ps_2d_ap_cpp # type: ignore
 
 def deal_ps_3d_pybind(complex_field, ps_3d=None, kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
     """
@@ -309,39 +308,3 @@ def cal_pkmu_from_ps_2d(ps_2d, k_2d, modes_2d, k_edge, mu_edge, k_logarithmic=Fa
     cal_ps_from_ps_2d(ps_2d, k_2d, modes_2d, k_out_2d, mu_out_2d, ps_kmu, modes, k_edge, mu_edge, nthreads)
 
     return k_out_2d, mu_out_2d, ps_kmu, modes
-
-
-def cal_pkmu_from_ps_2d_ap(
-    ps_2d, k_2d, modes_2d, kperp_edges, kparallel_edges,
-    k_edge, mu_edge, alpha_perp, alpha_parallel, amplitude, subcell_n,
-):
-    """Rebin an AP-remapped 2D spectrum with the single-threaded C++ backend."""
-    ps_2d = np.ascontiguousarray(ps_2d, dtype=np.float64)
-    k_2d = np.ascontiguousarray(k_2d, dtype=np.float64)
-    modes_2d = np.ascontiguousarray(modes_2d, dtype=np.uintp)
-    kperp_edges = np.ascontiguousarray(kperp_edges, dtype=np.float64)
-    kparallel_edges = np.ascontiguousarray(kparallel_edges, dtype=np.float64)
-    k_edge = np.ascontiguousarray(k_edge, dtype=np.float64)
-    mu_edge = np.ascontiguousarray(mu_edge, dtype=np.float64)
-    if k_2d.shape != ps_2d.shape + (2,) or modes_2d.shape != ps_2d.shape:
-        raise ValueError("AP source arrays have inconsistent shapes")
-    if kperp_edges.size != ps_2d.shape[0] + 1 or kparallel_edges.size != ps_2d.shape[1] + 1:
-        raise ValueError("AP source bin edges are inconsistent with ps_2d")
-    n_target = (k_edge.size - 1) * (mu_edge.size - 1)
-    power_sum = np.empty(n_target, dtype=np.float64)
-    weight_sum = np.empty(n_target, dtype=np.float64)
-    k_sum = np.empty(n_target, dtype=np.float64)
-    mu_sum = np.empty(n_target, dtype=np.float64)
-    cal_ps_from_ps_2d_ap_cpp(
-        ps_2d, k_2d, modes_2d, kperp_edges, kparallel_edges, k_edge, mu_edge,
-        float(alpha_perp), float(alpha_parallel), float(amplitude), int(subcell_n),
-        power_sum, weight_sum, k_sum, mu_sum,
-    )
-    nonzero = weight_sum > 0.0
-    power = np.full(n_target, np.nan, dtype=np.float64)
-    k_output = np.full(n_target, np.nan, dtype=np.float64)
-    mu_output = np.full(n_target, np.nan, dtype=np.float64)
-    power[nonzero] = power_sum[nonzero] / weight_sum[nonzero]
-    k_output[nonzero] = k_sum[nonzero] / weight_sum[nonzero]
-    mu_output[nonzero] = mu_sum[nonzero] / weight_sum[nonzero]
-    return power, k_output, mu_output, weight_sum

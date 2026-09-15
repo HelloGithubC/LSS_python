@@ -1,4 +1,4 @@
-import numpy as np 
+import numpy as np
 from numba import njit
 import math
 
@@ -6,15 +6,37 @@ from .base import Hz, DA, Hz_w0wa
 from .tpcf import xismu
 from .HI import cal_HI_factor
 
-def tpcf_convert_main(xismu:xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0,smin_mapping=3.0, smax_mapping=60.0, c_api=True) -> xismu | None:
+
+def _ap_convert_factors(redshift, omega_mf, w_f, omega_mm, w_m, wa_f=None, wa_m=None):
+    if wa_f is None or wa_m is None:
+        Hz_f, Hz_m = Hz(redshift, omega_mf, w_f), Hz(redshift, omega_mm, w_m)
+        DA_f, DA_m = DA(redshift, omega_mf, w_f), DA(redshift, omega_mm, w_m)
+    else:
+        Hz_f, Hz_m = Hz_w0wa(redshift, omega_mf, w_f, wa_f), Hz_w0wa(redshift, omega_mm, w_m, wa_m)
+        DA_f, DA_m = DA(redshift, omega_mf, w_f, wa_f), DA(redshift, omega_mm, w_m, wa_m)
+    return DA_m / DA_f, Hz_f / Hz_m
+
+
+def _should_convert(redshift, omega_mf, w_f, omega_mm, w_m, wa_f=None, wa_m=None, ap_tol=1e-5):
+    """Decide by the Euclidean distance of (perp-1, parallel-1) instead of
+    comparing each cosmological parameter independently."""
+    perp, parallel = _ap_convert_factors(redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m)
+    ap_distance = math.sqrt((perp - 1.0) ** 2 + (parallel - 1.0) ** 2)
+    return ap_distance >= ap_tol, perp, parallel
+
+
+def tpcf_convert_main(xismu: xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0, smin_mapping=3.0, smax_mapping=60.0, c_api=True, ap_tol=1e-5) -> xismu | None:
     if xismu.xis is not None:
         sbin = xismu.xis.shape[0]
         mubin = xismu.xis.shape[1]
     else:
         raise ValueError("xismu.xis is None")
 
-    if abs(omega_mm - omega_mf) < 1e-8 and abs(w_m - w_f) < 1e-8 and abs(wa_m - wa_f) < 1e-8 or redshift < 1e-5:
-        print("Warning: omega_mm and w_m is too close to omega_mf and w_f, or redshift is too small, return xismu directly")
+    should_convert, _, _ = _should_convert(
+        redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m, ap_tol=ap_tol
+    )
+    if not should_convert:
+        print(f"Warning: AP effect is negligible (AP distance < {ap_tol:g}), return xismu directly")
         return assis_xismu
 
     if convert_method == "dense":
@@ -127,27 +149,13 @@ def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh
 
     return fftpower_new
 
-def ps_2d_convert_main(fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift, mesh_done_norm=True, w_af=None, w_am=None):
+def _ps_2d_convert_fallback(fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift, mesh_done_norm=True, w_af=None, w_am=None):
     """
     fftpower_2d: The FFTPower2D object
     """
     from .fftpower import FFTPower2D
     z = redshift
-    if w_af is None or w_am is None:
-        if abs(omega_mm - omega_mf) < 1e-5 and abs(w_m - w_f) < 1e-5 or redshift < 1e-3:
-            print("Warning: omega_mm and w_m is too close to omega_mf and w_f, or redshift is too small, return fftpower_2d directly")
-            return fftpower_2d
-        Hz_f, Hz_m = Hz(z, omega_mf, w_f), Hz(z, omega_mm, w_m)
-        DA_f, DA_m = DA(z, omega_mf, w_f), DA(z, omega_mm, w_m)
-    else:
-        if abs(omega_mm - omega_mf) < 1e-5 and abs(w_m - w_f) < 1e-5 and abs(w_am - w_af) < 1e-5 or redshift < 1e-3:
-            print("Warning: omega_mm, w_m and w_am is too close to omega_mf, w_f and w_af, or redshift is too small, return fftpower_2d directly")
-            return fftpower_2d
-        from .base import Hz_w0wa
-        Hz_f, Hz_m = Hz_w0wa(z, omega_mf, w_f, w_af), Hz_w0wa(z, omega_mm, w_m, w_am)
-        DA_f, DA_m = DA(z, omega_mf, w_f, w_af), DA(z, omega_mm, w_m, w_am)
-    perp_convert_factor = DA_m / DA_f
-    parallel_convert_factor = Hz_f / Hz_m
+    perp_convert_factor, parallel_convert_factor = _ap_convert_factors(z, omega_mf, w_f, omega_mm, w_m, w_af, w_am)
 
     k_2d = fftpower_2d.k_2d
     boxsize = fftpower_2d.attrs["BoxSize"]
@@ -163,8 +171,13 @@ def ps_2d_convert_main(fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift, mesh
     fftpower_new.k_2d = k_2d_converted 
     fftpower_new.ps_2d = np.copy(fftpower_2d.ps_2d)
     fftpower_new.modes_2d = fftpower_2d.modes_2d
+    if fftpower_2d.kperp_edges is not None:
+        fftpower_new.kperp_edges = np.copy(fftpower_2d.kperp_edges) / perp_convert_factor
+    if fftpower_2d.kparallel_edges is not None:
+        fftpower_new.kparallel_edges = np.copy(fftpower_2d.kparallel_edges) / parallel_convert_factor
     fftpower_new.removed_shotnoise = fftpower_2d.removed_shotnoise
-    fftpower_new.attrs = fftpower_2d.attrs
+    fftpower_new.attrs = dict(fftpower_2d.attrs)
+    fftpower_new.attrs["BoxSize"] = boxsize_array
 
     convert_prod = perp_convert_factor**2 * parallel_convert_factor
     if mesh_done_norm:
@@ -176,7 +189,77 @@ def ps_2d_convert_main(fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift, mesh
 
     return fftpower_new
 
-def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxsize_old, wa_f=0.0, wa_m=None, los_axis=2, inplace=False, return_boxsize_new=False):
+def ps_2d_convert_main(
+    fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift,
+    mesh_done_norm=True, w_af=None, w_am=None,
+    kmin=0.1, kmax=2.1, dk=0.01, Nmu=20,
+    mode="2d", k_logarithmic=False, nthreads=1, subcell_n=1, c_api=True,
+    ap_tol=1e-5,
+):
+    """Apply the 2D AP transformation and return a binned :class:`FFTPower`.
+
+    ``subcell_n=1`` is the exact compatibility path: it first performs the
+    established coordinate transformation and then invokes
+    :meth:`FFTPower2D.cal_pkmu_from_ps_2d`.  The same standard rebinning is
+    used whenever no AP transformation is needed, irrespective of
+    ``subcell_n``. Larger values otherwise use the direct, conservative AP
+    rebinning implementation, which samples each original 2D cell into
+    ``subcell_n`` by ``subcell_n`` subcells.
+
+    Parameters controlling the output P(k, mu) bins are forwarded to the
+    selected rebinning implementation.  The return value is always an
+    :class:`FFTPower`; callers must not apply a second P(k, mu) conversion.
+    """
+    if isinstance(subcell_n, (bool, np.bool_)) or not isinstance(
+        subcell_n, (int, np.integer)
+    ) or subcell_n < 1:
+        raise ValueError("subcell_n must be a positive integer.")
+
+    should_convert, _, _ = _should_convert(
+        redshift, omega_mf, w_f, omega_mm, w_m, w_af, w_am, ap_tol=ap_tol
+    )
+    no_ap_transformation = not should_convert
+
+    if subcell_n == 1 or no_ap_transformation:
+        converted = _ps_2d_convert_fallback(
+            fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift,
+            mesh_done_norm=mesh_done_norm, w_af=w_af, w_am=w_am,
+        )
+        return converted.cal_pkmu_from_ps_2d(
+            kmin=kmin,
+            kmax=kmax,
+            dk=dk,
+            Nmu=Nmu,
+            mode=mode,
+            k_logarithmic=k_logarithmic,
+            nthreads=nthreads,
+            c_api=c_api,
+        )
+
+    if w_af is not None or w_am is not None:
+        raise NotImplementedError(
+            "w0wa AP rebinning is currently available only with subcell_n=1."
+        )
+
+    return fftpower_2d.cal_pkmu_from_ps_2d_ap(
+        omega_mf,
+        w_f,
+        omega_mm,
+        w_m,
+        redshift,
+        kmin=kmin,
+        kmax=kmax,
+        dk=dk,
+        Nmu=Nmu,
+        mode=mode,
+        k_logarithmic=k_logarithmic,
+        mesh_done_norm=mesh_done_norm,
+        subcell_n=subcell_n,
+        nthreads=nthreads,
+        c_api=c_api,
+    )
+
+def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxsize_old, wa_f=0.0, wa_m=None, los_axis=2, inplace=False, return_boxsize_new=False, ap_tol=1e-5):
     """
     position: The position of the particles. ndarray with shape (N, 3)
     boxsize: The boxsize of the simulation. float or ndarray is OK.
@@ -186,27 +269,19 @@ def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxs
     """
     if not inplace:
         position = np.copy(position)
-    
-    if wa_m is not None:
-        if abs(omega_mm - omega_mf) < 1e-8 and abs(w_m - w_f) < 1e-8 and abs(wa_m - wa_f) < 1e-8 or redshift < 1e-5:
-            print("Warning: omega_mm, w_m and wa_m is too close to omega_mf, w_f and wa_f, or redshift is too small, return position directly")
-            if return_boxsize_new:
-                return position, boxsize_old
-            else:
-                return position
-        Hz_f, Hz_m = Hz_w0wa(redshift, omega_mf, w_f, wa_f), Hz_w0wa(redshift, omega_mm, w_m, wa_m)
-        DA_f, DA_m = DA(redshift, omega_mf, w_f, wa_f), DA(redshift, omega_mm, w_m, wa_m)
-    else:
-        if abs(omega_mm - omega_mf) < 1e-8 and abs(w_m - w_f) < 1e-8 or redshift < 1e-5:
-            print("Warning: omega_mm and w_m is too close to omega_mf and w_f, or redshift is too small, return position directly")
-            if return_boxsize_new:
-                return position, boxsize_old
-            else:
-                return position
-        Hz_f, Hz_m = Hz(redshift, omega_mf, w_f), Hz(redshift, omega_mm, w_m)
-        DA_f, DA_m = DA(redshift, omega_mf, w_f), DA(redshift, omega_mm, w_m)
-    perp_convert_factor = DA_m / DA_f
-    parallel_convert_factor = Hz_f / Hz_m
+
+    should_convert, _, _ = _should_convert(
+        redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m, ap_tol=ap_tol
+    )
+    if not should_convert:
+        print(f"Warning: AP effect is negligible (AP distance < {ap_tol:g}), return position directly")
+        if return_boxsize_new:
+            return position, boxsize_old
+        else:
+            return position
+    perp_convert_factor, parallel_convert_factor = _ap_convert_factors(
+        redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m
+    )
     convert_array = np.array(
         [perp_convert_factor, perp_convert_factor, parallel_convert_factor]
     )

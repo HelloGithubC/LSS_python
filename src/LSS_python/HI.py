@@ -105,7 +105,7 @@ def _M_HI_halo_vectorized(Mh_array, z, h, alpha_grid, m0_grid, mmin_grid, mhard_
     return result
 
 
-@njit(cache=True, parallel=True)
+@njit(parallel=True)
 def _M_HI_halo_parallel(Mh_array, z_array, h, alpha_grid, m0_grid, mmin_grid, mhard_grid, redshift_grid, grid_size):
     """
     Calculate HI mass for arrays of halo masses and redshifts (parallel version).

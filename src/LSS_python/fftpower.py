@@ -556,6 +556,10 @@ class FFTPower2D:
         self.k_2d = None
         self.ps_2d = None
         self.modes_2d = None
+        # The edges are retained because k_2d contains only mode-weighted cell
+        # centres and is insufficient for a conservative AP remapping.
+        self.kperp_edges = None
+        self.kparallel_edges = None
         self.removed_shotnoise = False
         self.attrs = {
             "shotnoise": 0.0,
@@ -578,6 +582,21 @@ class FFTPower2D:
             c_api=c_api,
             dk=dk
         )
+        # Keep the exact binning used by both the Python and C++ backends.
+        # The public wrapper changes a negative dk to None, which means the
+        # fundamental mode in the line-of-sight direction.
+        boxsize = np.asarray(mesh.attrs["BoxSize"], dtype=float)
+        nmesh = np.asarray(mesh.attrs["Nmesh"], dtype=int)
+        if dk is None or dk < 0:
+            dk_2d = 2.0 * np.pi / boxsize[2]
+        else:
+            dk_2d = float(dk)
+        kx = np.fft.fftfreq(nmesh[0], d=boxsize[0] / nmesh[0]) * 2.0 * np.pi
+        ky = np.fft.fftfreq(nmesh[1], d=boxsize[1] / nmesh[1]) * 2.0 * np.pi
+        kz = np.fft.rfftfreq(nmesh[2], d=boxsize[2] / nmesh[2]) * 2.0 * np.pi
+        kperp_max = np.max(np.sqrt(kx**2 + ky**2))
+        self.kperp_edges = np.arange(0.0, kperp_max + dk_2d, dk_2d)
+        self.kparallel_edges = np.arange(kz[0], kz[-1] + dk_2d, dk_2d)
         self.removed_shotnoise = True
         self.attrs["shotnoise"] = mesh.attrs["shotnoise"]
     
@@ -603,6 +622,213 @@ class FFTPower2D:
         fftpower.power["modes_2d"] = self.modes_2d
         return fftpower
 
+    def cal_pkmu_from_ps_2d_ap(
+        self,
+        omega_mf, w_f, omega_mm, w_m, redshift,
+        kmin, kmax, dk, Nmu=None,
+        mode="2d", k_logarithmic=False,
+        mesh_done_norm=True, subcell_n=4, nthreads=1, c_api=True,
+    ):
+        """Apply an AP remapping while conservatively rebinning a 2D spectrum.
+
+        The AP factors follow :func:`LSS_python.AP.ps_convert_main`:
+        ``alpha_perp = DA_m / DA_f`` and ``alpha_parallel = Hz_f / Hz_m``.
+        ``subcell_n=1`` reproduces the existing centre-coordinate assignment.
+        For larger values, each source (k_perp, k_parallel) cell is represented
+        by a regular ``subcell_n`` by ``subcell_n`` midpoint quadrature.  The
+        fractional mode weights are proportional to k_perp, as appropriate for
+        the cylindrical Fourier-space measure.  The returned ``modes`` are
+        therefore floating-point effective mode weights when ``subcell_n > 1``.
+
+        This method avoids reconstructing a 3D power array, but cannot recover
+        the exact locations of individual modes that were averaged in ps_2d.
+        """
+        if self.k_2d is None or self.ps_2d is None or self.modes_2d is None:
+            raise ValueError("cal_ps_2d_from_mesh should be called first.")
+        if self.kperp_edges is None or self.kparallel_edges is None:
+            raise ValueError(
+                "kperp_edges and kparallel_edges are unavailable. Recreate the "
+                "FFTPower2D object with cal_ps_2d_from_mesh before AP rebinning."
+            )
+        from .base import Hz, DA
+
+        hz_f = Hz(redshift, omega_mf, w_f)
+        hz_m = Hz(redshift, omega_mm, w_m)
+        da_f = DA(redshift, omega_mf, w_f)
+        da_m = DA(redshift, omega_mm, w_m)
+        alpha_perp = da_m / da_f
+        alpha_parallel = hz_f / hz_m
+        if not np.isfinite(alpha_perp) or not np.isfinite(alpha_parallel):
+            raise ValueError("AP conversion factors must be finite.")
+        if alpha_perp <= 0.0 or alpha_parallel <= 0.0:
+            raise ValueError("AP conversion factors must be positive.")
+        if isinstance(subcell_n, (bool, np.bool_)) or not isinstance(
+            subcell_n, (int, np.integer)
+        ) or subcell_n < 1:
+            raise ValueError("subcell_n must be a positive integer.")
+        if mode not in ("1d", "2d"):
+            raise ValueError("mode must be '1d' or '2d'.")
+        if k_logarithmic:
+            raise NotImplementedError("k_logarithmic=True is not supported for AP rebinning.")
+        if dk < 0:
+            dk = 2.0 * np.pi / np.asarray(self.attrs["BoxSize"], dtype=float)[2]
+            dk /= alpha_parallel
+        if not np.isscalar(dk) or dk <= 0.0:
+            raise ValueError("dk must be a positive scalar.")
+
+        k_edge = np.arange(kmin, kmax, dk, dtype=float)
+        if k_edge.size < 2:
+            raise ValueError("kmin, kmax, and dk must define at least one k bin.")
+        if mode == "2d":
+            if not isinstance(Nmu, (int, np.integer)) or Nmu < 1:
+                raise ValueError("Nmu must be a positive integer when mode='2d'.")
+            mu_edge = np.linspace(0.0, 1.0, Nmu + 1)
+        else:
+            Nmu = 1
+            mu_edge = np.array([0.0, 1.0])
+
+        if not isinstance(nthreads, (int, np.integer)) or nthreads != 1:
+            raise ValueError("cal_pkmu_from_ps_2d_ap currently supports nthreads=1 only")
+        if not isinstance(c_api, (bool, np.bool_)):
+            raise TypeError("c_api must be a boolean")
+
+        n_k = k_edge.size - 1
+        if c_api:
+            from .CPP.fftpower_pybind import cal_pkmu_from_ps_2d_ap as cal_pkmu_from_ps_2d_ap_cpp
+
+            jacobian = alpha_perp**2 * alpha_parallel
+            amplitude = jacobian if mesh_done_norm else 1.0 / jacobian
+            power, k_output, mu_output, weight_sum = cal_pkmu_from_ps_2d_ap_cpp(
+                self.ps_2d, self.k_2d, self.modes_2d,
+                self.kperp_edges, self.kparallel_edges, k_edge, mu_edge,
+                alpha_perp, alpha_parallel, amplitude, subcell_n,
+            )
+            boxsize = np.asarray(self.attrs["BoxSize"], dtype=float)
+            boxsize_ap = boxsize * np.array([alpha_perp, alpha_perp, alpha_parallel])
+            fftpower = FFTPower(self.attrs["Nmesh"], boxsize_ap)
+            fftpower.removed_shotnoise = self.removed_shotnoise
+            fftpower.attrs["shotnoise"] = 0.0 if self.removed_shotnoise else self.attrs["shotnoise"]
+            fftpower.attrs.update({
+                "mesh_done_norm": mesh_done_norm, "kmin": kmin, "kmax": kmax,
+                "dk": dk, "Nk": n_k, "Nmu": Nmu, "mode": mode,
+                "alpha_perp": alpha_perp, "alpha_parallel": alpha_parallel,
+                "subcell_n": subcell_n,
+            })
+            shape = (n_k, Nmu)
+            if mode == "2d":
+                fftpower.power = {"k": k_output.reshape(shape), "mu": mu_output.reshape(shape),
+                                  "Pkmu": power.reshape(shape), "modes": weight_sum.reshape(shape),
+                                  "modes_2d": self.modes_2d}
+            else:
+                fftpower.power = {"k": k_output, "Pk": power, "modes": weight_sum,
+                                  "modes_2d": self.modes_2d}
+            return fftpower
+
+        n_target = n_k * Nmu
+        power_sum = np.zeros(n_target, dtype=float)
+        weight_sum = np.zeros(n_target, dtype=float)
+        k_sum = np.zeros(n_target, dtype=float)
+        mu_sum = np.zeros(n_target, dtype=float)
+        valid = np.isfinite(self.ps_2d) & (self.modes_2d > 0)
+        source_power = self.ps_2d
+        source_modes = self.modes_2d.astype(float, copy=False)
+        jacobian = alpha_perp**2 * alpha_parallel
+        amplitude = jacobian if mesh_done_norm else 1.0 / jacobian
+
+        def accumulate(kperp_source, kparallel_source, fractional_weight):
+            kperp = kperp_source / alpha_perp
+            kparallel = kparallel_source / alpha_parallel
+            k = np.sqrt(kperp**2 + kparallel**2)
+            k_index = np.searchsorted(k_edge, k, side="right") - 1
+            # Match the established convention that the final right edge is
+            # included in the last bin.
+            k_index[k_index == n_k] = n_k - 1
+            in_range = valid & (k >= k_edge[0]) & (k <= k_edge[-1])
+            if mode == "2d":
+                mu = np.divide(kparallel, k, out=np.zeros_like(k), where=k > 0.0)
+                mu_index = np.searchsorted(mu_edge, mu, side="right") - 1
+                mu_index[mu_index == Nmu] = Nmu - 1
+                in_range &= (mu >= mu_edge[0]) & (mu <= mu_edge[-1])
+            else:
+                mu = np.zeros_like(k)
+                mu_index = np.zeros_like(k_index)
+
+            target_index = k_index * Nmu + mu_index
+            weights = source_modes * fractional_weight
+            select = in_range.ravel()
+            indices = target_index.ravel()[select]
+            selected_weights = weights.ravel()[select]
+            power_sum[:] += np.bincount(
+                indices, weights=(selected_weights * source_power.ravel()[select] * amplitude), minlength=n_target
+            )
+            weight_sum[:] += np.bincount(indices, weights=selected_weights, minlength=n_target)
+            k_sum[:] += np.bincount(indices, weights=selected_weights * k.ravel()[select], minlength=n_target)
+            mu_sum[:] += np.bincount(indices, weights=selected_weights * mu.ravel()[select], minlength=n_target)
+
+        if subcell_n == 1:
+            # This path deliberately uses the stored mode-weighted centres so
+            # it is a numerical control matching the previous implementation.
+            accumulate(self.k_2d[..., 0], self.k_2d[..., 1], np.ones_like(source_modes))
+        else:
+            perp_lo, perp_hi = self.kperp_edges[:-1], self.kperp_edges[1:]
+            parallel_lo, parallel_hi = self.kparallel_edges[:-1], self.kparallel_edges[1:]
+            if (perp_lo.size, parallel_lo.size) != self.ps_2d.shape:
+                raise ValueError("Stored 2D bin edges are inconsistent with ps_2d.")
+            midpoint = (np.arange(subcell_n, dtype=float) + 0.5) / subcell_n
+            perp_nodes = perp_lo[:, None] + (perp_hi - perp_lo)[:, None] * midpoint
+            # Sum over both the perpendicular and parallel subcells. The
+            # latter contributes a factor subcell_n to the normalization.
+            perp_fraction = perp_nodes / (subcell_n * np.sum(perp_nodes, axis=1, keepdims=True))
+            parallel_nodes = parallel_lo[:, None] + (parallel_hi - parallel_lo)[:, None] * midpoint
+            for i_perp in range(subcell_n):
+                kperp_source = perp_nodes[:, i_perp, None]
+                fractional_weight = perp_fraction[:, i_perp, None]
+                for i_parallel in range(subcell_n):
+                    accumulate(kperp_source, parallel_nodes[:, i_parallel][None, :], fractional_weight)
+
+        nonzero = weight_sum > 0.0
+        power = np.full(n_target, np.nan, dtype=float)
+        k_output = np.full(n_target, np.nan, dtype=float)
+        mu_output = np.full(n_target, np.nan, dtype=float)
+        power[nonzero] = power_sum[nonzero] / weight_sum[nonzero]
+        k_output[nonzero] = k_sum[nonzero] / weight_sum[nonzero]
+        mu_output[nonzero] = mu_sum[nonzero] / weight_sum[nonzero]
+
+        boxsize = np.asarray(self.attrs["BoxSize"], dtype=float)
+        boxsize_ap = boxsize * np.array([alpha_perp, alpha_perp, alpha_parallel])
+        fftpower = FFTPower(self.attrs["Nmesh"], boxsize_ap)
+        fftpower.removed_shotnoise = self.removed_shotnoise
+        fftpower.attrs["shotnoise"] = 0.0 if self.removed_shotnoise else self.attrs["shotnoise"]
+        fftpower.attrs.update({
+            "mesh_done_norm": mesh_done_norm,
+            "kmin": kmin,
+            "kmax": kmax,
+            "dk": dk,
+            "Nk": n_k,
+            "Nmu": Nmu,
+            "mode": mode,
+            "alpha_perp": alpha_perp,
+            "alpha_parallel": alpha_parallel,
+            "subcell_n": subcell_n,
+        })
+        shape = (n_k, Nmu)
+        if mode == "2d":
+            fftpower.power = {
+                "k": k_output.reshape(shape),
+                "mu": mu_output.reshape(shape),
+                "Pkmu": power.reshape(shape),
+                "modes": weight_sum.reshape(shape),
+                "modes_2d": self.modes_2d,
+            }
+        else:
+            fftpower.power = {
+                "k": k_output,
+                "Pk": power,
+                "modes": weight_sum,
+                "modes_2d": self.modes_2d,
+            }
+        return fftpower
+
     def save(self, filename):
         import joblib
 
@@ -610,6 +836,8 @@ class FFTPower2D:
             "k_2d": self.k_2d,
             "ps_2d": self.ps_2d,
             "modes_2d": self.modes_2d,
+            "kperp_edges": self.kperp_edges,
+            "kparallel_edges": self.kparallel_edges,
             "attrs": self.attrs,
             "removed_shotnoise": self.removed_shotnoise,
         }
@@ -620,10 +848,23 @@ class FFTPower2D:
         joblib.dump(save_dict, filename)
 
     @classmethod
-    def load(cls, filename):
+    def load(cls, filename, mmap_mode=None):
+        """
+        Load a saved FFTPower2D object from a joblib file.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the saved file.
+        mmap_mode : str or None, optional
+            joblib mmap mode (e.g. ``"r"``).  When given, the stored numpy
+            arrays are memory-mapped read-only from disk instead of being
+            fully deserialized into RAM; the returned object must then be
+            treated as read-only.  Default: None (fully load into RAM).
+        """
         import joblib
 
-        load_dict = joblib.load(filename)
+        load_dict = joblib.load(filename, mmap_mode=mmap_mode)
         self = cls(
             load_dict["attrs"]["Nmesh"],
             load_dict["attrs"]["BoxSize"],
@@ -631,6 +872,8 @@ class FFTPower2D:
         self.k_2d = load_dict["k_2d"]
         self.ps_2d = load_dict["ps_2d"]
         self.modes_2d = load_dict["modes_2d"]
+        self.kperp_edges = load_dict.get("kperp_edges")
+        self.kparallel_edges = load_dict.get("kparallel_edges")
         self.attrs = load_dict["attrs"]
         self.removed_shotnoise = load_dict.get("removed_shotnoise", False)
         return self
@@ -652,6 +895,8 @@ class FFTPower2D:
                 "k_2d": obj.k_2d,
                 "ps_2d": obj.ps_2d,
                 "modes_2d": obj.modes_2d,
+                "kperp_edges": obj.kperp_edges,
+                "kparallel_edges": obj.kparallel_edges,
                 "attrs": obj.attrs,
                 "removed_shotnoise": obj.removed_shotnoise,
             }
@@ -663,19 +908,24 @@ class FFTPower2D:
         joblib.dump(save_list, filename)
     
     @classmethod
-    def load_list(cls, filename):
+    def load_list(cls, filename, mmap_mode=None):
         """
         Load multiple FFTPpower2D objects from a file.
-        
+
         Args:
             filename: Input file path
-        
+            mmap_mode: Optional joblib mmap mode (e.g. ``"r"``).  When given,
+                the stored numpy arrays are memory-mapped read-only from disk
+                instead of being fully deserialized into RAM; the returned
+                objects must then be treated as read-only.  Default: None
+                (fully load into RAM).
+
         Returns:
             A list of FFTPpower2D objects
         """
         import joblib
-        
-        load_list = joblib.load(filename)
+
+        load_list = joblib.load(filename, mmap_mode=mmap_mode)
         obj_list = []
         for load_dict in load_list:
             obj = cls(
@@ -685,12 +935,14 @@ class FFTPower2D:
             obj.k_2d = load_dict["k_2d"]
             obj.ps_2d = load_dict["ps_2d"]
             obj.modes_2d = load_dict["modes_2d"]
+            obj.kperp_edges = load_dict.get("kperp_edges")
+            obj.kparallel_edges = load_dict.get("kparallel_edges")
             obj.attrs = load_dict["attrs"]
             obj.removed_shotnoise = load_dict.get("removed_shotnoise", False)
             obj_list.append(obj)
         return obj_list
 
-def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.02, shift=5,integrate_func=None, integrate_kwargs=None, **kwargs):
+def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.02, shift=0,integrate_func=None, integrate_kwargs=None, **kwargs):
     """Compute the difference of integrated power spectra between two snapshots.
 
     For each snapshot in ``snap_ids``, the corresponding ``FFTPower2D`` (or
