@@ -50,6 +50,15 @@ def read_data(filename, weight_set_one=False, with_weight=False):
     ncols = source.shape[1]
     target_cols = 4 if with_weight else 3
 
+    # Fail loudly when weights are requested but the catalog has no weight
+    # column; silently filling it with 1.0 would fake an unweighted result.
+    if with_weight and not weight_set_one and ncols < 4:
+        raise ValueError(
+            f"--with_weight requires a 4th (weight) column, but {filename} "
+            f"has only {ncols} columns. Add the weight column or drop "
+            "--with_weight."
+        )
+
     # Fast path: input already has the required shape and no weight
     # modification is needed, return directly without allocating new memory
     if ncols == target_cols and not weight_set_one:

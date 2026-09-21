@@ -204,7 +204,9 @@ def ps_2d_convert_main(
     used whenever no AP transformation is needed, irrespective of
     ``subcell_n``. Larger values otherwise use the direct, conservative AP
     rebinning implementation, which samples each original 2D cell into
-    ``subcell_n`` by ``subcell_n`` subcells.
+    ``subcell_n`` by ``subcell_n`` subcells. Both the constant-w and CPL
+    ``w0wa`` backgrounds are supported; pass ``w_af`` and ``w_am`` together
+    to select the latter.
 
     Parameters controlling the output P(k, mu) bins are forwarded to the
     selected rebinning implementation.  The return value is always an
@@ -236,11 +238,6 @@ def ps_2d_convert_main(
             c_api=c_api,
         )
 
-    if w_af is not None or w_am is not None:
-        raise NotImplementedError(
-            "w0wa AP rebinning is currently available only with subcell_n=1."
-        )
-
     return fftpower_2d.cal_pkmu_from_ps_2d_ap(
         omega_mf,
         w_f,
@@ -257,6 +254,8 @@ def ps_2d_convert_main(
         subcell_n=subcell_n,
         nthreads=nthreads,
         c_api=c_api,
+        wa_f=w_af,
+        wa_m=w_am,
     )
 
 def snap_box_convert_main(position, omega_mf, w_f, omega_mm, w_m, redshift, boxsize_old, wa_f=0.0, wa_m=None, los_axis=2, inplace=False, return_boxsize_new=False, ap_tol=1e-5):

@@ -628,11 +628,14 @@ class FFTPower2D:
         kmin, kmax, dk, Nmu=None,
         mode="2d", k_logarithmic=False,
         mesh_done_norm=True, subcell_n=4, nthreads=1, c_api=True,
+        wa_f=None, wa_m=None,
     ):
         """Apply an AP remapping while conservatively rebinning a 2D spectrum.
 
         The AP factors follow :func:`LSS_python.AP.ps_convert_main`:
         ``alpha_perp = DA_m / DA_f`` and ``alpha_parallel = Hz_f / Hz_m``.
+        Supplying both ``wa_f`` and ``wa_m`` selects the CPL ``w0wa``
+        background when evaluating those factors.
         ``subcell_n=1`` reproduces the existing centre-coordinate assignment.
         For larger values, each source (k_perp, k_parallel) cell is represented
         by a regular ``subcell_n`` by ``subcell_n`` midpoint quadrature.  The
@@ -650,12 +653,20 @@ class FFTPower2D:
                 "kperp_edges and kparallel_edges are unavailable. Recreate the "
                 "FFTPower2D object with cal_ps_2d_from_mesh before AP rebinning."
             )
-        from .base import Hz, DA
+        from .base import DA, Hz, Hz_w0wa
 
-        hz_f = Hz(redshift, omega_mf, w_f)
-        hz_m = Hz(redshift, omega_mm, w_m)
-        da_f = DA(redshift, omega_mf, w_f)
-        da_m = DA(redshift, omega_mm, w_m)
+        if (wa_f is None) != (wa_m is None):
+            raise ValueError("wa_f and wa_m must be provided together.")
+        if wa_f is None:
+            hz_f = Hz(redshift, omega_mf, w_f)
+            hz_m = Hz(redshift, omega_mm, w_m)
+            da_f = DA(redshift, omega_mf, w_f)
+            da_m = DA(redshift, omega_mm, w_m)
+        else:
+            hz_f = Hz_w0wa(redshift, omega_mf, w_f, wa_f)
+            hz_m = Hz_w0wa(redshift, omega_mm, w_m, wa_m)
+            da_f = DA(redshift, omega_mf, w_f, wa_f)
+            da_m = DA(redshift, omega_mm, w_m, wa_m)
         alpha_perp = da_m / da_f
         alpha_parallel = hz_f / hz_m
         if not np.isfinite(alpha_perp) or not np.isfinite(alpha_parallel):
@@ -942,7 +953,7 @@ class FFTPower2D:
             obj_list.append(obj)
         return obj_list
 
-def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.02, shift=0,integrate_func=None, integrate_kwargs=None, **kwargs):
+def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.02, shift=0, return_mu=False, integrate_func=None, integrate_kwargs=None, **kwargs):
     """Compute the difference of integrated power spectra between two snapshots.
 
     For each snapshot in ``snap_ids``, the corresponding ``FFTPower2D`` (or
@@ -971,8 +982,12 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.0
         k bin width for ``cal_pkmu_from_ps_2d`` conversion (default: 0.02).
     shift : int, optional
         Number of bins to roll the first snapshot's P(mu) array along the
-        sample axis before subtraction (default: 5).  Set to 0 automatically
+        sample axis before subtraction (default: 0).  Set to 0 automatically
         when only one object is present for a snapshot.
+    return_mu : bool, optional
+        If True, prepend the mu values as the first row of the returned array.
+        With a custom ``integrate_func``, the function must return
+        ``(mu, integrated_value)`` when this option is enabled.
     integrate_func : callable, optional
         Custom integration function.  Its first argument must be an
         ``FFTPower2D`` instance.  When ``None`` (default), the built-in
@@ -1001,9 +1016,10 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.0
     Returns
     -------
     ndarray
-        Difference array.  If each snapshot has a single object, returns a
-        1-D array P(mu).  Otherwise returns a 2-D array of shape
-        ``(n_objects, n_mu_bins)``.
+        Difference array.  If ``return_mu`` is False and each snapshot has a
+        single object, returns a 1-D array P(mu).  Otherwise the result is a
+        2-D array.  When ``return_mu`` is True, the first row contains the mu
+        values and the remaining rows contain the difference array.
     """
     kmin = kwargs.get("kmin", 0.1)
     kmax = kwargs.get("kmax", 2.1)
@@ -1016,7 +1032,8 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.0
     remove_last_bin = kwargs.get("remove_last_bin", True)
 
     Pmu_array_list = []
-    for snap_id in snap_ids:
+    mu_temp = None
+    for snap_index, snap_id in enumerate(snap_ids):
         fftpower_2d_list = fftpowers_2d_dict[snap_id]
         if isinstance(fftpower_2d_list, FFTPower2D) or isinstance(fftpower_2d_list, FFTPower):
             fftpower_2d_list = [fftpower_2d_list, ]
@@ -1035,14 +1052,27 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.0
             else:
                 fftpower_temp = fftpower_2d
             if integrate_func is None:
-                Pmu_temp = fftpower_temp.intergrate_fftpower(k_min=k_min, k_max=k_max, mu_min=mu_min, mu_max=mu_max, use_fix_mu=True, norm=True, use_modes=with_modes, with_k2=with_k2, remove_last_bin=remove_last_bin)[1]
+                mu_current, Pmu_temp = fftpower_temp.intergrate_fftpower(k_min=k_min, k_max=k_max, mu_min=mu_min, mu_max=mu_max, use_fix_mu=True, norm=True, use_modes=with_modes, with_k2=with_k2, remove_last_bin=remove_last_bin)
             else:
                 if integrate_kwargs is None or not isinstance(integrate_kwargs, dict):
                     raise ValueError(f"integrate_kwargs must be a dict, but got {type(integrate_kwargs)}")
-                Pmu_temp = integrate_func(fftpower_temp, **integrate_kwargs)
+                integrate_result = integrate_func(fftpower_temp, **integrate_kwargs)
+                if return_mu:
+                    if not isinstance(integrate_result, tuple) or len(integrate_result) != 2:
+                        raise ValueError(
+                            "integrate_func must return (mu, integrated_value) when return_mu=True"
+                        )
+                    mu_current, Pmu_temp = integrate_result
+                else:
+                    Pmu_temp = integrate_result
+            if return_mu and snap_index == 0:
+                mu_temp = mu_current
             Pmu_list.append(Pmu_temp)
         Pmu_array_list.append(np.array(Pmu_list))
     Pmu_array = np.roll(Pmu_array_list[0], shift, axis=0) - np.array(Pmu_array_list[1])
+    if return_mu:
+        result_array = Pmu_array[0] if len(Pmu_array) == 1 else Pmu_array
+        return np.vstack((mu_temp, result_array))
     if len(Pmu_array) == 1:
         return Pmu_array[0]
     else:

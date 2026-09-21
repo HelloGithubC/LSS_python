@@ -443,8 +443,8 @@ if __name__ == "__main__":
     # Build Cobaya configuration - 直接在likelihood中传递数据成员
     if is_3param:
         default_omega_m_range = (0.0, 0.7)
-        default_w_range = (-2.0, 0.0)
-        default_wa_range = (-2.0, 1.0)
+        default_w_range = (-3.0, 1.0)
+        default_wa_range = (-3.0, 2.0)
     else:
         default_omega_m_range = (0.2, 0.5)
         default_w_range = (-1.5, -0.5)
