@@ -200,13 +200,14 @@ def ps_2d_convert_main(
 
     ``subcell_n=1`` is the exact compatibility path: it first performs the
     established coordinate transformation and then invokes
-    :meth:`FFTPower2D.cal_pkmu_from_ps_2d`.  The same standard rebinning is
-    used whenever no AP transformation is needed, irrespective of
-    ``subcell_n``. Larger values otherwise use the direct, conservative AP
-    rebinning implementation, which samples each original 2D cell into
-    ``subcell_n`` by ``subcell_n`` subcells. Both the constant-w and CPL
+    :meth:`FFTPower2D.cal_pkmu_from_ps_2d`. At zero redshift the ordinary
+    rebinning is used without AP conversion. At nonzero redshift, larger
+    values always use the direct, conservative AP rebinning implementation,
+    including at the fiducial cosmology; it samples each original 2D cell
+    into ``subcell_n`` by ``subcell_n`` subcells. Both the constant-w and CPL
     ``w0wa`` backgrounds are supported; pass ``w_af`` and ``w_am`` together
-    to select the latter.
+    to select the latter. ``ap_tol`` remains accepted for API compatibility
+    but does not select the power-spectrum rebinning path.
 
     Parameters controlling the output P(k, mu) bins are forwarded to the
     selected rebinning implementation.  The return value is always an
@@ -217,16 +218,14 @@ def ps_2d_convert_main(
     ) or subcell_n < 1:
         raise ValueError("subcell_n must be a positive integer.")
 
-    should_convert, _, _ = _should_convert(
-        redshift, omega_mf, w_f, omega_mm, w_m, w_af, w_am, ap_tol=ap_tol
-    )
-    no_ap_transformation = not should_convert
-
-    if subcell_n == 1 or no_ap_transformation:
-        converted = _ps_2d_convert_fallback(
-            fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift,
-            mesh_done_norm=mesh_done_norm, w_af=w_af, w_am=w_am,
-        )
+    if redshift == 0 or subcell_n == 1:
+        if redshift == 0:
+            converted = fftpower_2d
+        else:
+            converted = _ps_2d_convert_fallback(
+                fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift,
+                mesh_done_norm=mesh_done_norm, w_af=w_af, w_am=w_am,
+            )
         return converted.cal_pkmu_from_ps_2d(
             kmin=kmin,
             kmax=kmax,
