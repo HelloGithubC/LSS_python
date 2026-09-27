@@ -68,6 +68,7 @@ class xismu(object):
         S=None, Mu=None, 
         DD=None, DR=None, RR=None,
         set_data=True,
+        sum_wd=None, sum_wr=None, sum_wd2=None, sum_wr2=None,
     ):
         """
         data_type: CUTE, BINARY(As Corrfunc)
@@ -75,6 +76,8 @@ class xismu(object):
         filename: filename of data. If None, DD, DR, RR before normalization and other parameters are required.
         """
         self.smax, self.sbin, self.mubin = smax, sbin, mubin
+        self.sum_wd, self.sum_wr = sum_wd, sum_wr
+        self.sum_wd2, self.sum_wr2 = sum_wd2, sum_wr2
         
         if set_data:
             self.DDnorm, self.DRnorm, self.RRnorm = DDnorm, DRnorm, RRnorm
@@ -160,6 +163,8 @@ class xismu(object):
         result_dict["norm_d1d2"] = self.DDnorm 
         result_dict["norm_d1r2"] = self.DRnorm
         result_dict["norm_r1r2"] = self.RRnorm
+        for name in ("sum_wd", "sum_wr", "sum_wd2", "sum_wr2"):
+            result_dict[name] = getattr(self, name, None)
         
         result_dict["s_array"] = self.S[:,0] if self.S is not None else self.s_array
         result_dict["mu_array"] = self.Mu[0] if self.Mu is not None else self.mu_array
@@ -207,6 +212,8 @@ class xismu(object):
         self.DDnorm = source["norm_d1d2"]
         self.DRnorm = source["norm_d1r2"]
         self.RRnorm = source["norm_r1r2"]
+        for name in ("sum_wd", "sum_wr", "sum_wd2", "sum_wr2"):
+            setattr(self, name, source.get(name))
 
         self.xis = source.get("tpCF", None)
         if deal_with_0s0mu:
@@ -544,6 +551,10 @@ class xismu(object):
             DDnorm=self.DDnorm,
             DRnorm=self.DRnorm,
             RRnorm=self.RRnorm,
+            sum_wd=getattr(self, "sum_wd", None),
+            sum_wr=getattr(self, "sum_wr", None),
+            sum_wd2=getattr(self, "sum_wd2", None),
+            sum_wr2=getattr(self, "sum_wr2", None),
             Mu=self.Mu,
             S=self.S,
             DD=temp_DD,
@@ -650,6 +661,10 @@ class xismu(object):
             DDnorm=self.DDnorm,
             DRnorm=self.DRnorm,
             RRnorm=self.RRnorm,
+            sum_wd=getattr(self, "sum_wd", None),
+            sum_wr=getattr(self, "sum_wr", None),
+            sum_wd2=getattr(self, "sum_wd2", None),
+            sum_wr2=getattr(self, "sum_wr2", None),
             Mu=Mu_temp,
             S=S_temp,
             DD=temp_DD,
@@ -877,8 +892,8 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
     norm_r1d2 = sum_wr * sum_wd_2
 
     if abs(result_dict["sedges"][0] - 0.0) < 1e-10 and abs(result_dict["muedges"][0] - 0.0) < 1e-10:
-        DD[0,0] -= sum_wd 
-        RR[0,0] -= sum_wr 
+        DD[0,0] -= sum_wd2
+        RR[0,0] -= sum_wr2
 
     dd1d2 = DD / norm_d1d2
     dd1r2 = DR / norm_d1r2
@@ -889,6 +904,10 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
     dr1r2_remove_0[dr1r2_remove_0 == 0] = 1e-15
 
     result_dict.update({
+        "sum_wd": sum_wd,
+        "sum_wr": sum_wr,
+        "sum_wd2": sum_wd2,
+        "sum_wr2": sum_wr2,
         "norm_d1d2": norm_d1d2,
         "norm_r1r2": norm_r1r2,
         "norm_d1r2": norm_d1r2,
