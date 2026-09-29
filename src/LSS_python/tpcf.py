@@ -1,5 +1,6 @@
 import joblib, os
 import numpy as np 
+import warnings
 from Corrfunc.theory import DDsmu
 from Corrfunc.mocks import DDsmu_mocks
 
@@ -672,6 +673,111 @@ class xismu(object):
             RR=temp_RR,
         )
 
+def average_xismus_dict_list(xismus_dict_list, debug=False):
+    """Average pair counts in a list of xismu dictionaries.
+
+    The stored DD, DR and RR arrays are already normalized. Their original
+    pair counts are recovered before averaging, and the output normalizations
+    are recalculated from averaged weight sums when available. Otherwise, the
+    existing normalization constants are averaged. When ``debug`` is True, a
+    warning is emitted in that fallback case.
+    """
+    if not xismus_dict_list:
+        raise ValueError("xismus_dict_list must not be empty")
+
+    keys = xismus_dict_list[0].keys()
+    if any(xismus_dict.keys() != keys for xismus_dict in xismus_dict_list[1:]):
+        raise ValueError("all dictionaries must have the same keys")
+
+    result = {}
+    count = len(xismus_dict_list)
+    moment_names = ("sum_wd", "sum_wr", "sum_wd2", "sum_wr2")
+    for key in keys:
+        reference = xismus_dict_list[0][key]
+        if not isinstance(reference, xismu):
+            raise TypeError(f"value for {key!r} must be an xismu")
+        shape = (reference.sbin, reference.mubin)
+        pairs = {name: np.zeros(shape, dtype=float) for name in ("DD", "DR", "RR")}
+        norm_sums = {name: 0.0 for name in pairs}
+        moment_sums = {name: 0.0 for name in moment_names}
+        has_all_moments = True
+
+        for realization_dict in xismus_dict_list:
+            realization = realization_dict[key]
+            if not isinstance(realization, xismu):
+                raise TypeError(f"value for {key!r} must be an xismu")
+            if (realization.sbin, realization.mubin) != shape or not np.isclose(
+                realization.smax, reference.smax
+            ):
+                raise ValueError(f"incompatible bins for {key!r}")
+            for coordinate in ("S", "Mu"):
+                first_grid = getattr(reference, coordinate)
+                grid = getattr(realization, coordinate)
+                if (first_grid is None) != (grid is None) or (
+                    first_grid is not None and not np.array_equal(grid, first_grid)
+                ):
+                    raise ValueError(f"incompatible {coordinate} grids for {key!r}")
+
+            norms = (realization.DDnorm, realization.DRnorm, realization.RRnorm)
+            if any(norm is None or not np.isfinite(norm) or norm <= 0 for norm in norms):
+                raise ValueError(f"missing or invalid pair normalization for {key!r}")
+
+            moments = tuple(getattr(realization, name, None) for name in moment_names)
+            if any(value is None for value in moments):
+                has_all_moments = False
+            else:
+                if any(not np.isfinite(value) for value in moments):
+                    raise ValueError(f"invalid weight sums for {key!r}")
+                for name, value in zip(moment_names, moments):
+                    moment_sums[name] += value
+
+            for name, norm in zip(pairs, norms):
+                norm_sums[name] += norm
+                values = getattr(realization, name)
+                if values is None or values.shape != shape:
+                    raise ValueError(f"missing or incompatible {name} for {key!r}")
+                if name == "RR":
+                    values = np.where(values == 1e-15, 0.0, values)
+                pairs[name] += values * norm
+
+        if has_all_moments:
+            moments = {name: total / count for name, total in moment_sums.items()}
+            wd, wr = moments["sum_wd"], moments["sum_wr"]
+            norms = {
+                "DD": wd * wd - moments["sum_wd2"],
+                "DR": wd * wr,
+                "RR": wr * wr - moments["sum_wr2"],
+            }
+        else:
+            if debug:
+                warnings.warn(
+                    f"Missing weight sums for {key!r}; averaging existing normalization constants",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            moments = {name: None for name in moment_names}
+            norms = {name: total / count for name, total in norm_sums.items()}
+
+        if any(not np.isfinite(norm) or norm <= 0 for norm in norms.values()):
+            raise ValueError(f"averaged pair normalization is invalid for {key!r}")
+
+        result[key] = xismu(
+            smax=reference.smax,
+            sbin=reference.sbin,
+            mubin=reference.mubin,
+            DDnorm=norms["DD"],
+            DRnorm=norms["DR"],
+            RRnorm=norms["RR"],
+            S=reference.S,
+            Mu=reference.Mu,
+            DD=pairs["DD"] / count,
+            DR=pairs["DR"] / count,
+            RR=pairs["RR"] / count,
+            **moments,
+        )
+
+    return result
+
 def run_tpCF(data_catalog, random_catalog, sedges, mubin, with_weight, run_parts=["all"], refine_factors=(2, 2, 1), output_dict=None, nthreads=1, verbose=False):
     """
     data_catalog & random_catalog: ndarray, three cols: [x, y, z](without weight) or four cols: [x, y, z, weight]
@@ -918,21 +1024,48 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
     return result_dict
 
 def get_diff_array(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
-                   compressor=None, intximu_new=False, mupack=1, remove_last_one=True, **kwargs) -> np.ndarray:
-    """
+                   compressor=None, intximu_new=False, mupack=1, remove_last_one=True,
+                   *, is_norm=True, norm_method="regu", eta=0.2, **kwargs) -> np.ndarray:
+    """Return the difference of two angular profiles.
+
+    The built-in integration paths always return raw profiles. When
+    ``is_norm`` is true, each complete profile is normalized and optionally
+    shortened before the two snapshots are subtracted. ``norm_method=None``
+    reproduces the original mean normalization, while ``"regu"`` and
+    ``"regu_hard"`` use smooth and hard regularization, respectively.
+
     intximu_new: bool, default False
         Use the standalone :meth:`xismu.intximu` implementation, which keeps
         the original integrate-tpcf ordering. This cannot be used with
         ``integrate_tpcf_func``.
 
+    is_norm: bool, default True
+        Disable all built-in normalization when false.
+    norm_method: None or {"regu", "regu_hard"}, default "regu"
+        ``None`` preserves the original ``meannorm`` calculation.
+    eta: float, default 0.2
+        Coefficient of the full-profile standard deviation in regularized
+        normalization.
+
     kwargs:
         smin, smax: float, default 6.0, 40.0
         mumax: float, default 0.97
-        integrate_tpcf_func: function, default None and use integrate_tpcf. If not None, it will use this function to integrate tpcf and use integrate_tpcf_kwargs to pass kwargs to this function. The first parameter of this function must be xismu.
+        integrate_tpcf_func: optional custom integrator. Its output is used
+            unchanged; it owns its normalization and bin removal.
         integrate_tpcf_kwargs: dict, default None and use {}
     """
     if "remove_after_diff" in kwargs:
         raise TypeError("remove_after_diff has been removed and is no longer supported")
+    if norm_method is not None and (
+        not isinstance(norm_method, str) or norm_method not in ("regu", "regu_hard")
+    ):
+        raise ValueError("norm_method must be None, 'regu', or 'regu_hard'")
+    if (
+        not np.isscalar(eta) or not np.isrealobj(eta)
+        or not isinstance(eta, (int, float, np.number))
+        or not np.isfinite(eta) or eta < 0
+    ):
+        raise ValueError("eta must be a finite non-negative scalar")
 
     integrate_tpcf_func = kwargs.get("integrate_tpcf_func", None)
     if intximu_new and integrate_tpcf_func is not None:
@@ -947,6 +1080,53 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
         mumax = kwargs.get("mumax", 0.97)
     else:
         integrate_tpcf_kwargs = kwargs.get("integrate_tpcf_kwargs", {})
+
+    def normalize_profile(mu, values):
+        mu = np.asarray(mu)
+        values = np.asarray(values, dtype=float)
+        if norm_method is None:
+            normalized = meannorm(values)
+        else:
+            if values.ndim != 1 or mu.shape != values.shape or not np.all(np.isfinite(values)):
+                raise ValueError("integrated profile must contain finite one-dimensional values")
+            if values.size == 0:
+                raise ValueError("integrated profile has no angular bins")
+            mean = float(np.mean(values))
+            spread = float(np.std(values))
+            scale = (
+                np.hypot(mean, eta * spread)
+                if norm_method == "regu" else max(abs(mean), eta * spread)
+            )
+            if scale == 0.0:
+                raise ValueError("normalization scale is zero; the profile has no defined shape")
+            normalized = 1.0 + (values - mean) / scale
+        if remove_last_one:
+            return mu[:-1], normalized[:-1]
+        return mu, normalized
+
+    def integrate_profile(obj):
+        if intximu_new:
+            # intximu historically normalizes before angular packing.
+            raw_mupack = 1 if is_norm else mupack
+            mu, values = obj.intximu(
+                smin=smin, smax=smax, mupack=raw_mupack, is_norm=False,
+                mumax=mumax, remove_last_one=False,
+            )
+            if is_norm:
+                mu, values = normalize_profile(mu, values)
+                if mupack > 1:
+                    mu = packarray1d(mu, mupack)
+                    values = packarray1d(values, mupack)
+            return mu, values
+
+        mu, values = obj.integrate_tpcf(
+            smin=smin, smax=smax, intximu=True, mupack=mupack,
+            is_norm=False, mumax=mumax, remove_last_one=False,
+        )
+        if is_norm:
+            return normalize_profile(mu, values)
+        return mu, values
+
     if isinstance(tpcf_dict_list, dict):
         tpcf_dict_list = [tpcf_dict_list, ]
     snap1, snap2 = snap_ids[0], snap_ids[1]
@@ -980,18 +1160,9 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
             if integrate_tpcf_func is not None:
                 mu_temp_1, xi_mu_temp_1 = integrate_tpcf_func(xismu_first, **integrate_tpcf_kwargs)
                 mu_temp_2, xi_mu_temp_2 = integrate_tpcf_func(xismu_second, **integrate_tpcf_kwargs)
-            elif intximu_new:
-                mu_temp_1, xi_mu_temp_1 = xismu_first.intximu(
-                    smin=smin, smax=smax, mupack=mupack, is_norm=True,
-                    mumax=mumax, remove_last_one=remove_last_one,
-                )
-                mu_temp_2, xi_mu_temp_2 = xismu_second.intximu(
-                    smin=smin, smax=smax, mupack=mupack, is_norm=True,
-                    mumax=mumax, remove_last_one=remove_last_one,
-                )
             else:
-                mu_temp_1, xi_mu_temp_1 = xismu_first.integrate_tpcf(smin=smin, smax=smax, intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
-                mu_temp_2, xi_mu_temp_2 = xismu_second.integrate_tpcf(smin=smin, smax=smax,intximu=True, mupack=mupack, is_norm=True, mumax=mumax, remove_last_one=remove_last_one)
+                mu_temp_1, xi_mu_temp_1 = integrate_profile(xismu_first)
+                mu_temp_2, xi_mu_temp_2 = integrate_profile(xismu_second)
 
             xi_mu_temp_diff = xi_mu_temp_1 - xi_mu_temp_2
             tpcf_diff_list.append(xi_mu_temp_diff)
@@ -1016,6 +1187,88 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
         return np.vstack((mu_temp_1, result_array))
     else:
         return result_array
+
+
+def get_diff_array_test(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
+                        compressor=None, intximu_new=False, mupack=1,
+                        remove_last_one=True, eta=0.2,
+                        use_hard_floor=False, **kwargs) -> np.ndarray:
+    """Subtract two snapshots after regularized mean-one normalization.
+
+    For each full angular profile ``x`` with mean ``m`` and standard deviation
+    ``s``, return ``1 + (x - m) / scale``. The default smooth scale is
+    ``hypot(m, eta * s)``; ``use_hard_floor=True`` selects
+    ``max(abs(m), eta * s)`` instead. Thus ``eta`` is the coefficient of the
+    standard deviation in both methods. Each full profile has mean one before
+    the optional last-bin removal.
+
+    Integration and pairing follow :func:`get_diff_array`. Normalize the full
+    profile before optionally removing its last bin and subtracting snapshots.
+    """
+    if "is_norm" in kwargs:
+        raise TypeError("get_diff_array_test always uses regularized normalization")
+    if "remove_after_diff" in kwargs:
+        raise TypeError("remove_after_diff has been removed and is no longer supported")
+    if not np.isscalar(eta) or not np.isfinite(eta) or eta < 0:
+        raise ValueError("eta must be a finite non-negative scalar")
+    if not isinstance(use_hard_floor, (bool, np.bool_)):
+        raise TypeError("use_hard_floor must be a boolean")
+
+    integrate_tpcf_func = kwargs.get("integrate_tpcf_func")
+    integrate_tpcf_kwargs = kwargs.get("integrate_tpcf_kwargs", {})
+    if intximu_new and integrate_tpcf_func is not None:
+        raise ValueError(
+            "intximu_new cannot be used with integrate_tpcf_func; "
+            "the custom integration function must select its own behavior"
+        )
+    if integrate_tpcf_func is None and not intximu_new:
+        return get_diff_array(
+            tpcf_dict_list, snap_ids, shift=shift, return_mu=return_mu,
+            compressor=compressor, mupack=mupack, remove_last_one=remove_last_one,
+            norm_method="regu_hard" if use_hard_floor else "regu", eta=eta,
+            **kwargs,
+        )
+    smin = kwargs.get("smin", 6.0)
+    smax = kwargs.get("smax", 40.0)
+    mumax = kwargs.get("mumax", 0.97)
+
+    def integrate_and_normalize(obj):
+        if integrate_tpcf_func is not None:
+            mu, values = integrate_tpcf_func(obj, **integrate_tpcf_kwargs)
+        elif intximu_new:
+            mu, values = obj.intximu(
+                smin=smin, smax=smax, mupack=mupack, is_norm=False,
+                mumax=mumax, remove_last_one=False,
+            )
+        else:
+            mu, values = obj.integrate_tpcf(
+                smin=smin, smax=smax, intximu=True, mupack=mupack,
+                is_norm=False, mumax=mumax, remove_last_one=False,
+            )
+        mu = np.asarray(mu)
+        values = np.asarray(values, dtype=float)
+        if values.ndim != 1 or mu.shape != values.shape or not np.all(np.isfinite(values)):
+            raise ValueError("integrated profile must contain finite one-dimensional values")
+        if values.size == 0:
+            raise ValueError("integrated profile has no angular bins")
+        mean = float(np.mean(values))
+        spread = float(np.std(values))
+        scale = (
+            max(abs(mean), eta * spread)
+            if use_hard_floor else np.hypot(mean, eta * spread)
+        )
+        if scale == 0.0:
+            raise ValueError("normalization scale is zero; the profile has no defined shape")
+        normalized = 1.0 + (values - mean) / scale
+        if remove_last_one:
+            return mu[:-1], normalized[:-1]
+        return mu, normalized
+
+    return get_diff_array(
+        tpcf_dict_list, snap_ids, shift=shift, return_mu=return_mu,
+        compressor=compressor, mupack=mupack, remove_last_one=remove_last_one,
+        integrate_tpcf_func=integrate_and_normalize,
+    )
 
 
 def get_diff_array_2d(tpcf_dict_list, snap_ids, shift=5, compressor=None, **kwargs) -> np.ndarray:

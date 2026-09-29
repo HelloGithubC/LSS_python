@@ -26,11 +26,10 @@ def _should_convert(redshift, omega_mf, w_f, omega_mm, w_m, wa_f=None, wa_m=None
 
 
 def tpcf_convert_main(xismu: xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0, smin_mapping=3.0, smax_mapping=60.0, c_api=True, ap_tol=1e-5) -> xismu | None:
-    if xismu.xis is not None:
-        sbin = xismu.xis.shape[0]
-        mubin = xismu.xis.shape[1]
-    else:
-        raise ValueError("xismu.xis is None")
+    if xismu.xis is None:
+        _ = xismu.get_xis()
+    sbin = xismu.xis.shape[0]
+    mubin = xismu.xis.shape[1]
 
     should_convert, _, _ = _should_convert(
         redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m, ap_tol=ap_tol
@@ -193,8 +192,7 @@ def ps_2d_convert_main(
     fftpower_2d, omega_mf, w_f, omega_mm, w_m, redshift,
     mesh_done_norm=True, w_af=None, w_am=None,
     kmin=0.1, kmax=2.1, dk=0.01, Nmu=20,
-    mode="2d", k_logarithmic=False, nthreads=1, subcell_n=1, c_api=True,
-    ap_tol=1e-5,
+    mode="2d", k_logarithmic=False, nthreads=1, subcell_n=1, c_api=True
 ):
     """Apply the 2D AP transformation and return a binned :class:`FFTPower`.
 
@@ -206,8 +204,7 @@ def ps_2d_convert_main(
     including at the fiducial cosmology; it samples each original 2D cell
     into ``subcell_n`` by ``subcell_n`` subcells. Both the constant-w and CPL
     ``w0wa`` backgrounds are supported; pass ``w_af`` and ``w_am`` together
-    to select the latter. ``ap_tol`` remains accepted for API compatibility
-    but does not select the power-spectrum rebinning path.
+    to select the latter. 
 
     Parameters controlling the output P(k, mu) bins are forwarded to the
     selected rebinning implementation.  The return value is always an

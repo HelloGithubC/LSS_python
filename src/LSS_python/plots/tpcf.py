@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec 
 
+from LSS_python.tpcf import get_diff_array_test
+
 def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, figsize=(12,12), **argv):
     fig = plt.figure(dpi=100, figsize=figsize)
     gs = GridSpec(3, 2, figure=fig)
@@ -17,6 +19,7 @@ def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, figsize=(12,12), 
     mupack = argv.get("mupack", 6)
     mumax = argv.get("mumax", 0.97)
     need_slice = argv.get("need_slice", slice(None, None, None))
+    is_norm = argv.get("is_norm", True)
 
     if isinstance(xismu_dicts_list, dict):
         xismu_dicts_list = [xismu_dicts_list, ]
@@ -24,17 +27,20 @@ def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, figsize=(12,12), 
         snaps_list = [snaps_list, ]
 
     for i, (xismu_dict, snaps) in enumerate(zip(xismu_dicts_list, snaps_list)):
-        xi_mus = []
+        xi_mu_list = []
+
         if len(snaps) != 2:
             raise ValueError("The length of snaps (the element of snaps_list) should be 2.")
         for j, snap in enumerate(snaps):
             xismu_temp = xismu_dict[snap]
             s, xi_s = xismu_temp.integrate_tpcf(s_xis=True, smin=s_smin, smax=s_smax, is_norm=False, mupack=1, mumax=1.0)
             axes_s[j].plot(s, xi_s, color=colors[i])
-            mu, xi_mu = xismu_temp.integrate_tpcf(intximu=True, smin=mu_smin, smax=mu_smax, is_norm=True, mupack=mupack, mumax=mumax)
-            axes_mu[j].plot(mu, xi_mu, color=colors[i])
-            xi_mus.append(xi_mu)
-        
-        xi_mu_diff = xi_mus[0] - xi_mus[1]
-        ax_diff.plot(mu[need_slice], xi_mu_diff[need_slice], color=colors[i])
+            mu_array, xi_mu = xismu_temp.integrate_tpcf(intximu=True, smin=mu_smin, smax=mu_smax, is_norm=False, mupack=mupack, mumax=mumax)
+            xi_mu_list.append(xi_mu)
+
+        if is_norm:
+            mu_array, xi_mu_diff = get_diff_array_test(xismu_dict, snaps, return_mu=True, mupack=mupack)
+        else:
+            xi_mu_diff = xi_mu_list[1] - xi_mu_list[0]
+        ax_diff.plot(mu_array[need_slice], xi_mu_diff[need_slice], color=colors[i])
     return fig

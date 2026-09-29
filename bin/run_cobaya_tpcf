@@ -7,7 +7,7 @@ from cobaya.likelihood import Likelihood
 from cobaya.run import run
 from cobaya.mpi import is_main_process, get_mpi
 
-from LSS_python.tpcf import xismu, get_diff_array
+from LSS_python.tpcf import xismu, get_diff_array, average_xismus_dict_list
 from LSS_python.AP import tpcf_convert_main
 from LSS_python.MCMC import run_mcmc_main_cobaya
 
@@ -44,16 +44,15 @@ def _is_ap_domain_error(error: RuntimeError) -> bool:
 #   - mupack: int - Mu-bin packing factor for get_diff_array (optional, default 1)
 #   - xismu_source_dict_list: list or dict - Source xismu data list or dict
 #   - xismu_ass_dict_list: list or dict - Assistant xismu data list or dict
+#   - obs_average: bool - Average the realization dictionaries before AP conversion
 #
 # Optional keys:
 #   - snap_ids_all: list - All snap IDs to load (inferred from snap_ids_list if not provided)
 #   - compressor_type: str - Compressor type, default "none"
 #   - compressor_model_paths: str or list - Compressor model paths (only needed when compressor_type != "none")
-#   - integrate_tpcf_func: callable - Custom integration function, default None
-#   - integrate_tpcf_kwargs: dict - Integration function parameters. When integrate_tpcf_func is
-#     None, unspecified keys fall back to defaults (smin=6.0, smax=40.0, mumax=0.97,
-#     remove_last_one=True, mupack=1). When integrate_tpcf_func is provided, no defaults
-#     are applied — all required kwargs must be specified by the user.
+#   - smin: float - Minimum separation for TPCF integration, default 6.0
+#   - smax: float - Maximum separation for TPCF integration, default 40.0
+#   - mumax: float - Maximum mu for TPCF integration, default 0.97
 #   - ap_mapping_kwargs: dict - AP conversion parameters. Currently supports
 #     smax_mapping (default 60.0), the upper separation used by dense AP mapping.
 #   - fisher_matrix: np.ndarray - Fisher matrix (used for MOPED sampler configuration, optional)
@@ -119,24 +118,12 @@ class Chi2Likelihood(Likelihood):
         self.compressor_type = data_dict.get("compressor_type", "none")
         compressor_model_paths = data_dict.get("compressor_model_paths", None)
         
-        # Get integrate_tpcf configuration
-        self.integrate_tpcf_func = data_dict.get("integrate_tpcf_func", None)
-        if self.integrate_tpcf_func is None:
-            # Default mode: use built-in integrate_tpcf, allow override from data_dict
-            integrate_tpcf_kwargs_default = {
-                "smin": 6.0,
-                "smax": 40.0,
-                "mumax": 0.97
-            }
-            integrate_tpcf_kwargs_from_dict = data_dict.get("integrate_tpcf_kwargs", None)
-            if integrate_tpcf_kwargs_from_dict is not None:
-                self.integrate_tpcf_kwargs = {**integrate_tpcf_kwargs_default, **integrate_tpcf_kwargs_from_dict}
-            else:
-                self.integrate_tpcf_kwargs = integrate_tpcf_kwargs_default
-        else:
-            # Custom mode: user provides their own integrate_tpcf_func,
-            # kwargs must be fully provided by user, no defaults applicable
-            self.integrate_tpcf_kwargs = data_dict.get("integrate_tpcf_kwargs", {})
+        # Use the built-in TPCF integration with parameters from the data file.
+        self.integrate_tpcf_kwargs = {
+            "smin": data_dict.get("smin", 6.0),
+            "smax": data_dict.get("smax", 40.0),
+            "mumax": data_dict.get("mumax", 0.97),
+        }
         
         # Get xismu data and unify data structure (dict to list)
         xismu_source_dict_list = data_dict["xismu_source_dict_list"]
@@ -163,6 +150,17 @@ class Chi2Likelihood(Likelihood):
                 self.xismus_ass_dict_list[i][snap_id] = xismu.load(
                     self.xismus_ass_dict_list[i][snap_id]
                 )
+
+        if data_dict.get("obs_average", False):
+            if (len(self.xismus_source_dict_list) < 2 or
+                    len(self.xismus_source_dict_list) != len(self.xismus_ass_dict_list)):
+                raise ValueError("Observation average needs matching source and assistant realizations")
+            self.xismus_source_dict_list = [
+                average_xismus_dict_list(self.xismus_source_dict_list)
+            ]
+            self.xismus_ass_dict_list = [
+                average_xismus_dict_list(self.xismus_ass_dict_list)
+            ]
         
         # Load compressor model (if needed)
         if self.compressor_type != "none" and compressor_model_paths is not None:
@@ -229,16 +227,6 @@ class Chi2Likelihood(Likelihood):
                 merged_dict[snap_id] = modified_xismu
             transformed_tpcf_dict_list.append(merged_dict)
 
-        # Use get_diff_array to compute differences
-        # Build kwargs for get_diff_array
-        if self.integrate_tpcf_func is None:
-            get_diff_kwargs = self.integrate_tpcf_kwargs
-        else:
-            get_diff_kwargs = {
-                'integrate_tpcf_func': self.integrate_tpcf_func,
-                'integrate_tpcf_kwargs': self.integrate_tpcf_kwargs
-            }
-
         # `get_diff_array` now takes the full `transformed_tpcf_dict_list`
         # together with one two-element `snap_pair` each time, so we iterate
         # over `self.snap_ids_list` and concatenate the partial results.
@@ -254,7 +242,7 @@ class Chi2Likelihood(Likelihood):
                     compressor=None,
                     mupack=self.mupack,
                     remove_last_one=True,
-                    **get_diff_kwargs
+                    **self.integrate_tpcf_kwargs
                 )
                 diff_array_list.append(diff_array_temp)
         else:
@@ -267,7 +255,7 @@ class Chi2Likelihood(Likelihood):
                     compressor=compressor,
                     mupack=self.mupack,
                     remove_last_one=True,
-                    **get_diff_kwargs
+                    **self.integrate_tpcf_kwargs
                 )
                 diff_array_list.append(diff_array_temp)
 
