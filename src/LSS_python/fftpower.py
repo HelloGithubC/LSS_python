@@ -953,7 +953,7 @@ class FFTPower2D:
             obj_list.append(obj)
         return obj_list
 
-def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.02, shift=0, return_mu=False, integrate_func=None, integrate_kwargs=None, **kwargs):
+def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.02, shift=0, return_mu=False, return_Pmu_list=False, integrate_func=None, integrate_kwargs=None, **kwargs):
     """Compute the difference of integrated power spectra between two snapshots.
 
     For each snapshot in ``snap_ids``, the corresponding ``FFTPower2D`` (or
@@ -985,9 +985,12 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.0
         sample axis before subtraction (default: 0).  Set to 0 automatically
         when only one object is present for a snapshot.
     return_mu : bool, optional
-        If True, prepend the mu values as the first row of the returned array.
-        With a custom ``integrate_func``, the function must return
+        If True, include the mu values before ``Pmu_array`` in the return
+        value. With a custom ``integrate_func``, the function must return
         ``(mu, integrated_value)`` when this option is enabled.
+    return_Pmu_list : bool, optional
+        If True, include the per-snapshot integrated arrays after
+        ``Pmu_array`` in the return value.
     integrate_func : callable, optional
         Custom integration function.  Its first argument must be an
         ``FFTPower2D`` instance.  When ``None`` (default), the built-in
@@ -1070,10 +1073,14 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.0
             Pmu_list.append(Pmu_temp)
         Pmu_array_list.append(np.array(Pmu_list))
     Pmu_array = np.roll(Pmu_array_list[0], shift, axis=0) - np.array(Pmu_array_list[1])
-    if return_mu:
-        result_array = Pmu_array[0] if len(Pmu_array) == 1 else Pmu_array
-        return np.vstack((mu_temp, result_array))
     if len(Pmu_array) == 1:
-        return Pmu_array[0]
-    else:
-        return Pmu_array
+        Pmu_array = Pmu_array[0]
+        Pmu_array_list = [pmu_array[0] for pmu_array in Pmu_array_list]
+
+    return_values = []
+    if return_mu:
+        return_values.append(mu_temp)
+    return_values.append(Pmu_array)
+    if return_Pmu_list:
+        return_values.append(Pmu_array_list)
+    return return_values[0] if len(return_values) == 1 else tuple(return_values)
