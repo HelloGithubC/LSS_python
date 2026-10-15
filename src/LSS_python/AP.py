@@ -25,55 +25,46 @@ def _should_convert(redshift, omega_mf, w_f, omega_mm, w_m, wa_f=None, wa_m=None
     return ap_distance >= ap_tol, perp, parallel
 
 
-def tpcf_convert_main(xismu: xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0, smin_mapping=3.0, smax_mapping=60.0, c_api=True, ap_tol=1e-5) -> xismu | None:
+def tpcf_convert_main(xismu: xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0, smin_mapping=3.0, smax_mapping=60.0, c_api=True, ap_tol=1e-5, *, convert_algorithm="polygon") -> xismu | None:
+    """Convert pair counts with polygon overlap weights on the dense route.
+
+    ``convert_algorithm`` selects the dense geometry. Curved methods are reserved.
+    The simple route retains its existing interpolation. For dense conversion the
+    assistant supplies the target grid; AP displacements below ``ap_tol`` return
+    that assistant itself, while ``ap_tol=0`` forces count mapping.
+    """
+    from ._ap_dense import ap_geometry, convert_xismu, validate_algorithm, validate_xismu
+
+    validate_algorithm(convert_algorithm)
+    if convert_method not in ("dense", "simple"):
+        raise ValueError("convert_method must be 'simple' or 'dense'")
+    if not np.isfinite(ap_tol) or ap_tol < 0:
+        raise ValueError("ap_tol must be finite and nonnegative")
+    if convert_method == "dense":
+        if assis_xismu is None:
+            raise RuntimeError("Assis xismu is required for dense conversion")
+        shape = validate_xismu(xismu, assis_xismu)
+        geometry = ap_geometry(redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m)
+        if geometry.distance < ap_tol:
+            return assis_xismu
+        return convert_xismu(xismu, geometry, *shape, smin_mapping, smax_mapping,
+                             assis_xismu, c_api, convert_algorithm)
+
     if xismu.xis is None:
         _ = xismu.get_xis()
-    sbin = xismu.xis.shape[0]
-    mubin = xismu.xis.shape[1]
-
+    sbin, mubin = xismu.xis.shape
     should_convert, _, _ = _should_convert(
         redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m, ap_tol=ap_tol
     )
     if not should_convert:
-        print(f"Warning: AP effect is negligible (AP distance < {ap_tol:g}), return xismu directly")
         return assis_xismu
-
-    if convert_method == "dense":
-        if sbin < 300 and mubin < 240:
-            raise RuntimeError(f"Dense conversion is not available for {sbin:d} sbins and {mubin:d} mubins")
-        if assis_xismu is None:
-            raise RuntimeError("Assis xismu is required for dense conversion")
-        xismu_new = xismu.cosmo_conv_DenseToSparse(
-            omstd = omega_mf, 
-            wstd = w_f, 
-            omwrong = omega_mm, 
-            wwrong = w_m, 
-            redshift = redshift, 
-            wastd = wa_f, 
-            wawrong = wa_m,
-            smin_mapping=smin_mapping, 
-            smax_mapping=smax_mapping,
-            c_api = c_api
-        )
-        xismu_new.s_array = np.nanmean(assis_xismu.S, axis=1)
-        xismu_new.mu_array = np.nanmean(assis_xismu.Mu, axis=0)
-        return xismu_new
-    elif convert_method == "simple":
-        if sbin > 300 and mubin > 240:
-            raise RuntimeError(f"Simple conversion is not available for {sbin:d} sbins and {mubin:d} mubins")
-        return xismu.cosmo_conv_simple(
-            omstd = omega_mf, 
-            wstd = w_f, 
-            omwrong = omega_mm, 
-            wwrong = w_m, 
-            redshift = redshift,
-            wastd = wa_f, 
-            wawrong = wa_m,
-            smin_mapping=smin_mapping, 
-            smax_mapping=smax_mapping,
-        )
-    else:
-        raise ValueError("convert_method must be 'simple' or 'dense'")
+    if sbin > 300 and mubin > 240:
+        raise RuntimeError(f"Simple conversion is not available for {sbin:d} sbins and {mubin:d} mubins")
+    return xismu.cosmo_conv_simple(
+        omstd=omega_mf, wstd=w_f, omwrong=omega_mm, wwrong=w_m,
+        redshift=redshift, wastd=wa_f, wawrong=wa_m,
+        smin_mapping=smin_mapping, smax_mapping=smax_mapping,
+    )
 
 def ps_convert_main(ps_3d, omega_mf, w_f, omega_mm, w_m, redshift, boxsize, mesh_done_norm=True, device_id=-1, pybind=True, **kargs):
     """

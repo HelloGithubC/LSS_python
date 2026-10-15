@@ -15,3 +15,13 @@ src/LSS_python/CPP/lib/*.so
 ############################
 .codebuddy/
 .codex
+
+# Keep the AP migration regression suite reviewable.
+!tests/
+tests/*
+!tests/test_ap_polygon.py
+!tests/test_ap_cpp.py
+!tests/validate_ap_migration.py
+# Archived extensions are local reproducibility artifacts; rebuild from source.
+archive/**/*.so
+validation/

@@ -564,114 +564,23 @@ class xismu(object):
         )
 
     def cosmo_conv_DenseToSparse(
-        self,
-        omstd=0.3071,
-        wstd=-1,
-        omwrong=0.5,
-        wwrong=-1,
-        redshift=0.0001,
-        sbin2=150,
-        mubin2=120,
-        smin_mapping=3.0,
-        smax_mapping=60.0,
-        assistant_xismu=None, 
-        wastd=0.0,
-        wawrong=0.0,
-        c_api=True,
+        self, omstd=0.3071, wstd=-1, omwrong=0.5, wwrong=-1,
+        redshift=0.0001, sbin2=150, mubin2=120,
+        smin_mapping=3.0, smax_mapping=60.0, assistant_xismu=None,
+        wastd=0.0, wawrong=0.0, c_api=True, *, convert_algorithm="polygon",
     ):
-        from .base import Hz_w0wa, DA
+        """Rebin normalized counts using uniform mapped (s, mu) polygon areas.
 
-        if int(self.sbin) == 150 and int(self.mubin) == 120:
-            raise ValueError(
-                "Check your sbin and mubin of xismu. You are using dense convertor!"
-            )
-        redshift = max(redshift, 0.0001)
-        Hstd = Hz_w0wa(redshift, omstd, wstd, wastd)
-        Hnew = Hz_w0wa(redshift, omwrong, wwrong, wawrong)
-        DAstd = DA(redshift, omstd, wstd, wastd)
-        DAnew = DA(redshift, omwrong, wwrong, wawrong)
+        Existing output-size arguments remain available without an assistant.
+        With an assistant, its coordinates must match the requested output size.
+        ``c_api=False`` uses the equivalent Numba geometry.
+        """
+        from ._ap_dense import ap_geometry, convert_xismu, validate_algorithm
 
-        if self.DD is None or self.DR is None or self.RR is None:
-            raise ValueError("DD, DR, RR must be set before converting")
-        if self.DDnorm is None or self.DRnorm is None or self.RRnorm is None:
-            raise ValueError("DDnorm, DRnorm, RRnorm must be set before converting")
-
-        data = np.concatenate(
-            [
-                self.DD[:, :, np.newaxis],
-                self.DR[:, :, np.newaxis],
-                self.RR[:, :, np.newaxis],
-            ],
-            axis=2,
-        )
-        # if test_mode:
-        if c_api:
-            from .CPP.AP import mapping_smudata_dense_cpp
-            data = data.astype(np.float64, copy=False)
-            new_data = mapping_smudata_dense_cpp(
-                data,
-                (Hstd, Hnew, DAstd, DAnew),
-                (self.sbin, sbin2, self.mubin, mubin2),
-                (0.0, 150.0, 0.0, 1.0),
-                (smin_mapping, smax_mapping, 0.0, 1.0),
-            )
-        else:
-            from ._AP_core import mapping_smudata_dense
-            new_data = mapping_smudata_dense(
-                data, 
-                (Hstd, Hnew, DAstd, DAnew),
-                (self.sbin, sbin2, self.mubin, mubin2), 
-                (0.0, 150.0, 0.0, 1.0),
-                (smin_mapping, smax_mapping, 0.0, 1.0),
-            )
-        # else:
-        #     new_data = mapping_smudata_to_another_cosmology_DenseToSparse(
-        #         data,
-        #         DAstd,
-        #         DAnew,
-        #         Hstd,
-        #         Hnew,
-        #         deltas1=self.smax / self.sbin,
-        #         deltamu1=1.0 / self.mubin,
-        #         deltas2=self.smax / sbin2,
-        #         deltamu2=1.0 / mubin2,
-        #         smin_mapping=smin_mapping,
-        #         smax_mapping=smax_mapping,
-        #         compute_rows=[0, 1, 2],
-        #     )
-
-        temp_DD = new_data[:, :, 0] * self.DDnorm
-        temp_DR = new_data[:, :, 1] * self.DRnorm
-        temp_RR = new_data[:, :, 2] * self.RRnorm
-
-        if assistant_xismu is not None:
-            Mu_temp = assistant_xismu.Mu
-            S_temp = assistant_xismu.S
-            if Mu_temp.shape != (sbin2, mubin2) or S_temp.shape != (sbin2, mubin2):
-                raise ValueError(
-                    "Check your shapes of Mu or S in assistant_xismu, which are different from (sbin2, mubin2) "
-                )
-        else:
-            Mu_temp = None
-            S_temp = None
-
-        return xismu(
-            smax=self.smax,
-            sbin=sbin2,
-            mubin=mubin2,
-            DDnorm=self.DDnorm,
-            DRnorm=self.DRnorm,
-            RRnorm=self.RRnorm,
-            sum_wd=getattr(self, "sum_wd", None),
-            sum_wr=getattr(self, "sum_wr", None),
-            sum_wd2=getattr(self, "sum_wd2", None),
-            sum_wr2=getattr(self, "sum_wr2", None),
-            Mu=Mu_temp,
-            S=S_temp,
-            DD=temp_DD,
-            DR=temp_DR,
-            RR=temp_RR,
-        )
+        validate_algorithm(convert_algorithm)
+        geometry = ap_geometry(redshift, omstd, wstd, omwrong, wwrong, wastd, wawrong)
+        return convert_xismu(self, geometry, sbin2, mubin2, smin_mapping, smax_mapping,
+                             assistant_xismu, c_api, convert_algorithm)
 
 def average_xismus_dict_list(xismus_dict_list, debug=False):
     """Average pair counts in a list of xismu dictionaries.

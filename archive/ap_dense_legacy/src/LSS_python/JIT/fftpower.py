@@ -1,0 +1,341 @@
+import numpy as np 
+from numba import njit, set_num_threads, prange, get_thread_id
+
+@njit(parallel=True)
+def deal_ps_3d_multithreads(complex_field, ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0, nthreads=1):
+    """
+    Calculate 3D power spectrum from complex field (multi-threaded version).
+    
+    Args:
+        complex_field: Input complex field array (complex64 or complex128)
+        ps_3d: Pre-allocated output array. Will be COMPLETELY OVERWRITTEN with new results.
+               Must have the same shape as complex_field.
+        ps_3d_kernel: Optional kernel array (must match complex_field precision)
+        ps_3d_factor: Factor for power spectrum normalization
+        shotnoise: Shot noise to subtract
+        nthreads: Number of threads for parallel computation
+    
+    Returns:
+        ps_3d: Same object as input, filled with power spectrum values
+    """
+    set_num_threads(nthreads)
+    nx, ny, nz = complex_field.shape
+    
+    for ix in prange(nx):
+        for iy in prange(ny):
+            for iz in prange(nz):
+                # kernel is real-valued
+                kernel_element = ps_3d_kernel[ix, iy, iz] if ps_3d_kernel is not None else 1.0
+                # Compute power spectrum (real): |delta(k)|^2 * factor - shotnoise
+                power_real = (complex_field[ix, iy, iz].real ** 2 + complex_field[ix, iy, iz].imag ** 2) * ps_3d_factor - shotnoise
+                ps_3d[ix, iy, iz] = power_real * kernel_element
+    return ps_3d
+
+@njit
+def deal_ps_3d_single(complex_field, ps_3d, ps_3d_kernel=None, ps_3d_factor=1.0, shotnoise=0.0):
+    """
+    Single-threaded version of deal_ps_3d.
+    
+    Args:
+        complex_field: Input complex field array (complex64 or complex128)
+        ps_3d: Pre-allocated output array. Will be COMPLETELY OVERWRITTEN with new results.
+               Must have the same shape as complex_field.
+        ps_3d_kernel: Optional kernel array (must match complex_field precision)
+        ps_3d_factor: Factor for power spectrum normalization
+        shotnoise: Shot noise to subtract
+    
+    Returns:
+        ps_3d: Same object as input, filled with power spectrum values
+    """
+    nx, ny, nz = complex_field.shape
+    
+    for ix in range(nx):
+        for iy in range(ny):
+            for iz in range(nz):
+                # kernel is real-valued
+                kernel_element = ps_3d_kernel[ix, iy, iz] if ps_3d_kernel is not None else 1.0
+                # Compute power spectrum (real): |delta(k)|^2 * factor - shotnoise
+                power_real = (complex_field[ix, iy, iz].real ** 2 + complex_field[ix, iy, iz].imag ** 2) * ps_3d_factor - shotnoise
+                ps_3d[ix, iy, iz] = power_real * kernel_element
+    return ps_3d
+
+def cal_ps_2d_from_mesh(mesh, mesh_kernel=None, ps_factor=1.0, shotnoise=0.0, nthreads=1, dk=None):
+    if mesh.complex_field is None:
+        raise ValueError("Complex field is not set.")
+    complex_field = mesh.complex_field
+    # Extract real part of kernel (kernel should be real-valued, stored in complex array)
+    kernel = mesh_kernel.complex_field.real if mesh_kernel is not None else None
+    BoxSize = mesh.attrs["BoxSize"]
+    Nmesh = mesh.attrs["Nmesh"]
+    k_x_array = np.fft.fftfreq(Nmesh[0], d=BoxSize[0] / Nmesh[0]) * 2.0 * np.pi
+    k_y_array = np.fft.fftfreq(Nmesh[1], d=BoxSize[1] / Nmesh[1]) * 2.0 * np.pi
+    k_z_array = np.fft.rfftfreq(Nmesh[2], d=BoxSize[2] / Nmesh[2]) * 2.0 * np.pi
+
+    if dk is None:
+        dk = k_z_array[1] - k_z_array[0]
+
+    k_perp_source = np.sqrt(k_x_array**2 + k_y_array**2)
+    k_perp_min = np.min(k_perp_source)
+    k_perp_max = np.max(k_perp_source)
+    k_perp_edge = np.arange(k_perp_min, k_perp_max + dk, dk)
+    k_perp_bin = len(k_perp_edge) - 1
+
+    k_parallel_edge = np.arange(k_z_array[0], k_z_array[-1] + dk, dk)
+    k_parallel_bin = len(k_parallel_edge) - 1
+
+    k_2d, ps_2d, modes_2d = cal_ps_2d_core(complex_field, kernel, (k_x_array, k_y_array, k_z_array), k_perp_edge, k_parallel_edge, ps_factor, shotnoise, nthreads)
+
+    return k_2d, ps_2d, modes_2d
+
+@njit(parallel=True)
+def cal_ps_2d_core(complex_field, kernel, k_arrays, k_perp_edge, k_parallel_edge, ps_factor, shotnoise, nthreads=1):
+    k_x_array, k_y_array, k_z_array = k_arrays
+    k_perp_size = len(k_perp_edge) - 1
+    k_parallel_size = len(k_parallel_edge) - 1
+    dk_perp = k_perp_edge[1] - k_perp_edge[0]
+    dk_parallel = k_parallel_edge[1] - k_parallel_edge[0]
+
+    k_2d = np.zeros((k_perp_size, k_parallel_size, 2), dtype=np.float64)
+    ps_2d = np.zeros((k_perp_size, k_parallel_size), dtype=np.float64)
+    modes_2d = np.zeros((k_perp_size, k_parallel_size), dtype=np.uint64)
+
+    has_kernel = kernel is not None
+
+    set_num_threads(nthreads)
+    for i_z in prange(len(k_z_array)):
+        k_z = k_z_array[i_z]
+        # Determine k_parallel index
+        if k_z < k_parallel_edge[0] or k_z > k_parallel_edge[-1]:
+            continue
+        k_parallel_index = int((k_z - k_parallel_edge[0]) / dk_parallel)
+        if k_parallel_index == k_parallel_size:
+            k_parallel_index -= 1
+
+        mode_int = 1 if i_z == 0 else 2
+        mode = 1.0 if i_z == 0 else 2.0
+
+        for i_x in range(len(k_x_array)):
+            k_x = k_x_array[i_x]
+            for i_y in range(len(k_y_array)):
+                k_y = k_y_array[i_y]
+                k_perp = np.sqrt(k_x ** 2 + k_y ** 2)
+                if k_perp < k_perp_edge[0] or k_perp > k_perp_edge[-1]:
+                    continue
+                k_perp_index = int((k_perp - k_perp_edge[0]) / dk_perp)
+                if k_perp_index == k_perp_size:
+                    k_perp_index -= 1
+
+                modes_2d[k_perp_index, k_parallel_index] += mode_int
+                k_2d[k_perp_index, k_parallel_index, 0] += k_perp * mode
+                k_2d[k_perp_index, k_parallel_index, 1] += k_z * mode
+                power_val = complex_field[i_x, i_y, i_z] * np.conjugate(complex_field[i_x, i_y, i_z])
+                power_val = power_val * ps_factor - shotnoise
+                if has_kernel:
+                    power_val = power_val * kernel[i_x, i_y, i_z]  # kernel is now real-valued
+                power_val = power_val * mode
+                ps_2d[k_perp_index, k_parallel_index] = ps_2d[k_perp_index, k_parallel_index] + power_val
+    for i_perp in prange(k_perp_size):
+        for i_paral in range(k_parallel_size):
+            if modes_2d[i_perp, i_paral] > 0:
+                k_2d[i_perp, i_paral] /= modes_2d[i_perp, i_paral]
+                ps_2d[i_perp, i_paral] /= modes_2d[i_perp, i_paral]
+            else:
+                k_2d[i_perp, i_paral] = np.nan
+                ps_2d[i_perp, i_paral] = np.nan
+
+    return k_2d, ps_2d, modes_2d
+
+@njit(parallel=True)
+def cal_pkmu_from_ps_2d(ps_2d, k_2d, modes_2d, k_edge, mu_edge, k_logarithmic=False, nthreads=1):
+    """
+    Calculate power spectrum from pre-computed 2D power spectrum.
+    
+    Args:
+        ps_2d: 2D power spectrum array
+        k_2d: 2D k-space coordinates array with shape (k_perp_bin, k_parallel_bin, 2)
+        k_edge: k bin edges array
+        mu_edge: mu bin edges array
+        k_logarithmic: Whether k bins are logarithmic
+        nthreads: Number of threads to use
+        
+    Returns:
+        k_mesh: Average k values per bin
+        mu_mesh: Average mu values per bin
+        Pkmu: Power spectrum values
+        count: Mode counts
+    """
+    set_num_threads(nthreads)
+    
+    kbin = k_edge.shape[0] - 1
+    mubin = mu_edge.shape[0] - 1
+    
+    # 根据 mubin 判断是否使用 mu 分箱
+    use_mu = (mubin > 1)
+    
+    if k_logarithmic:
+        k_diff = np.log(k_edge[1]) - np.log(k_edge[0])
+        k_min_log = np.log(k_edge[0])
+    else:
+        k_diff = k_edge[1] - k_edge[0]
+        k_min_log = 0.0
+    
+    if use_mu:
+        mu_diff = mu_edge[1] - mu_edge[0]
+        mu_min = mu_edge[0]
+        mu_max = mu_edge[-1]
+    else:
+        mu_diff = 1.0
+        mu_min = mu_edge[0]
+        mu_max = mu_edge[-1]
+    
+    k_min = k_edge[0]
+    k_max = k_edge[-1]
+    
+    # 初始化线程安全的数组
+    Pkmu_threads = np.zeros((nthreads, kbin, mubin), dtype=np.float64)
+    count_threads = np.zeros((nthreads, kbin, mubin), dtype=np.uint64)
+    k_mesh_threads = np.zeros((nthreads, kbin, mubin), dtype=np.float64)
+    mu_mesh_threads = np.zeros((nthreads, kbin, mubin), dtype=np.float64)
+    
+    k_perp_size = k_2d.shape[0]
+    k_parallel_size = k_2d.shape[1]
+
+    # 外层循环使用并行
+    for i_paral in prange(k_parallel_size):
+        # 内层循环不需要并行，因为外层已经并行
+        for i_perp in range(k_perp_size):
+            k_perp = k_2d[i_perp, i_paral, 0]
+            k_parallel = k_2d[i_perp, i_paral, 1]
+
+            # 跳过无效的 k 值
+            if np.isnan(k_perp) or np.isnan(k_parallel):
+                continue
+
+            # Use modes_2d directly as weight (paral_factor already applied in cal_ps_2d_core during mode counting)
+            weight = modes_2d[i_perp, i_paral]
+
+            # 计算总波数 k 和 mu
+            k = np.sqrt(k_perp ** 2 + k_parallel ** 2)
+
+            # 跳过无效的 k 值
+            if k < k_min or k > k_max:
+                continue
+
+            # 计算 k bin 索引
+            if k_logarithmic:
+                k_i = int((np.log(k) - k_min_log) / k_diff)
+            else:
+                k_i = int((k - k_min) / k_diff)
+
+            # 处理边界情况
+            if k_i == kbin:
+                k_i -= 1
+
+            # 计算 mu bin 索引
+            if use_mu:
+                mu = k_parallel / k
+                if mu < mu_min or mu > mu_max:
+                    continue
+                mu_i = int((mu - mu_min) / mu_diff)
+                if mu_i == mubin:
+                    mu_i -= 1
+            else:
+                mu = 0.0
+                mu_i = 0
+
+            # 使用线程安全的索引计算
+            thread_id = get_thread_id()
+            if thread_id < nthreads:
+                Pkmu_threads[thread_id, k_i, mu_i] += ps_2d[i_perp, i_paral] * weight
+                k_mesh_threads[thread_id, k_i, mu_i] += k * weight
+                mu_mesh_threads[thread_id, k_i, mu_i] += mu * weight
+                count_threads[thread_id, k_i, mu_i] += weight
+    
+    # 合并线程结果
+    Pkmu = np.sum(Pkmu_threads, axis=0)
+    k_mesh = np.sum(k_mesh_threads, axis=0)
+    mu_mesh = np.sum(mu_mesh_threads, axis=0)
+    count = np.sum(count_threads, axis=0)
+    
+    return k_mesh, mu_mesh, Pkmu, count
+
+@njit(parallel=True)
+def cal_ps_from_numba(ps_3d, k_arrays_list, k_array, mu_array, k_logarithmic=False, nthreads=1):
+    """
+    Calculate power spectrum from 3D real power spectrum array.
+    
+    Args:
+        ps_3d: Real 3D power spectrum array (float32 or float64)
+    """
+    set_num_threads(nthreads)
+    kx_array, ky_array, kz_array = k_arrays_list
+    kbin = k_array.shape[0] - 1 
+    mubin = mu_array.shape[0] - 1
+    k_min = k_array[0]
+    k_max = k_array[-1]
+    if k_logarithmic:
+        k_diff = np.log(k_array[1]) - np.log(k_array[0])
+        k_min_log = np.log(k_min)
+    else:
+        k_diff = k_array[1] - k_array[0]
+        k_min_log = 0.0
+    if mubin <= 1:
+        use_mu = False
+        mu_diff = 1.0
+        mu_min = mu_array[0]
+        mu_max = mu_array[-1]
+    else:
+        use_mu = True
+        mu_diff = mu_array[1] - mu_array[0]
+        mu_min = mu_array[0]
+        mu_max = mu_array[-1]
+    
+    # Use float64 for Pkmu (real power spectrum output)
+    Pkmu_threads = np.zeros((nthreads, kbin, mubin), dtype=np.float64)
+    count_threads = np.zeros((nthreads, kbin, mubin), dtype=np.uint32)
+    k_mesh_threads = np.zeros((nthreads, kbin, mubin), dtype=np.float64)
+    mu_mesh_threads = np.zeros((nthreads, kbin, mubin), dtype=np.float64)
+
+    kx_array = np.abs(kx_array)
+    ky_array = np.abs(ky_array)
+    for ix in prange(len(kx_array)):
+        kx = kx_array[ix]
+        for iy in prange(len(ky_array)):
+            ky = ky_array[iy]
+            for iz in prange(len(kz_array)):
+                kz = kz_array[iz]
+                if (kx <= k_min / 2.0 and  ky <= k_min / 2.0 and kz <= k_min / 2.0) or \
+                (kx > k_max or ky > k_max or kz > k_max):
+                    continue
+                mode = 1 if iz == 0 else 2
+                k = np.sqrt(kx**2 + ky**2 + kz**2)
+                if k < k_min or k > k_max:
+                    continue
+                if k_logarithmic:
+                    k_i = int((np.log(k) - k_min_log) / k_diff)
+                else:
+                    k_i = int((k - k_min) / k_diff)
+                if k_i == kbin:
+                    k_i -= 1 
+
+                if use_mu:
+                    mu = kz / k 
+                    if mu < mu_min or mu > mu_max:
+                        continue
+                    mu_i = int((mu - mu_min) // mu_diff)
+                    if mu_i == mubin:
+                        mu_i -= 1
+                else:
+                    mu = 0.0
+                    mu_i = 0 
+                thread_id = get_thread_id()
+                # ps_3d is now a real array
+                Pkmu_threads[thread_id, k_i, mu_i] += ps_3d[ix, iy, iz] * mode
+                k_mesh_threads[thread_id, k_i, mu_i] += k * mode
+                mu_mesh_threads[thread_id, k_i, mu_i] += mu * mode
+                count_threads[thread_id, k_i, mu_i] += mode
+    Pkmu = np.sum(Pkmu_threads, axis=0)
+    k_mesh = np.sum(k_mesh_threads, axis=0)
+    mu_mesh = np.sum(mu_mesh_threads, axis=0)
+    count = np.sum(count_threads, axis=0)
+    return k_mesh, mu_mesh, Pkmu, count

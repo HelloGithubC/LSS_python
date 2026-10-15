@@ -1,0 +1,502 @@
+#include <complex>
+#include <vector>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdint>
+#include <omp.h>
+#include <limits>
+
+template <typename T>
+inline size_t GetBin(const T value, const T *array, const T array_diff, bool is_logarithmic)
+{
+    if (is_logarithmic)
+    {
+        return static_cast<size_t>(std::floor((std::log(value) - std::log(array[0])) / array_diff));
+    }
+    else 
+    {
+        return static_cast<size_t>(std::floor((value - array[0]) / array_diff));
+    }
+}
+
+void CalPSFromPS2D(const double *ps_2d, const double *k_2d,
+    const size_t *modes_2d,
+    double *k_out_2d, double *mu_out_2d, double *ps_kmu, size_t *modes,
+    const double k_min, const double k_max, const double dk, const uint32_t Nmu,
+    const size_t k_perp_bin, const size_t k_parallel_bin, int nthreads)
+{
+    uint32_t kbin = static_cast<uint32_t>((k_max - k_min) / dk);
+    uint32_t mubin = Nmu;
+    double mu_diff = 1.0 / Nmu;
+
+    omp_set_num_threads(nthreads);
+    #pragma omp parallel default(shared)
+    {
+        std::vector<std::vector<double>> ps_kmu_threads(kbin);
+        std::vector<std::vector<size_t>> modes_threads(kbin);
+        std::vector<std::vector<double>> k_out_2d_threads(kbin);
+        std::vector<std::vector<double>> mu_out_2d_threads(kbin);
+
+        for (uint32_t k_i = 0; k_i < kbin; k_i++)
+        {
+            ps_kmu_threads[k_i].resize(mubin, 0.0);
+            modes_threads[k_i].resize(mubin, 0uL);
+            k_out_2d_threads[k_i].resize(mubin, 0.0);
+            mu_out_2d_threads[k_i].resize(mubin, 0.0);
+        }
+
+        #pragma omp for schedule(static)
+        for (size_t i_paral = 0; i_paral < k_parallel_bin; i_paral++)
+        {
+            for (size_t i_perp = 0; i_perp < k_perp_bin; i_perp++)
+            {
+                size_t index_2d = i_paral + k_parallel_bin * i_perp;
+                double k_perp = k_2d[0 + i_paral * 2 + i_perp * 2 * k_parallel_bin];
+                double k_parallel = k_2d[1 + i_paral * 2 + i_perp * 2 * k_parallel_bin];
+                double k = std::sqrt(k_perp * k_perp + k_parallel * k_parallel);
+
+                // Use modes_2d directly as weight (paral_factor already applied in CalPS2D during mode counting)
+                size_t weight = modes_2d[i_perp + k_perp_bin * i_paral];
+
+                size_t k_index = static_cast<size_t>((k - k_min) / dk);
+                if (k_index >= kbin)
+                {
+                    continue;
+                }
+
+                double mu = k_parallel / k;
+                size_t mu_index = static_cast<size_t>(mu / mu_diff);
+                if (mu_index >= mubin)
+                {
+                    continue;
+                }
+
+                modes_threads[k_index][mu_index] += weight;
+                ps_kmu_threads[k_index][mu_index] += ps_2d[index_2d] * static_cast<double>(weight);
+                k_out_2d_threads[k_index][mu_index] += k * static_cast<double>(weight);
+                mu_out_2d_threads[k_index][mu_index] += mu * static_cast<double>(weight);
+            }
+        }
+
+        for (uint32_t k_i = 0; k_i < kbin; k_i++)
+        {
+            for (uint32_t mu_i = 0; mu_i < mubin; mu_i++)
+            {
+                #pragma omp atomic
+                modes[mu_i + k_i * mubin] += modes_threads[k_i][mu_i];
+                #pragma omp critical
+                ps_kmu[mu_i + k_i * mubin] += ps_kmu_threads[k_i][mu_i];
+                #pragma omp atomic
+                k_out_2d[mu_i + k_i * mubin] += k_out_2d_threads[k_i][mu_i];
+                #pragma omp atomic
+                mu_out_2d[mu_i + k_i * mubin] += mu_out_2d_threads[k_i][mu_i];
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < kbin; i++)
+    {
+        for (uint32_t j = 0; j < mubin; j++)
+        {
+            size_t index = j + i * mubin;
+            if (modes[index] > 0)
+            {
+                ps_kmu[index] /= static_cast<double>(modes[index]);
+                k_out_2d[index] /= static_cast<double>(modes[index]);
+                mu_out_2d[index] /= static_cast<double>(modes[index]);
+            }
+            else
+            {
+                ps_kmu[index] = std::numeric_limits<double>::quiet_NaN();
+                k_out_2d[index] = std::numeric_limits<double>::quiet_NaN();
+                mu_out_2d[index] = std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+    }
+}
+
+
+template <typename T>
+void CalPS2D(std::complex<T> *complex_field, T *kernel,
+    double *ps_2d, double* k_2d, size_t* modes_2d,
+    double* k_perp_edge, double* k_parallel_edge, size_t k_perp_bin, size_t k_parallel_bin,
+    const double *kx_array, const double *ky_array, const double *kz_array, size_t *ngrids,
+    T ps_3d_factor, T shotnoise, int nthreads)
+{
+    size_t nx = ngrids[0];
+    size_t ny = ngrids[1];
+    size_t nz = ngrids[2];
+
+    double k_perp_diff = k_perp_edge[1] - k_perp_edge[0];
+    double k_parallel_diff = k_parallel_edge[1] - k_parallel_edge[0];
+
+    omp_set_num_threads(nthreads);
+    #pragma omp parallel default(shared)
+    {
+        size_t index_3d = 0uL;
+        T kernel_temp;
+        T value_temp;
+        double k_perp = 0.0;
+        size_t ik_perp = 0uL;
+        size_t ik_parallel = 0uL;
+
+        size_t mode_uint;
+        double mode;
+        
+        // Thread-local accumulators to avoid synchronization contention
+        // Layout: [k_perp][k_parallel] matches the output array (k_perp_bin, k_parallel_bin, 2)
+        std::vector<std::vector<double>> ps_2d_threads(k_perp_bin);
+        std::vector<std::vector<size_t>> modes_2d_threads(k_perp_bin);
+        std::vector<std::vector<double>> k_2d_threads(k_perp_bin);  // for k_perp accumulation
+        std::vector<std::vector<double>> k_2d_threads_par(k_perp_bin);  // for k_parallel accumulation
+        for (size_t i = 0; i < k_perp_bin; i++)
+        {
+            ps_2d_threads[i].resize(k_parallel_bin, 0.0);
+            modes_2d_threads[i].resize(k_parallel_bin, 0uL);
+            k_2d_threads[i].resize(k_parallel_bin, 0.0);
+            k_2d_threads_par[i].resize(k_parallel_bin, 0.0);
+        }
+        
+        #pragma omp for schedule(static)
+        for (size_t iz = 0; iz < nz; iz++)
+        {
+            mode = (iz == 0uL)? 1.0: 2.0;
+            mode_uint = (iz == 0uL)? 1uL: 2uL;
+
+            if (kz_array[iz] < k_parallel_edge[0] || kz_array[iz] > k_parallel_edge[k_parallel_bin])
+            {
+                continue;
+            }
+            ik_parallel = GetBin(kz_array[iz], k_parallel_edge, k_parallel_diff, false);
+            if (ik_parallel == k_parallel_bin)
+            {
+                ik_parallel -= 1uL;
+            }
+                for (size_t ix = 0; ix < nx; ix++)
+                {
+                    for (size_t iy = 0; iy < ny; iy++ )
+                    {
+                        index_3d = iz + nz * iy + nz * ny * ix;
+                        kernel_temp = (kernel != nullptr)? kernel[index_3d] : static_cast<T>(1.0);
+                        // For auto-correlation, power spectrum is real: |delta(k)|^2
+                        T power_real = (complex_field[index_3d].real() * complex_field[index_3d].real() +
+                                       complex_field[index_3d].imag() * complex_field[index_3d].imag()) * ps_3d_factor - shotnoise;
+                        value_temp = power_real * kernel_temp;
+                    
+                    k_perp = std::sqrt(kx_array[ix] * kx_array[ix] + ky_array[iy] * ky_array[iy]);
+                    if (k_perp < k_perp_edge[0] || k_perp > k_perp_edge[k_perp_bin])
+                    {
+                        continue;
+                    }
+                    ik_perp = GetBin(k_perp, k_perp_edge, k_perp_diff, false);
+                    if (ik_perp == k_perp_bin)
+                    {
+                        ik_perp -= 1uL;
+                    }
+
+                    // Accumulate to thread-local storage without synchronization
+                    ps_2d_threads[ik_perp][ik_parallel] += value_temp * static_cast<T>(mode);
+                    modes_2d_threads[ik_perp][ik_parallel] += mode_uint;
+                    k_2d_threads[ik_perp][ik_parallel] += k_perp * mode;
+                    // Also accumulate k_parallel values for averaging (like k_perp)
+                    k_2d_threads_par[ik_perp][ik_parallel] += kz_array[iz] * mode;
+                } 
+            }
+        }
+        
+        // Merge thread-local results with reduced synchronization
+        for (size_t ik_per = 0; ik_per < k_perp_bin; ik_per++)
+        {
+            for (size_t ik_par = 0; ik_par < k_parallel_bin; ik_par++)
+            {
+                #pragma omp critical
+                {
+                    ps_2d[ik_par + k_parallel_bin * ik_per] += ps_2d_threads[ik_per][ik_par];
+                    // k_2d has two columns: [0] for k_perp (accumulated), [1] for k_parallel (accumulated for averaging)
+                    k_2d[0 + ik_par * 2 + ik_per * 2 * k_parallel_bin] += k_2d_threads[ik_per][ik_par];
+                    k_2d[1 + ik_par * 2 + ik_per * 2 * k_parallel_bin] += k_2d_threads_par[ik_per][ik_par];
+                }
+                #pragma omp atomic
+                modes_2d[ik_par + k_parallel_bin * ik_per] += modes_2d_threads[ik_per][ik_par];
+            }
+        }
+    }
+}
+
+void CalPSFromPS2D(const double *ps_2d, const double *k_2d,
+    const size_t *modes_2d,
+    double *k_out_2d, double *mu_out_2d, double *ps_kmu, size_t *modes,
+    const double* k_edge, const double* mu_edge, const size_t kbin, const size_t mubin,
+    const size_t k_perp_bin, const size_t k_parallel_bin, int nthreads)
+{
+    double dk = k_edge[1] - k_edge[0];
+
+    bool use_mu = false;
+    double mu_diff = 0.0;
+    if (mu_edge != nullptr)
+    {
+        use_mu = true;
+        mu_diff = mu_edge[1] - mu_edge[0];
+    }
+
+    omp_set_num_threads(nthreads);
+    #pragma omp parallel default(shared)
+    {
+        std::vector<std::vector<double>> ps_kmu_threads(kbin);
+        std::vector<std::vector<size_t>> modes_threads(kbin);
+        std::vector<std::vector<double>> k_out_2d_threads(kbin);
+        std::vector<std::vector<double>> mu_out_2d_threads(kbin);
+
+        for (uint32_t k_i = 0; k_i < kbin; k_i++)
+        {
+            ps_kmu_threads[k_i].resize(mubin, 0.0);
+            modes_threads[k_i].resize(mubin, 0uL);
+            k_out_2d_threads[k_i].resize(mubin, 0.0);
+
+            if (use_mu)
+            {
+                mu_out_2d_threads[k_i].resize(mubin, 0.0);
+            }
+        }
+
+        size_t mu_index = 0uL;
+        #pragma omp for schedule(static)
+        for (size_t i_paral = 0; i_paral < k_parallel_bin; i_paral++)
+        {
+            for (size_t i_perp = 0; i_perp < k_perp_bin; i_perp++)
+            {
+                size_t index_2d = i_paral + k_parallel_bin * i_perp;
+                double k_perp = k_2d[0 + i_paral * 2 + i_perp * 2 * k_parallel_bin];
+                double k_parallel = k_2d[1 + i_paral * 2 + i_perp * 2 * k_parallel_bin];
+
+                // Skip invalid k values
+                if (std::isnan(k_perp) || std::isnan(k_parallel))
+                {
+                    continue;
+                }
+
+                double k = std::sqrt(k_perp * k_perp + k_parallel * k_parallel);
+
+                if (k < k_edge[0] || k > k_edge[kbin])
+                {
+                    continue;
+                }
+                size_t k_index = GetBin(k, k_edge, dk, false);
+                if (k_index == kbin)
+                {
+                    k_index -= 1uL;
+                }
+
+                // Use modes_2d directly as weight (paral_factor already applied in CalPS2D during mode counting)
+                size_t weight = modes_2d[index_2d];
+
+                if (use_mu)
+                {
+                    double mu = k_parallel / k;
+                    if (mu < mu_edge[0] || mu > mu_edge[mubin])
+                    {
+                        continue;
+                    }
+                    mu_index = static_cast<size_t>(mu / mu_diff);
+                    if (mu_index == mubin)
+                    {
+                        mu_index -= 1uL;
+                    }
+
+                    mu_out_2d_threads[k_index][mu_index] += mu * static_cast<double>(weight);
+                }
+                else
+                {
+                    mu_index = 0uL;
+                }
+                modes_threads[k_index][mu_index] += weight;
+                ps_kmu_threads[k_index][mu_index] += ps_2d[index_2d] * static_cast<double>(weight);
+                k_out_2d_threads[k_index][mu_index] += k * static_cast<double>(weight);
+            }
+        }
+
+        for (uint32_t k_i = 0; k_i < kbin; k_i++)
+        {
+            for (uint32_t mu_i = 0; mu_i < mubin; mu_i++)
+            {
+                #pragma omp atomic
+                modes[mu_i + k_i * mubin] += modes_threads[k_i][mu_i];
+                #pragma omp critical
+                ps_kmu[mu_i + k_i * mubin] += ps_kmu_threads[k_i][mu_i];
+                #pragma omp atomic
+                k_out_2d[mu_i + k_i * mubin] += k_out_2d_threads[k_i][mu_i];
+                if (use_mu)
+                {
+                    #pragma omp atomic
+                    mu_out_2d[mu_i + k_i * mubin] += mu_out_2d_threads[k_i][mu_i];
+                }
+            }
+        }
+    }
+
+}
+
+template <typename T>
+void DealPS3D(const std::complex<T> *complex_field, const T *kernel, T *ps_3d, size_t *ngrids, T ps_3d_factor, T shotnoise, int nthreads)
+{
+    size_t nx = ngrids[0];
+    size_t ny = ngrids[1];
+    size_t nz = ngrids[2];
+
+    omp_set_num_threads(nthreads);
+    #pragma omp parallel default(shared)
+    {
+        size_t index = 0uL;
+        T kernel_temp;
+        #pragma omp for schedule(static) collapse(3)
+        for (size_t ix = 0; ix < nx; ix++)
+        {
+            for (size_t iy = 0; iy < ny; iy++)
+            {
+                for (size_t iz = 0; iz < nz; iz++)
+                {
+                    index = iz + nz * iy + nz * ny * ix;
+                    kernel_temp = (kernel != nullptr)? kernel[index] : static_cast<T>(1.0);
+                    // Calculate power spectrum: |delta(k)|^2 * factor - shotnoise
+                    T power = (std::real(complex_field[index]) * std::real(complex_field[index]) + 
+                              std::imag(complex_field[index]) * std::imag(complex_field[index])) * ps_3d_factor - shotnoise;
+                    ps_3d[index] = power * kernel_temp;
+                } 
+            } 
+        }
+    }
+}
+
+template <typename T>
+void CalculatePS(const T *ps_3d, const size_t *ngrids, const double *kx_array, const double *ky_array, const double *kz_array, const double *k_array, const double *mu_array, uint32_t kbin, uint32_t mubin, double *Pkmu, size_t *count, double *k_mesh, double *mu_mesh, int nthreads, bool k_logarithmic)
+{
+    size_t nx = ngrids[0];
+    size_t ny = ngrids[1];
+    size_t nz = ngrids[2];
+
+    bool use_mu = (mu_array != nullptr);
+    if (!use_mu)
+    {
+        mubin = 1u;
+    }
+
+    double k_diff = k_array[1] - k_array[0];
+    double mu_diff = (use_mu)? mu_array[1] - mu_array[0]: 1.0;
+    
+    omp_set_num_threads(nthreads);
+    #pragma omp parallel default(shared)
+    {
+        double kx, ky, kz, k, mu;
+        mu = 0.0;
+        size_t k_i, mu_i;
+        T mode=0.0;
+        size_t mode_uint = 0uL;
+        // Use double for Pkmu (real power spectrum output)
+        std::vector<std::vector<double>> Pkmu_threads(kbin);
+        std::vector<std::vector<size_t>> count_threads(kbin);
+        std::vector<std::vector<double>> k_mesh_threads(kbin);
+        std::vector<std::vector<double>> mu_mesh_threads(kbin);
+        for (size_t k_i = 0; k_i < kbin; k_i++)
+        {
+            Pkmu_threads[k_i].resize(mubin, 0.0);
+            count_threads[k_i].resize(mubin);
+            std::fill(count_threads[k_i].begin(), count_threads[k_i].end(), 0uL);
+            k_mesh_threads[k_i].resize(mubin, 0.0);
+            if (use_mu)
+            {
+                mu_mesh_threads[k_i].resize(mubin, 0.0);
+            }
+        } 
+
+        #pragma omp for schedule(static)
+        for (size_t ix = 0; ix < nx; ix++)
+        {
+            kx = std::abs(kx_array[ix]);
+            if (kx > k_array[kbin])
+            {
+                continue;
+            }
+            for (size_t iy = 0; iy < ny; iy++)
+            {
+                ky = std::abs(ky_array[iy]);
+                if (ky > k_array[kbin])
+                {
+                    continue;
+                }
+                for (size_t iz = 0; iz < nz; iz++)
+                {
+                    mode = (iz == 0uL)? 1.0: 2.0;
+                    mode_uint = (iz == 0uL)? 1uL: 2uL;
+                    kz = kz_array[iz]; 
+                    if (kz > k_array[kbin])
+                    {
+                        continue;
+                    }
+                    if (kx <= k_array[0]/2.0 && ky <= k_array[0]/2.0 && kz <= k_array[0]/2.0)
+                    {
+                        continue;
+                    }
+                    k = std::sqrt(kx * kx + ky * ky + kz * kz);
+                    if (k < k_array[0] || k > k_array[kbin])
+                    {
+                        continue;
+                    }
+                    k_i = GetBin(k, k_array, k_diff, k_logarithmic);
+                    if (k_i == kbin)
+                    {
+                        k_i -= 1uL;
+                    }
+                    if (k_i > kbin)
+                    {
+                        std:: printf("Error: k_i > kbin\n k = %.2f, k_i = %ld, k_logarithmic = %d \n", k, k_i, k_logarithmic);
+                    }
+
+                    if (use_mu)
+                    {
+                        mu = kz / k;
+                        if (mu < mu_array[0] || mu > mu_array[mubin])
+                        {
+                            continue;
+                        }
+                        mu_i = GetBin(mu, mu_array, mu_diff, false);
+                        if (mu_i == mubin)
+                        {
+                            mu_i -= 1uL;
+                        }
+                    }
+                    else 
+                    {
+                        mu_i = 0u;
+                    }
+
+                    // ps_3d is now a real array
+                    Pkmu_threads[k_i][mu_i] += ps_3d[iz + iy * nz + ix * nz * ny] * mode;
+                    count_threads[k_i][mu_i] += 1uL * mode_uint;
+                    k_mesh_threads[k_i][mu_i] += k * mode;
+                    if (use_mu)
+                        mu_mesh_threads[k_i][mu_i] += mu * mode;
+                } 
+                
+            }
+        }
+
+        for (size_t k_i = 0; k_i < kbin; k_i++)
+        {
+            for (size_t mu_i = 0; mu_i < mubin; mu_i++)
+            {
+                #pragma omp critical
+                Pkmu[mu_i + k_i * mubin] += Pkmu_threads[k_i][mu_i];
+                #pragma omp atomic
+                count[mu_i + k_i * mubin] += count_threads[k_i][mu_i];
+                #pragma omp atomic 
+                k_mesh[mu_i + k_i * mubin] += k_mesh_threads[k_i][mu_i];
+                if (use_mu)
+                {
+                    #pragma omp atomic
+                    mu_mesh[mu_i + k_i * mubin] += mu_mesh_threads[k_i][mu_i];
+                }
+            }
+        }
+    }
+}

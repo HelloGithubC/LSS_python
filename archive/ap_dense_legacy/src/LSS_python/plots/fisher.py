@@ -1,0 +1,472 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
+from scipy.stats import norm, chi2
+
+from LSS_python.fisher import _compute_ellipse_params_from_fisher
+
+def plot_ellipse_from_fisher(fisher, best_fit, central_values=None, ax=None,
+                              plot_engine='Ellipse', sigma=1, color='C0', plot_fiducial=True,
+                              plot_center=False, ellipse_fill=True, visual_xylims=True,
+                              param_indices=None, **kwargs):
+    r"""
+    Plot error ellipse from Fisher matrix.
+
+    The error ellipse represents the 1\sigma (68.3%) confidence region
+    for two parameters, derived from the Fisher information matrix.
+
+    Parameters
+    ----------
+    fisher : ndarray
+        Fisher information matrix. Can be 2x2 (direct ellipse plot) or
+        NxN (N >= 2, requires param_indices to select which two parameters).
+    best_fit : array_like
+        Best-fit parameter values, used as the position argument of the
+        function (e.g. for Fisher plots it is the fiducial point of the
+        parameter set). If fisher is NxN (N > 2), must have N elements.
+        If fisher is 2x2, must have 2 elements.
+    central_values : array_like, optional
+        Values at the center of the ellipse (i.e. where the likelihood is
+        assumed to be maximal, visually the translated center). If None,
+        defaults to best_fit, so the ellipse is centered on best_fit.
+        Can be set different from best_fit to draw the ellipse around a
+        shifted center. Must have the same length as best_fit.
+        When fisher is NxN, must also have N elements; the 2 entries
+        selected by param_indices are used as the ellipse center.
+    ax : matplotlib.axes.Axes, optional
+        Matplotlib axis to plot on. If None, creates a new figure and axis.
+    plot_engine : str, default 'Ellipse'
+        Method to draw the ellipse:
+        - 'Ellipse': Use matplotlib.patches.Ellipse (default). 
+          Note: When axis aspect ratio is not 'equal', the ellipse angle 
+          is interpreted in screen space, which may cause misalignment 
+          with data-space calculations.
+        - 'parametric': Use parametric equation to draw ellipse in data space.
+          This ensures correct alignment regardless of aspect ratio.
+    sigma : float, default 1
+        Number of standard deviations for the confidence ellipse.
+        The confidence level is computed from sigma using the Gaussian
+        cumulative distribution function. For example:
+        - sigma=1 corresponds to ~68.3% confidence level
+        - sigma=2 corresponds to ~95.4% confidence level
+        - sigma=3 corresponds to ~99.7% confidence level
+        The ellipse size scales with sqrt(χ² quantile) based on this confidence level.
+    color : str, default 'C0'
+        Color of the ellipse edge.
+    plot_fiducial : bool, default True
+        Whether to show a marker at the best-fit (fiducial) point.
+    plot_center : bool, default False
+        Whether to show a marker at the ellipse center (central_values).
+        Useful when central_values differs from best_fit: the fiducial
+        marker shows the original point while the center marker shows the
+        shifted ellipse center.
+    ellipse_fill : bool, default True
+        Whether to fill the ellipse.
+    visual_xylims : bool, default True
+        If True, use visually pleasing axis limits (different ranges for x and y).
+        If False, enforce equal axis ranges and aspect ratio to ensure perfect
+        alignment between ellipse and sigma points.
+    param_indices : tuple of int, optional
+        Indices of the two parameters to plot when fisher is NxN (N > 2).
+        Must be a tuple of two distinct integers in range [0, N-1].
+        If fisher is 2x2, this parameter is ignored.
+        Example: param_indices=(0, 2) plots parameter 0 vs parameter 2.
+    **kwargs : dict
+        Additional keyword arguments for customization. Supported keys:
+
+        **Ellipse properties** (passed to matplotlib.patches.Ellipse or plot):
+        - ellipse_alpha / alpha : float, default 0.5
+            Transparency of the ellipse fill.
+        - ellipse_facecolor / facecolor : str, optional
+            Fill color of the ellipse. If None, uses color with alpha.
+        - ellipse_edgecolor / edgecolor : str, optional
+            Edge color of the ellipse. If None, uses color.
+        - ellipse_linewidth / linewidth : float, default 1.5
+            Width of the ellipse edge.
+        - ellipse_linestyle / linestyle : str, default '-'
+            Style of the ellipse edge.
+        - ellipse_zorder : float, optional
+            Z-order for the ellipse patch.
+        - n_points : int, default 200
+            Number of points for parametric ellipse (only used when plot_engine='parametric').
+
+        **Best-fit (fiducial) marker**:
+        - fiducial_marker : str, default 'x'
+            Marker style for the fiducial (best-fit) point.
+        - fiducial_color / fiducial_markercolor : str, default 'C3'
+            Color of the fiducial marker.
+        - fiducial_size / markersize : float, default 8
+            Size of the fiducial marker.
+        - fiducial_zorder : float, optional
+            Z-order for the fiducial marker.
+
+        **Ellipse-center marker**:
+        - center_marker : str, default 'o'
+            Marker style for the ellipse-center point (when plot_center=True).
+        - center_color / center_markercolor : str, default 'C1'
+            Color of the center marker.
+        - center_size : float, default 8
+            Size of the center marker.
+        - center_zorder : float, optional
+            Z-order for the center marker.
+
+        **Parameter names**:
+        - param_names : tuple of str, optional
+            (xlabel, ylabel) for the axes. If not provided, defaults to
+            ('Parameter 1', 'Parameter 2').
+
+        **Axis limits**:
+        - xlim : tuple, optional
+            (xmin, xmax) for the axis. Auto-determined if not provided.
+        - ylim : tuple, optional
+            (ymin, ymax) for the axis. Auto-determined if not provided.
+        - padding : float, default 0.1
+            Fractional padding for auto axis limits (10% of ellipse extent).
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+        The matplotlib axis with the ellipse plotted.
+
+    Raises
+    ------
+    ValueError
+        If fisher is not a valid square matrix, param_indices is invalid,
+        or plot_engine is not 'Ellipse' or 'parametric'.
+    ImportError
+        If matplotlib is not installed.
+
+    Notes
+    -----
+    The ellipse represents the contour of constant likelihood deviation:
+        (θ - θ₀)^T · F · (θ - θ₀) = Δχ²
+
+    For a 1\sigma confidence region in 2D, Δχ² = χ²_{2, 0.683} ≈ 2.28.
+    The semi-axis lengths are: a = sqrt(Δχ² / λ₁), b = sqrt(Δχ² / λ₂)
+    where λ₁, λ₂ are the eigenvalues of the Fisher matrix.
+    """
+    import numpy as np
+
+    # Check if matplotlib is available
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Ellipse
+    except ImportError:
+        raise ImportError("matplotlib is required for plotting. "
+                         "Install it with: pip install matplotlib")
+
+    # Validate fisher matrix dimensions
+    fisher = np.atleast_2d(fisher)
+    n_params = fisher.shape[0]
+    if fisher.shape[0] != fisher.shape[1]:
+        raise ValueError(f"Fisher matrix must be square, got shape {fisher.shape}")
+    if n_params < 2:
+        raise ValueError(f"Fisher matrix must have at least 2 parameters, "
+                        f"got shape {fisher.shape}")
+
+    # Validate best_fit
+    best_fit = np.atleast_1d(best_fit)
+    if len(best_fit) != n_params:
+        raise ValueError(f"best_fit must have {n_params} elements (matching fisher), "
+                        f"got {len(best_fit)}")
+
+    # Resolve the ellipse center: defaults to best_fit when not given
+    if central_values is None:
+        center = best_fit
+    else:
+        center = np.atleast_1d(central_values)
+        if len(center) != n_params:
+            raise ValueError(f"central_values must have {n_params} elements (matching fisher), "
+                            f"got {len(center)}")
+
+    # Handle param_indices: extract 2x2 sub-matrix if needed
+    if n_params == 2:
+        # 2x2 fisher: use directly, param_indices ignored
+        if param_indices is not None:
+            # Validate even though we'll ignore it
+            param_indices = tuple(param_indices)
+            if len(param_indices) != 2:
+                raise ValueError(f"param_indices must have 2 elements, got {len(param_indices)}")
+        fisher_2d = fisher
+        best_fit_2d = best_fit
+        center_2d = center
+    else:
+        # NxN fisher (N > 2): param_indices is required
+        if param_indices is None:
+            raise ValueError(f"param_indices is required when fisher is {n_params}x{n_params}. "
+                            f"Specify which 2 parameters to plot, e.g. param_indices=(0, 1)")
+        param_indices = tuple(param_indices)
+        if len(param_indices) != 2:
+            raise ValueError(f"param_indices must have exactly 2 elements, got {len(param_indices)}")
+        i, j = param_indices
+        if not (0 <= i < n_params and 0 <= j < n_params):
+            raise ValueError(f"param_indices values must be in range [0, {n_params-1}], "
+                            f"got {param_indices}")
+        if i == j:
+            raise ValueError(f"param_indices must specify two different parameters, "
+                            f"got ({i}, {j})")
+        # Extract 2x2 sub-matrix and corresponding center values
+        idx = np.array([i, j])
+        fisher_2d = fisher[np.ix_(idx, idx)]
+        best_fit_2d = best_fit[idx]
+        center_2d = center[idx]
+
+    # Validate plot_engine
+    if plot_engine not in ['Ellipse', 'parametric']:
+        raise ValueError(f"plot_engine must be 'Ellipse' or 'parametric', got '{plot_engine}'")
+
+    # Create axis if not provided
+    if ax is None:
+        ax = plt.gca()
+
+    # Convert sigma to confidence level
+    # sigma -> confidence_level: P(-sigma < X < sigma) = 2*norm.cdf(sigma) - 1
+    confidence_level = 2 * norm.cdf(sigma) - 1
+
+    # Extract kwargs with defaults
+    # Ellipse appearance
+    ellipse_color = kwargs.get('ellipse_color', kwargs.get('color', color))
+    ellipse_alpha = kwargs.get('ellipse_alpha', kwargs.get('alpha', 0.5))
+    ellipse_facecolor = kwargs.get('ellipse_facecolor', kwargs.get('facecolor', None))
+    ellipse_edgecolor = kwargs.get('ellipse_edgecolor', kwargs.get('edgecolor', None))
+    ellipse_linewidth = kwargs.get('ellipse_linewidth', kwargs.get('linewidth', 1.5))
+    ellipse_linestyle = kwargs.get('ellipse_linestyle', kwargs.get('linestyle', '-'))
+    ellipse_fill = kwargs.get('ellipse_fill', kwargs.get('fill', ellipse_fill))
+    ellipse_zorder = kwargs.get('ellipse_zorder', kwargs.get('zorder', 1))
+
+    # Fiducial marker
+    fiducial_marker = kwargs.get('fiducial_marker', 'x')
+    fiducial_color = kwargs.get('fiducial_color', kwargs.get('fiducial_markercolor', 'C3'))
+    fiducial_size = kwargs.get('fiducial_size', kwargs.get('markersize', 8))
+    fiducial_zorder = kwargs.get('fiducial_zorder', 2)
+
+    # Ellipse-center marker
+    center_marker = kwargs.get('center_marker', 'o')
+    center_color = kwargs.get('center_color', kwargs.get('center_markercolor', 'C1'))
+    center_size = kwargs.get('center_size', kwargs.get('markersize', 8))
+    center_zorder = kwargs.get('center_zorder', 2)
+
+    # Axis limits
+    xlim = kwargs.get('xlim', None)
+    ylim = kwargs.get('ylim', None)
+    padding = kwargs.get('padding', 0.1)
+    visual_xylims = kwargs.get('visual_xylims', visual_xylims)
+
+    # Parameter names for axis labels
+    param_names = kwargs.get('param_names', ('Parameter 1', 'Parameter 2'))
+
+    # Label for the ellipse (for legend)
+    label = kwargs.get('label', None)
+
+    # Parametric ellipse parameters
+    n_points = kwargs.get('n_points', 200)
+
+    # Compute ellipse parameters using helper function
+    ellipse_params = _compute_ellipse_params_from_fisher(fisher_2d, confidence_level)
+    
+    # Extract parameters
+    a = ellipse_params['semi_minor']  # semi-minor axis
+    b = ellipse_params['semi_major']  # semi-major axis
+    angle_rad = ellipse_params['angle_rad']
+    angle_deg = ellipse_params['angle_deg']
+    eigenvecs = ellipse_params['eigenvecs']
+
+    # Set facecolor default to ellipse_color with alpha if not specified
+    if ellipse_facecolor is None:
+        ellipse_facecolor = ellipse_color
+    if ellipse_edgecolor is None:
+        ellipse_edgecolor = ellipse_color
+    
+    # Handle fill=False: set facecolor to 'none' instead of using alpha=0
+    # This ensures the edge remains visible
+    if not ellipse_fill:
+        ellipse_facecolor = 'none'
+
+    # Draw ellipse based on plot_engine
+    if plot_engine == 'Ellipse':
+        # Use matplotlib.patches.Ellipse
+        # Note: When aspect ratio is not 'equal', angle is interpreted in screen space
+        ellipse = Ellipse(
+            xy=center_2d,
+            width=2 * a,      # full width (2 * semi-axis)
+            height=2 * b,     # full height (2 * semi-axis)
+            angle=angle_deg,
+            facecolor=ellipse_facecolor,
+            edgecolor=ellipse_edgecolor,
+            alpha=ellipse_alpha,
+            linewidth=ellipse_linewidth,
+            linestyle=ellipse_linestyle,
+            zorder=ellipse_zorder,
+            label=label
+        )
+        ax.add_patch(ellipse)
+    
+    else:  # plot_engine == 'parametric'
+        # Use parametric equation to draw ellipse in data space
+        # This ensures correct alignment regardless of aspect ratio
+        
+        # Generate parametric points
+        theta = np.linspace(0, 2 * np.pi, n_points)
+        
+        # Ellipse in unrotated coordinate system
+        x_ellipse = a * np.cos(theta)
+        y_ellipse = b * np.sin(theta)
+        
+        # Apply rotation matrix
+        # R = [[cos(φ), -sin(φ)], [sin(φ), cos(φ)]]
+        cos_angle = np.cos(angle_rad)
+        sin_angle = np.sin(angle_rad)
+        x_rotated = x_ellipse * cos_angle - y_ellipse * sin_angle
+        y_rotated = x_ellipse * sin_angle + y_ellipse * cos_angle
+        
+        # Translate to center
+        x_final = x_rotated + center_2d[0]
+        y_final = y_rotated + center_2d[1]
+        
+        # Draw filled ellipse if requested
+        if ellipse_fill:
+            ax.fill(x_final, y_final,
+                   facecolor=ellipse_facecolor,
+                   alpha=ellipse_alpha,
+                   zorder=ellipse_zorder)
+        
+        # Draw ellipse edge
+        ax.plot(x_final, y_final,
+               color=ellipse_edgecolor,
+               linewidth=ellipse_linewidth,
+               linestyle=ellipse_linestyle,
+               zorder=ellipse_zorder,
+               label=label)
+
+    # Plot markers if requested
+    if plot_fiducial:
+        ax.plot(best_fit_2d[0], best_fit_2d[1],
+                marker=fiducial_marker,
+                color=fiducial_color,
+                markersize=fiducial_size,
+                zorder=fiducial_zorder,
+                linestyle='None')
+    if plot_center:
+        ax.plot(center_2d[0], center_2d[1],
+                marker=center_marker,
+                color=center_color,
+                markersize=center_size,
+                zorder=center_zorder,
+                linestyle='None')
+
+    # Compute bounding box of ellipse for axis limits
+    # For a rotated ellipse, the bounding box extent is:
+    # width = 2 * sqrt((a*cos(θ))² + (b*sin(θ))²)
+    # height = 2 * sqrt((a*sin(θ))² + (b*cos(θ))²)
+    # where θ is the rotation angle, a and b are semi-axes
+    cos_angle = np.cos(angle_rad)
+    sin_angle = np.sin(angle_rad)
+    
+    half_width = np.sqrt((a * cos_angle)**2 + (b * sin_angle)**2)
+    half_height = np.sqrt((a * sin_angle)**2 + (b * cos_angle)**2)
+    
+    if visual_xylims:
+        # Visual mode: use visually pleasing axis limits (different ranges)
+        # This allows different axis ranges for better visual appearance
+        
+        # Determine axis limits based on ellipse bounding box or user-provided limits
+        if xlim is not None and ylim is not None:
+            # Both limits provided by user
+            x_min, x_max = xlim
+            y_min, y_max = ylim
+        elif xlim is not None:
+            # Only xlim provided, set ylim based on ellipse
+            x_min, x_max = xlim
+            y_min = center_2d[1] - half_height
+            y_max = center_2d[1] + half_height
+        elif ylim is not None:
+            # Only ylim provided, set xlim based on ellipse
+            y_min, y_max = ylim
+            x_min = center_2d[0] - half_width
+            x_max = center_2d[0] + half_width
+        else:
+            # Neither provided, use ellipse bounding box
+            x_min = center_2d[0] - half_width
+            x_max = center_2d[0] + half_width
+            y_min = center_2d[1] - half_height
+            y_max = center_2d[1] + half_height
+        
+        # Calculate ranges and apply padding
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        x_pad = padding * max(x_range, 1e-8)
+        y_pad = padding * max(y_range, 1e-8)
+        
+        # Set axis limits independently
+        ax.set_xlim(x_min - x_pad, x_max + x_pad)
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+        
+        # Note: aspect ratio is not forced, allowing visual flexibility
+    
+    else:
+        # Precise alignment mode: enforce equal axis ranges
+        # This ensures perfect alignment between ellipse and sigma points
+        
+        # Determine axis limits based on ellipse bounding box or user-provided limits
+        if xlim is not None and ylim is not None:
+            # Both limits provided by user
+            x_min, x_max = xlim
+            y_min, y_max = ylim
+        elif xlim is not None:
+            # Only xlim provided, set ylim based on ellipse
+            x_min, x_max = xlim
+            y_min = center_2d[1] - half_height
+            y_max = center_2d[1] + half_height
+        elif ylim is not None:
+            # Only ylim provided, set xlim based on ellipse
+            y_min, y_max = ylim
+            x_min = center_2d[0] - half_width
+            x_max = center_2d[0] + half_width
+        else:
+            # Neither provided, use ellipse bounding box
+            x_min = center_2d[0] - half_width
+            x_max = center_2d[0] + half_width
+            y_min = center_2d[1] - half_height
+            y_max = center_2d[1] + half_height
+        
+        # Calculate ranges
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        
+        # Apply padding
+        x_pad = padding * max(x_range, 1e-8)
+        y_pad = padding * max(y_range, 1e-8)
+        
+        x_min_padded = x_min - x_pad
+        x_max_padded = x_max + x_pad
+        y_min_padded = y_min - y_pad
+        y_max_padded = y_max + y_pad
+        
+        # Ensure equal range in both axes to prevent visual distortion
+        x_range_padded = x_max_padded - x_min_padded
+        y_range_padded = y_max_padded - y_min_padded
+        max_range = max(x_range_padded, y_range_padded)
+        
+        # Center the axis with smaller range
+        x_center = (x_min_padded + x_max_padded) / 2
+        y_center = (y_min_padded + y_max_padded) / 2
+        
+        x_min_final = x_center - max_range / 2
+        x_max_final = x_center + max_range / 2
+        y_min_final = y_center - max_range / 2
+        y_max_final = y_center + max_range / 2
+        
+        # Set axis limits
+        ax.set_xlim(x_min_final, x_max_final)
+        ax.set_ylim(y_min_final, y_max_final)
+        
+        # Force equal aspect ratio to ensure ellipse is displayed correctly
+        ax.set_aspect('equal')
+
+    # Set labels if not already set
+    if ax.get_xlabel() == '':
+        ax.set_xlabel(param_names[0])
+    if ax.get_ylabel() == '':
+        ax.set_ylabel(param_names[1])
+
+    return ax
