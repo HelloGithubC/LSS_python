@@ -25,15 +25,18 @@ def _should_convert(redshift, omega_mf, w_f, omega_mm, w_m, wa_f=None, wa_m=None
     return ap_distance >= ap_tol, perp, parallel
 
 
-def tpcf_convert_main(xismu: xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0, smin_mapping=3.0, smax_mapping=60.0, c_api=True, ap_tol=1e-5, *, convert_algorithm="polygon") -> xismu | None:
-    """Convert pair counts with polygon overlap weights on the dense route.
+def tpcf_convert_main(xismu: xismu, omega_mf, w_f, omega_mm, w_m, redshift, convert_method="dense", assis_xismu=None, wa_f=0.0, wa_m=0.0, smin_mapping=3.0, smax_mapping=60.0, c_api=True, ap_tol=1e-5, *, convert_algorithm="polygon") -> xismu:
+    """Convert pair counts with area overlap weights on the dense route.
 
-    ``convert_algorithm`` selects the dense geometry. Curved methods are reserved.
+    ``convert_algorithm`` selects polygon, adaptive Gauss8, or analytic dense areas.
     The simple route retains its existing interpolation. For dense conversion the
     assistant supplies the target grid; AP displacements below ``ap_tol`` return
     that assistant itself, while ``ap_tol=0`` forces count mapping.
+    Simple conversion uses the same background-input policy and returns the
+    source itself at negligible displacement when no assistant is supplied.
     """
-    from ._ap_dense import ap_geometry, convert_xismu, validate_algorithm, validate_xismu
+    from ._ap_dense import (ap_geometry, convert_xismu, normalize_background_inputs,
+                            validate_algorithm, validate_xismu)
 
     validate_algorithm(convert_algorithm)
     if convert_method not in ("dense", "simple"):
@@ -50,6 +53,8 @@ def tpcf_convert_main(xismu: xismu, omega_mf, w_f, omega_mm, w_m, redshift, conv
         return convert_xismu(xismu, geometry, *shape, smin_mapping, smax_mapping,
                              assis_xismu, c_api, convert_algorithm)
 
+    redshift, wa_f, wa_m = normalize_background_inputs(
+        redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m)
     if xismu.xis is None:
         _ = xismu.get_xis()
     sbin, mubin = xismu.xis.shape
@@ -57,7 +62,7 @@ def tpcf_convert_main(xismu: xismu, omega_mf, w_f, omega_mm, w_m, redshift, conv
         redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m, ap_tol=ap_tol
     )
     if not should_convert:
-        return assis_xismu
+        return assis_xismu if assis_xismu is not None else xismu
     if sbin > 300 and mubin > 240:
         raise RuntimeError(f"Simple conversion is not available for {sbin:d} sbins and {mubin:d} mubins")
     return xismu.cosmo_conv_simple(

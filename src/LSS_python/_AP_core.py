@@ -80,13 +80,13 @@ def mapping_smudata_to_another_cosmology_simple(
 def mapping_smudata_dense(smutabstd, cosmos_tuple, smu_bin_tuple,
                           smu_all_bound_tuple, smu_mapping_bound_tuple, *,
                           convert_algorithm="polygon"):
-    """Compatibility adapter for the serial Numba polygon AP kernel."""
-    from ._ap_dense import validate_mapping
+    """Compatibility adapter for the serial Numba dense AP kernels."""
+    from ._ap_dense import CONVERT_ALGORITHMS, validate_mapping
     from ._ap_polygon import map_counts
 
     values = validate_mapping(smutabstd, cosmos_tuple, smu_bin_tuple,
                               smu_all_bound_tuple, smu_mapping_bound_tuple, convert_algorithm)
-    return map_counts(*values)
+    return map_counts(*values, CONVERT_ALGORITHMS.index(convert_algorithm))
 
 
 @njit

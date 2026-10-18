@@ -39,7 +39,7 @@ fftpower_pybind: $(SRC_DIR)/fftpower_pybind.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -o $(LIB_DIR)/fftpower_pybind$(EXT_SUFFIX)
 
 # 编译AP_pybind (requires C++17)
-AP_pybind: $(SRC_DIR)/AP_pybind.cpp $(SRC_DIR)/AP.hpp $(SRC_DIR)/AP_polygon.hpp
+AP_pybind: $(SRC_DIR)/AP_pybind.cpp $(SRC_DIR)/AP.hpp $(SRC_DIR)/AP_polygon.hpp $(SRC_DIR)/AP_curved.hpp
 	@mkdir -p $(LIB_DIR)
 	$(CXX) $(CXXFLAGS_AP) $(INCLUDES) $< -o $(LIB_DIR)/AP_pybind$(EXT_SUFFIX)
 

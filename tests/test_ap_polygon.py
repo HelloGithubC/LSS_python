@@ -252,12 +252,13 @@ def test_high_level_polygon_api_preserves_xismu_metadata_and_assistant_grid():
         np.testing.assert_array_equal(getattr(source, name), value)
 
 
-def test_high_level_identity_returns_assistant_and_requires_grid_for_conversion():
+@pytest.mark.parametrize("algorithm", ["polygon", "curved_gauss8", "curved_analytic"])
+def test_high_level_identity_returns_assistant_and_requires_grid_for_conversion(algorithm):
     source = _make_xismu((8, 6), smax=30., seed=12)
     assistant = _make_assistant((3, 2), smax=30.)
     assert tpcf_convert_main(
         source, .3071, -1., .3071, -1., .7,
-        assis_xismu=assistant, c_api=False, convert_algorithm="polygon",
+        assis_xismu=assistant, c_api=False, convert_algorithm=algorithm,
     ) is assistant
 
     with pytest.raises(RuntimeError, match="assistant|Assis xismu"):
@@ -280,8 +281,6 @@ def test_direct_xismu_method_can_use_explicit_output_sizes_without_assistant():
 
 
 @pytest.mark.parametrize("algorithm,error", [
-    ("curved_gauss8", NotImplementedError),
-    ("curved_analytic", NotImplementedError),
     ("bogus", ValueError),
 ])
 def test_algorithm_validation_precedes_identity_fast_path(algorithm, error):
@@ -293,13 +292,15 @@ def test_algorithm_validation_precedes_identity_fast_path(algorithm, error):
         )
 
 
-def test_high_level_ap_tolerance_zero_forces_nonidentity_conversion():
+@pytest.mark.parametrize("algorithm", ["polygon", "curved_gauss8", "curved_analytic"])
+@pytest.mark.parametrize("c_api", [False, True])
+def test_high_level_ap_tolerance_zero_forces_nonidentity_conversion(algorithm, c_api):
     source = _make_xismu((300, 240), smax=30., seed=14)
     assistant = _make_assistant((4, 3), smax=30.)
     result = tpcf_convert_main(
         source, .3071, -1., .3071, -1., .8, assis_xismu=assistant,
-        smin_mapping=0., smax_mapping=30., ap_tol=0., c_api=False,
-        convert_algorithm="polygon",
+        smin_mapping=0., smax_mapping=30., ap_tol=0., c_api=c_api,
+        convert_algorithm=algorithm,
     )
     assert result is not assistant
     for name in ("DD", "DR", "RR"):
@@ -322,7 +323,8 @@ def test_background_is_evaluated_once_per_conversion(monkeypatch):
     assert da.call_count == hz.call_count == 2
 
 
-def test_simple_dispatch_preserves_existing_interpolation():
+@pytest.mark.parametrize("algorithm", ["polygon", "curved_gauss8", "curved_analytic"])
+def test_simple_dispatch_preserves_existing_interpolation(algorithm):
     from unittest.mock import Mock
 
     class SimpleSource:
@@ -331,33 +333,118 @@ def test_simple_dispatch_preserves_existing_interpolation():
 
     source = SimpleSource()
     result = tpcf_convert_main(source, .3071, -1., .34, -.92, .8,
-                               convert_method="simple", wa_m=.2)
+                               convert_method="simple", wa_m=.2, convert_algorithm=algorithm)
     assert result is source.cosmo_conv_simple.return_value
     source.cosmo_conv_simple.assert_called_once_with(
         omstd=.3071, wstd=-1., omwrong=.34, wwrong=-.92, redshift=.8,
         wastd=0., wawrong=.2, smin_mapping=3., smax_mapping=60.)
 
 
-def test_real_four_corner_search_and_fractional_overlap_regression():
+@pytest.mark.parametrize("algorithm,expected_left,expected_right", [
+    ("polygon", .3173398046, .6826601954),
+    ("curved_gauss8", .31739454989489, .68260545009359),
+    ("curved_analytic", .31739454989489, .68260545009359),
+])
+def test_real_four_corner_search_and_fractional_overlap_regression(
+        algorithm, expected_left, expected_right):
     from LSS_python.CPP.lib.AP_pybind import _map_counts
 
     data = np.zeros((750, 600, 1))
     data[450, 558, 0] = 1.
     result = _map_counts(data, .5791154768764223, .4058608239642733,
-                         (150, 120), (0., 150.), (0., 1.), (0., 150., 0., 1.))
-    assert result[38, 104, 0] == pytest.approx(.3173398046, abs=2e-6)
-    assert result[39, 104, 0] == pytest.approx(.6826601954, abs=2e-6)
+                         (150, 120), (0., 150.), (0., 1.), (0., 150., 0., 1.),
+                         convert_algorithm=algorithm)
+    assert result[38, 104, 0] == pytest.approx(expected_left, abs=2e-10)
+    assert result[39, 104, 0] == pytest.approx(expected_right, abs=2e-10)
     assert result.sum() == pytest.approx(1., abs=1e-10)
 
 
-def test_raw_binding_keeps_historical_positional_signature():
+@pytest.mark.parametrize("algorithm", ["curved_gauss8", "curved_analytic"])
+def test_curved_real_cell_with_two_radial_crossings(algorithm):
+    from LSS_python.CPP.lib.AP_pybind import _map_counts
+
+    data = np.zeros((750, 600, 1), dtype=np.float64)
+    data[38, 266, 0] = 1.
+    result = _map_counts(
+        data, 3.656480451968117, 7.712829151445522,
+        (150, 120), (0., 150.), (0., 1.), (0., 150., 0., 1.),
+        convert_algorithm=algorithm,
+    )
+    # Diagnostic case 4947 / snapshot 83: the curved edge crosses both
+    # radial boundaries inside this target cell, unlike its straight chord.
+    assert result[36, 86, 0] == pytest.approx(.9999158264860112, abs=2e-10)
+
+
+@pytest.mark.parametrize("algorithm", ["polygon", "curved_gauss8", "curved_analytic"])
+def test_raw_binding_keeps_historical_positional_signature(algorithm):
     from LSS_python.CPP.lib.AP_pybind import mapping_smudata_dense
     from LSS_python.CPP.AP import mapping_smudata_dense_cpp
 
     data = np.arange(24.).reshape(4, 3, 2)[::-1]
     raw = mapping_smudata_dense(data, 4, 3, 5, 4, 100., 95., 1000., 1050.,
-                                0., 8., 0., 1., 0., 8., 1)
+                                0., 8., 0., 1., 0., 8., 1, convert_algorithm=algorithm)
     wrapped = mapping_smudata_dense_cpp(data, (100., 95., 1000., 1050.),
-                                        (4, 5, 3, 4), (0., 8., 0., 1.), (0., 8., 0., 1.))
+                                        (4, 5, 3, 4), (0., 8., 0., 1.), (0., 8., 0., 1.),
+                                        convert_algorithm=algorithm)
     np.testing.assert_array_equal(raw, wrapped)
     assert raw.flags.owndata
+
+
+@pytest.mark.parametrize("model_w", [-1., -1. + 1e-10])
+@pytest.mark.parametrize("with_assistant", [False, True])
+def test_simple_negligible_ap_returns_available_object(model_w, with_assistant):
+    source = _make_xismu((150, 120), smax=150., seed=91)
+    assistant = _make_xismu((150, 120), smax=150., seed=92) if with_assistant else None
+    result = tpcf_convert_main(source, .3071, -1., .3071, model_w, .8,
+                               convert_method="simple", assis_xismu=assistant)
+    assert result is (assistant if with_assistant else source)
+    assert np.all(np.isfinite(result.get_xis()))
+
+
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_simple_zero_redshift_matches_explicit_floor(direct):
+    source = _make_xismu((150, 120), smax=150., seed=93)
+    if direct:
+        def convert(z):
+            return source.cosmo_conv_simple(omstd=.3071, wstd=-1., omwrong=.35,
+                                             wwrong=-.9, redshift=z)
+    else:
+        def convert(z):
+            return tpcf_convert_main(source, .3071, -1., .35, -.9, z,
+                                      convert_method="simple", ap_tol=0.)
+    actual, expected = convert(0.), convert(1e-4)
+    assert actual is not source
+    for name in ("DD", "DR", "RR"):
+        np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
+        assert np.all(np.isfinite(getattr(actual, name)))
+
+
+@pytest.mark.parametrize("wa_pair", [(None, None), (None, .3), (.3, None)])
+@pytest.mark.parametrize("direct", [False, True])
+def test_simple_missing_wa_matches_constant_w_fallback(wa_pair, direct):
+    source = _make_xismu((150, 120), smax=150., seed=94)
+    if direct:
+        def convert(wa_f, wa_m):
+            return source.cosmo_conv_simple(omstd=.3071, wstd=-1., omwrong=.35,
+                                             wwrong=-.9, redshift=.8,
+                                             wastd=wa_f, wawrong=wa_m)
+    else:
+        def convert(wa_f, wa_m):
+            return tpcf_convert_main(source, .3071, -1., .35, -.9, .8,
+                                      convert_method="simple", wa_f=wa_f, wa_m=wa_m,
+                                      ap_tol=0.)
+    actual, expected = convert(*wa_pair), convert(0., 0.)
+    for name in ("DD", "DR", "RR"):
+        np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
+
+
+@pytest.mark.parametrize("redshift", [-.1, np.nan])
+@pytest.mark.parametrize("direct", [False, True])
+def test_simple_rejects_invalid_redshift(redshift, direct):
+    source = _make_xismu((150, 120), smax=150., seed=95)
+    with pytest.raises(ValueError, match="finite|nonnegative"):
+        if direct:
+            source.cosmo_conv_simple(redshift=redshift)
+        else:
+            tpcf_convert_main(source, .3071, -1., .35, -.9, redshift, convert_method="simple")

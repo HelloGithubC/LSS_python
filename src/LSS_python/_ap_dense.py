@@ -1,4 +1,4 @@
-"""Shared preparation and reconstruction for dense polygon AP conversion."""
+"""Shared preparation and reconstruction for dense AP conversion."""
 
 from dataclasses import dataclass
 
@@ -13,8 +13,6 @@ CONVERT_ALGORITHMS = ("polygon", "curved_gauss8", "curved_analytic")
 def validate_algorithm(name):
     if name not in CONVERT_ALGORITHMS:
         raise ValueError(f"convert_algorithm must be one of {CONVERT_ALGORITHMS}, got {name!r}")
-    if name != "polygon":
-        raise NotImplementedError(f"convert_algorithm={name!r} is reserved and not implemented")
 
 
 @dataclass(frozen=True)
@@ -38,14 +36,19 @@ class APGeometry:
         return float(np.hypot(self.alpha_perp - 1., self.alpha_parallel - 1.))
 
 
-def ap_geometry(redshift, omega_mf, w_f, omega_mm, w_m, wa_f=0., wa_m=0.):
-    """Evaluate each distance/rate once, including the constant-w fallback."""
+def normalize_background_inputs(redshift, omega_mf, w_f, omega_mm, w_m, wa_f=0., wa_m=0.):
+    """Use the same finite-input, redshift and constant-w policy for both routes."""
     if wa_f is None or wa_m is None:
         wa_f = wa_m = 0.
     parameters = np.asarray([redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m], dtype=float)
     if not np.all(np.isfinite(parameters)) or redshift < 0:
         raise ValueError("Cosmological parameters must be finite and redshift must be nonnegative")
-    z = max(float(redshift), 1e-4)
+    return max(float(redshift), 1e-4), wa_f, wa_m
+
+
+def ap_geometry(redshift, omega_mf, w_f, omega_mm, w_m, wa_f=0., wa_m=0.):
+    """Evaluate each distance/rate once, including the constant-w fallback."""
+    z, wa_f, wa_m = normalize_background_inputs(redshift, omega_mf, w_f, omega_mm, w_m, wa_f, wa_m)
     geometry = APGeometry(z, float(Hz_w0wa(z, omega_mf, w_f, wa_f)),
                           float(Hz_w0wa(z, omega_mm, w_m, wa_m)),
                           float(DA(z, omega_mf, w_f, wa_f)), float(DA(z, omega_mm, w_m, wa_m)))

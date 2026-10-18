@@ -6,20 +6,17 @@
 namespace py=pybind11;
 using Array=py::array_t<double,py::array::c_style|py::array::forcecast>;
 
-void validate_algorithm(const std::string& name) {
-    if (name=="polygon") return;
-    if (name=="curved_gauss8" || name=="curved_analytic") {
-        PyErr_SetString(PyExc_NotImplementedError, "Requested curved AP algorithm is reserved and not implemented");
-        throw py::error_already_set();
-    }
+lss_ap::ConvertAlgorithm parse_algorithm(const std::string& name) {
+    if (name=="polygon") return lss_ap::ConvertAlgorithm::Polygon;
+    if (name=="curved_gauss8") return lss_ap::ConvertAlgorithm::CurvedGauss8;
+    if (name=="curved_analytic") return lss_ap::ConvertAlgorithm::CurvedAnalytic;
     throw py::value_error("Unknown convert_algorithm; expected polygon, curved_gauss8 or curved_analytic");
 }
 
 py::array_t<double> map_counts(Array data, double a, double b, std::array<int,2> target_shape,
                               std::array<double,2> sb, std::array<double,2> mb,
                               std::array<double,4> window, int nthreads,
-                              const std::string& algorithm) {
-    validate_algorithm(algorithm);
+                              lss_ap::ConvertAlgorithm algorithm) {
     const auto input=data.request();
     if (input.ndim!=3 || input.shape[0]<1 || input.shape[1]<1 || input.shape[2]<1 ||
         input.shape[0]>std::numeric_limits<int>::max() || input.shape[1]>std::numeric_limits<int>::max())
@@ -50,7 +47,7 @@ py::array_t<double> map_counts(Array data, double a, double b, std::array<int,2>
     {
         py::gil_scoped_release release;
         lss_ap::map_counts(source,output,input.shape[0],input.shape[1],target_shape[0],target_shape[1],
-                           input.shape[2],a,b,sb,mb,window,nthreads);
+                           input.shape[2],a,b,sb,mb,window,nthreads,algorithm);
     }
     return result;
 }
@@ -59,8 +56,8 @@ py::array_t<double> mapping_smudata_dense(Array data, int ns, int nm, int nt_s, 
                                          double hf, double hm, double daf, double dam,
                                          double sl, double sh, double ml, double mh,
                                          double wsl, double wsh, int nthreads,
-                                         const std::string& algorithm) {
-    validate_algorithm(algorithm);
+                                         const std::string& algorithm_name) {
+    const auto algorithm=parse_algorithm(algorithm_name);
     if (data.ndim()!=3 || data.shape(0)!=ns || data.shape(1)!=nm)
         throw py::value_error("Input shape does not match the declared source grid");
     for (const double x:{hf,hm,daf,dam})
@@ -70,8 +67,12 @@ py::array_t<double> mapping_smudata_dense(Array data, int ns, int nm, int nt_s, 
 }
 
 PYBIND11_MODULE(AP_pybind,m) {
-    m.doc()="Dense AP count conversion with polygon overlap weights";
-    m.def("_map_counts",&map_counts,py::arg("data"),py::arg("alpha_perp"),py::arg("alpha_parallel"),
+    m.doc()="Dense AP count conversion with polygon or exact curved overlap weights";
+    m.def("_map_counts",[](Array data, double a, double b, std::array<int,2> target_shape,
+                            std::array<double,2> sb, std::array<double,2> mb,
+                            std::array<double,4> window, int nthreads, const std::string& name) {
+              return map_counts(data,a,b,target_shape,sb,mb,window,nthreads,parse_algorithm(name));
+          },py::arg("data"),py::arg("alpha_perp"),py::arg("alpha_parallel"),
           py::arg("target_shape"),py::arg("s_bounds"),py::arg("mu_bounds"),py::arg("mapping_bounds"),
           py::arg("nthreads")=1,py::kw_only(),py::arg("convert_algorithm")="polygon");
     m.def("mapping_smudata_dense",&mapping_smudata_dense,

@@ -504,13 +504,16 @@ class xismu(object):
         redshift=0.0001,
         smin_mapping=3.0, smax_mapping=60.0, wastd=0.0, wawrong=0.0,
     ):
+        """Interpolate counts after normalizing redshift and optional wa inputs."""
         from ._AP_core import mapping_smudata_to_another_cosmology_simple
+        from ._ap_dense import normalize_background_inputs
         from .base import Hz_w0wa_jit, DA_jit
         if int(self.sbin) == 750 and int(self.mubin) == 600:
             raise ValueError(
                 "Check your sbin and mubin of xismu. You are using simple convertor!"
             )
-        redshift = max(redshift, 0.0001)
+        redshift, wastd, wawrong = normalize_background_inputs(
+            redshift, omstd, wstd, omwrong, wwrong, wastd, wawrong)
         
         Hstd = Hz_w0wa_jit(redshift, omstd, wstd, wastd)
         Hnew = Hz_w0wa_jit(redshift, omwrong, wwrong, wawrong)
@@ -569,7 +572,7 @@ class xismu(object):
         smin_mapping=3.0, smax_mapping=60.0, assistant_xismu=None,
         wastd=0.0, wawrong=0.0, c_api=True, *, convert_algorithm="polygon",
     ):
-        """Rebin normalized counts using uniform mapped (s, mu) polygon areas.
+        """Rebin normalized counts using uniform mapped (s, mu) areas.
 
         Existing output-size arguments remain available without an assistant.
         With an assistant, its coordinates must match the requested output size.

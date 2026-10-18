@@ -3,6 +3,8 @@
 import numpy as np
 from numba import njit
 
+from ._ap_curved import curved_rate, source_areas
+
 
 @njit
 def _area(points, count):
@@ -148,7 +150,7 @@ def _candidate_bounds(bounds, alpha_perp, alpha_parallel, ns, nm,
 
 @njit
 def map_counts(data, alpha_perp, alpha_parallel, target_shape,
-               s_bounds, mu_bounds, mapping_bounds):
+               s_bounds, mu_bounds, mapping_bounds, algorithm=0):
     """Conservatively map source counts to a target grid using polygon areas.
 
     ``mapping_bounds`` is ``(slo, shi, mulo, muhi)``. A target rectangle
@@ -203,6 +205,7 @@ def map_counts(data, alpha_perp, alpha_parallel, target_shape,
         if not np.isfinite(inv_s) or not np.isfinite(inv_mu):
             raise ValueError("Invalid inverse AP mapping geometry")
 
+    areas = source_areas(v, source_ds, alpha_perp, alpha_parallel, algorithm) if algorithm else np.empty(0)
     output = np.zeros((nt_s, nt_mu, channels), dtype=np.float64)
     identity_q = np.ones(nm + 1, dtype=np.float64)
     identity_v = np.empty(nm + 1, dtype=np.float64)
@@ -230,12 +233,16 @@ def map_counts(data, alpha_perp, alpha_parallel, target_shape,
                 s0 = sl + si * source_ds
                 s1 = sl + (si + 1) * source_ds
                 for mj in range(cj0, cj1 + 1):
-                    corners = np.empty((4, 2), dtype=np.float64)
-                    corners[0, 0], corners[0, 1] = s0 * geometry_q[mj], geometry_v[mj]
-                    corners[1, 0], corners[1, 1] = s1 * geometry_q[mj], geometry_v[mj]
-                    corners[2, 0], corners[2, 1] = s0 * geometry_q[mj + 1], geometry_v[mj + 1]
-                    corners[3, 0], corners[3, 1] = s1 * geometry_q[mj + 1], geometry_v[mj + 1]
-                    rate = polygon_rate(corners, bounds)
+                    if use_ap and algorithm:
+                        rate = curved_rate(s0, s1, v[mj], v[mj+1], areas[mj],
+                                           bounds, alpha_perp, alpha_parallel, algorithm)
+                    else:
+                        corners = np.empty((4, 2), dtype=np.float64)
+                        corners[0, 0], corners[0, 1] = s0 * geometry_q[mj], geometry_v[mj]
+                        corners[1, 0], corners[1, 1] = s1 * geometry_q[mj], geometry_v[mj]
+                        corners[2, 0], corners[2, 1] = s0 * geometry_q[mj + 1], geometry_v[mj + 1]
+                        corners[3, 0], corners[3, 1] = s1 * geometry_q[mj + 1], geometry_v[mj + 1]
+                        rate = polygon_rate(corners, bounds)
                     if rate > 0.0:
                         for c in range(channels):
                             output[i, j, c] += rate * data[si, mj, c]

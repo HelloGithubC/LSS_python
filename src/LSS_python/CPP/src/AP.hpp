@@ -1,16 +1,26 @@
 #pragma once
 
 #include "AP_polygon.hpp"
+#include "AP_curved.hpp"
 #include <cstddef>
 
 namespace lss_ap {
+
+enum class ConvertAlgorithm { Polygon, CurvedGauss8, CurvedAnalytic };
 
 // The numerical core depends only on AP scale ratios and grid geometry.
 inline void map_counts(const double* source, double* output, int ns, int nm,
                        int nt_s, int nt_mu, std::ptrdiff_t channels,
                        double alpha_perp, double alpha_parallel,
                        std::array<double,2> sb, std::array<double,2> mb,
-                       std::array<double,4> window, int nthreads) {
+                       std::array<double,4> window, int nthreads,
+                       ConvertAlgorithm algorithm = ConvertAlgorithm::Polygon) {
+    if (algorithm != ConvertAlgorithm::Polygon) {
+        map_counts_curved(source, output, ns, nm, nt_s, nt_mu, channels,
+                          alpha_perp, alpha_parallel, sb, mb, window, nthreads,
+                          algorithm == ConvertAlgorithm::CurvedAnalytic);
+        return;
+    }
     const Geometry transformed(alpha_perp, alpha_parallel, ns, nm, sb, mb);
     const Geometry identity(1., 1., ns, nm, sb, mb);
     const double ds=(sb[1]-sb[0])/nt_s, dm=(mb[1]-mb[0])/nt_mu;
