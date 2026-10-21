@@ -98,6 +98,15 @@ weight columns receive ones. `--set_weight_to_one` forces both catalogs' enabled
 weights to one. Without `--with_weight`, only position columns are used. Calling
 the command without arguments prints help before MPI initialization.
 
+Add `--verbose` / `-v` to print the configuration, catalog shapes/dtypes/sizes,
+cache decisions, block populations, task counts, and per-rank assignments. Each
+rank then reports task progress and elapsed times at roughly 5% task intervals
+or after 30 seconds between reports, checked when a task completes. Progress
+counts tasks rather than predicting remaining runtime; a single Corrfunc call
+finishes before its completion can be reported. Logs include rank prefixes and
+are flushed immediately for batch-job output. Reduction and file writes also
+have start/completion messages and timings.
+
 ## Interface and outputs
 
 The first ten parameters follow `run_tpCF`: catalogs, `sedges`, `mubin`,

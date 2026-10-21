@@ -8,6 +8,7 @@ participate in run_tpCF_mpi; nthreads specifies the OpenMP threads per rank.
 import argparse
 from pathlib import Path
 import sys
+from time import perf_counter
 
 import joblib
 import numpy as np
@@ -54,7 +55,8 @@ def build_parser():
                         help="Recompute tpCF, DD, and DR, retaining RR unless --force_rr is set")
     parser.add_argument("--force_rr", "-forcerr", action="store_true",
                         help="Recompute RR when pair counting runs")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Show MPI task distribution")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Show configuration, catalog/block details, per-rank progress, and timings")
     return parser
 
 
@@ -79,17 +81,54 @@ def parse_arguments(argv=None):
     return args
 
 
-def read_data(filename, with_weight=False, weight_set_one=False):
+def print_configuration(args, nranks):
+    """Print the run configuration on root before catalog loading."""
+    print("=" * 60, flush=True)
+    print("MPI box two-point correlation calculation", flush=True)
+    for name, value in (
+        ("mode", "RR only" if args.only_run_rr else "DD + DR + RR -> tpCF"),
+        ("data", "unused (RR-only mode)" if args.only_run_rr else args.data_filename),
+        ("random", args.random_filename),
+        ("MPI ranks", nranks),
+        ("threads per rank", args.nthreads),
+        ("boxsize", args.boxsize.tolist()),
+        ("ngrids", args.ngrids.tolist()),
+        ("block widths", (args.boxsize / args.ngrids).tolist()),
+        ("s range / bins", f"[{args.smin}, {args.smax}] / {args.sbin}"),
+        ("mu bins", args.mubin),
+        ("with_weight", args.with_weight),
+        ("weight_set_one", args.with_weight and args.set_weight_to_one),
+        ("refine factors", args.xyz_refine_factors),
+        ("RR output", args.rr_filename),
+        ("tpCF output", "unused (RR-only mode)" if args.only_run_rr else args.tpcf_filename),
+        ("save DD/DR", args.save_dd_dr),
+        ("force DD/DR/tpCF", args.force),
+        ("force RR", args.force_rr),
+    ):
+        print(f"  {name:20s}: {value}", flush=True)
+    print("=" * 60, flush=True)
+
+
+def read_data(filename, with_weight=False, weight_set_one=False, *, verbose=False, name="catalog"):
     """Load an N-by-3/4 catalog, retaining enabled weights and supplying unit weights."""
     from LSS_python.pair_counting import prepare_catalogs
 
+    started = perf_counter()
+    print(f"       Loading {name} from {filename} ...", flush=True)
     source = np.load(filename, allow_pickle=False)
+    if verbose:
+        print(f"       {name} file loaded: shape={source.shape}, dtype={source.dtype}, "
+              f"size={source.nbytes / 1024**3:.3f} GiB; preparing columns ...", flush=True)
     catalog, _ = prepare_catalogs(source, with_weight=with_weight)
     if not with_weight:
-        return np.ascontiguousarray(catalog[:, :3])
-    if weight_set_one:
+        catalog = np.ascontiguousarray(catalog[:, :3])
+    elif weight_set_one:
         catalog = catalog.copy()
         catalog[:, 3] = 1.0
+    if verbose:
+        print(f"       {name} ready: shape={catalog.shape}, dtype={catalog.dtype}, "
+              f"size={catalog.nbytes / 1024**3:.3f} GiB, "
+              f"elapsed={perf_counter() - started:.2f}s", flush=True)
     return catalog
 
 
@@ -100,6 +139,7 @@ def prepare_run(args):
     rr_path = Path(args.rr_filename)
     tpcf_path = Path(args.tpcf_filename)
     state = {"data": None, "random": None, "counts": {}, "parts": [], "outputs": {}, "skip": None}
+    print("[1/4] Checking cached results ...", flush=True)
     if args.only_run_rr and rr_path.exists() and not args.force_rr:
         state["skip"] = f"RR file {rr_path} exists, skipping"
         return state
@@ -110,6 +150,9 @@ def prepare_run(args):
     if args.only_run_rr:
         state["parts"] = ["RR"]
         state["outputs"]["RR"] = rr_path
+        if args.verbose:
+            print(f"       RR: {'forced recomputation' if args.force_rr else 'cache missing'} "
+                  f"-> {rr_path}", flush=True)
     else:
         for name, filename, force in (
             ("DD", Path("DD_temp.pkl"), args.force),
@@ -118,18 +161,38 @@ def prepare_run(args):
         ):
             if filename.exists() and not force:
                 print(f"Loading existing {name} from {filename}", flush=True)
+                started = perf_counter()
                 state["counts"][name] = joblib.load(filename)
+                if args.verbose:
+                    print(f"       {name} cache loaded in {perf_counter() - started:.2f}s", flush=True)
             else:
                 state["parts"].append(name)
                 if name == "RR" or args.save_dd_dr:
                     state["outputs"][name] = filename
-        state["data"] = read_data(args.data_filename, args.with_weight, args.set_weight_to_one)
+                if args.verbose:
+                    print(f"       {name}: {'forced recomputation' if force else 'cache missing'}; "
+                          f"save={state['outputs'].get(name, 'disabled')}", flush=True)
 
-    state["random"] = read_data(args.random_filename, args.with_weight, args.set_weight_to_one)
+    print("[2/4] Loading catalogs ...", flush=True)
     if not args.only_run_rr:
+        state["data"] = read_data(
+            args.data_filename, args.with_weight, args.set_weight_to_one,
+            verbose=args.verbose, name="data",
+        )
+    state["random"] = read_data(
+        args.random_filename, args.with_weight, args.set_weight_to_one,
+        verbose=args.verbose, name="random",
+    )
+    if not args.only_run_rr:
+        started = perf_counter()
+        if args.verbose:
+            print("       Unifying data/random precision ...", flush=True)
         state["data"], state["random"] = prepare_catalogs(
             state["data"], state["random"], with_weight=args.with_weight,
         )
+        if args.verbose:
+            print(f"       Common dtype={state['data'].dtype}; "
+                  f"elapsed={perf_counter() - started:.2f}s", flush=True)
     return state
 
 
@@ -145,9 +208,12 @@ def main(argv=None):
 
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
+    run_started = perf_counter()
     state, control = None, None
     if rank == 0:
         try:
+            if args.verbose:
+                print_configuration(args, comm.Get_size())
             state = prepare_run(args)
             control = {"error": None, "skip": state["skip"], "parts": state["parts"]}
         except Exception as exc:
@@ -175,7 +241,7 @@ def main(argv=None):
                 print("MPI counting import failed: " + "; ".join(errors), file=sys.stderr, flush=True)
             return 1
         if rank == 0:
-            print(f"Computing {', '.join(control['parts'])} using {comm.Get_size()} MPI ranks "
+            print(f"[3/4] Computing {', '.join(control['parts'])} using {comm.Get_size()} MPI ranks "
                   f"and {args.nthreads} threads per rank", flush=True)
         try:
             result = run_tpCF_mpi(
@@ -194,7 +260,7 @@ def main(argv=None):
         if rank == 0:
             state["counts"].update({name: result[name] for name in control["parts"]})
     elif rank == 0:
-        print("All pair counts already exist, loading from disk", flush=True)
+        print("[3/4] All pair counts already exist, using cached results", flush=True)
 
     error = None
     if rank == 0:
@@ -202,17 +268,26 @@ def main(argv=None):
             if not args.only_run_rr:
                 from LSS_python.tpcf import cal_tpCF_from_pairs
 
-                print("Computing tpCF from pair counts...", flush=True)
+                started = perf_counter()
+                print("[4/4] Computing tpCF from pair counts...", flush=True)
                 counts = state["counts"]
                 result = cal_tpCF_from_pairs(
                     counts["DD"], counts["DR"], counts["RR"], state["data"], state["random"],
                     args.sbin, args.mubin, args.with_weight,
                 )
+                if args.verbose:
+                    print(f"       tpCF calculation finished in {perf_counter() - started:.2f}s", flush=True)
                 filename = Path(args.tpcf_filename)
+                print(f"       Saving tpCF result to {filename} ...", flush=True)
+                started = perf_counter()
                 filename.parent.mkdir(parents=True, exist_ok=True)
                 joblib.dump(result, filename)
                 print(f"Saved tpCF result to {filename}", flush=True)
-            print("Done!", flush=True)
+                if args.verbose:
+                    print(f"       Save finished in {perf_counter() - started:.2f}s", flush=True)
+            else:
+                print(f"[4/4] RR-only result saved to {args.rr_filename}", flush=True)
+            print(f"Done! Total elapsed: {perf_counter() - run_started:.2f}s", flush=True)
         except Exception as exc:
             error = f"MPI result processing failed: {type(exc).__name__}: {exc}"
     error = comm.bcast(error, root=0)

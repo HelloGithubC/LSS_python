@@ -125,7 +125,7 @@ def test_weighted_full_run_cache_controls_and_unit_weights(tmp_path):
     np.save(data_path, data)
     np.save(random_path, random)
     reference_pairs, reference_xi = _serial_reference(data, random, weighted=True)
-    args = _base_args(data_path, random_path) + ["--with_weight", "--save_dd_dr"]
+    args = _base_args(data_path, random_path) + ["--with_weight", "--save_dd_dr", "--verbose"]
 
     _assert_success(_run_mpi(tmp_path, *args))
     for name in ("DD", "DR", "RR"):
