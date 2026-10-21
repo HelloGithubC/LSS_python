@@ -36,3 +36,4 @@ where = ["src"]
 # 这里是可选依赖
 [project.optional-dependencies]
 cuda = ["cupy"]
+mpi = ["mpi4py"]

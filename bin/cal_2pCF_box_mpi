@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""Compute non-periodic box 2pCF using MPI-distributed Corrfunc block tasks.
+
+Rank zero reads catalogs, selects cached counts, and writes results. All ranks
+participate in run_tpCF_mpi; nthreads specifies the OpenMP threads per rank.
+"""
+
+import argparse
+from pathlib import Path
+import sys
+
+import joblib
+import numpy as np
+
+
+def positive_int(value):
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("data_filename", help="Data .npy catalog, shape (N, 3) or (N, 4)")
+    parser.add_argument("random_filename", help="Random .npy catalog, shape (M, 3) or (M, 4)")
+    parser.add_argument("nthreads", type=positive_int, help="OpenMP threads per MPI rank")
+    parser.add_argument("--boxsize", "-boxsize", nargs="+", type=float, required=True,
+                        help="One box length or three axis lengths; positions lie in [0, boxsize]")
+    parser.add_argument("--ngrids", "-ngrids", nargs="+", type=positive_int, required=True,
+                        help="One grid division or three axis divisions; smax <= min(boxsize/ngrids)")
+    parser.add_argument("-smin", type=float, default=0.0, help="Minimum separation")
+    parser.add_argument("-smax", type=float, default=150.0, help="Maximum separation")
+    parser.add_argument("-sbin", type=positive_int, default=150, help="Separation bins")
+    parser.add_argument("-mubin", type=positive_int, default=120, help="Mu bins")
+    parser.add_argument("--with_weight", "-ww", action="store_true",
+                        help="Use fourth-column weights, filling missing weights with ones")
+    parser.add_argument("--set_weight_to_one", "-weightone", action="store_true",
+                        help="Force data and random weights to one when --with_weight is enabled")
+    parser.add_argument("--xyz_refine_factors", "-refine", nargs=3, type=positive_int,
+                        default=[2, 2, 1], help="Corrfunc x/y/z refinement factors")
+    parser.add_argument("--tpcf_filename", "-tpcf", default="./tpCF_temp.pkl",
+                        help="Output tpCF joblib filename")
+    parser.add_argument("--rr_filename", "-rr", default="./RR_temp.pkl",
+                        help="Output/cached RR joblib filename")
+    parser.add_argument("--only_run_rr", "-only_rr", action="store_true",
+                        help="Compute only RR; the data filename is unused")
+    parser.add_argument("--save_dd_dr", "-savetemp", action="store_true",
+                        help="Save DD_temp.pkl and DR_temp.pkl in the working directory")
+    parser.add_argument("-force", "-f", action="store_true",
+                        help="Recompute tpCF, DD, and DR, retaining RR unless --force_rr is set")
+    parser.add_argument("--force_rr", "-forcerr", action="store_true",
+                        help="Recompute RR when pair counting runs")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Show MPI task distribution")
+    return parser
+
+
+def parse_arguments(argv=None):
+    parser = build_parser()
+    arguments = sys.argv[1:] if argv is None else argv
+    if not arguments:
+        parser.print_help()
+        return None
+    args = parser.parse_args(arguments)
+    for name in ("boxsize", "ngrids"):
+        values = getattr(args, name)
+        if len(values) not in (1, 3):
+            parser.error(f"--{name} requires one or three values")
+        setattr(args, name, np.repeat(values, 3) if len(values) == 1 else np.asarray(values))
+    if np.any(~np.isfinite(args.boxsize)) or np.any(args.boxsize <= 0):
+        parser.error("--boxsize must contain finite positive lengths")
+    if not np.isfinite(args.smin) or not np.isfinite(args.smax) or not 0 <= args.smin < args.smax:
+        parser.error("separations must be finite and satisfy 0 <= smin < smax")
+    if args.smax > np.min(args.boxsize / args.ngrids):
+        parser.error("smax must not exceed the smallest block width (boxsize/ngrids)")
+    return args
+
+
+def read_data(filename, with_weight=False, weight_set_one=False):
+    """Load an N-by-3/4 catalog, retaining enabled weights and supplying unit weights."""
+    from LSS_python.pair_counting import prepare_catalogs
+
+    source = np.load(filename, allow_pickle=False)
+    catalog, _ = prepare_catalogs(source, with_weight=with_weight)
+    if not with_weight:
+        return np.ascontiguousarray(catalog[:, :3])
+    if weight_set_one:
+        catalog = catalog.copy()
+        catalog[:, 3] = 1.0
+    return catalog
+
+
+def prepare_run(args):
+    """On root, plan cache reuse and load the inputs needed by the selected mode."""
+    from LSS_python.pair_counting import prepare_catalogs
+
+    rr_path = Path(args.rr_filename)
+    tpcf_path = Path(args.tpcf_filename)
+    state = {"data": None, "random": None, "counts": {}, "parts": [], "outputs": {}, "skip": None}
+    if args.only_run_rr and rr_path.exists() and not args.force_rr:
+        state["skip"] = f"RR file {rr_path} exists, skipping"
+        return state
+    if not args.only_run_rr and tpcf_path.exists() and not args.force:
+        state["skip"] = f"tpCF result {tpcf_path} exists, skipping"
+        return state
+
+    if args.only_run_rr:
+        state["parts"] = ["RR"]
+        state["outputs"]["RR"] = rr_path
+    else:
+        for name, filename, force in (
+            ("DD", Path("DD_temp.pkl"), args.force),
+            ("DR", Path("DR_temp.pkl"), args.force),
+            ("RR", rr_path, args.force_rr),
+        ):
+            if filename.exists() and not force:
+                print(f"Loading existing {name} from {filename}", flush=True)
+                state["counts"][name] = joblib.load(filename)
+            else:
+                state["parts"].append(name)
+                if name == "RR" or args.save_dd_dr:
+                    state["outputs"][name] = filename
+        state["data"] = read_data(args.data_filename, args.with_weight, args.set_weight_to_one)
+
+    state["random"] = read_data(args.random_filename, args.with_weight, args.set_weight_to_one)
+    if not args.only_run_rr:
+        state["data"], state["random"] = prepare_catalogs(
+            state["data"], state["random"], with_weight=args.with_weight,
+        )
+    return state
+
+
+def main(argv=None):
+    args = parse_arguments(argv)
+    if args is None:
+        return 0
+    try:
+        from mpi4py import MPI
+    except ImportError:
+        print("Error: cal_2pCF_box_mpi requires mpi4py (install LSS_python[mpi])", file=sys.stderr)
+        return 1
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    state, control = None, None
+    if rank == 0:
+        try:
+            state = prepare_run(args)
+            control = {"error": None, "skip": state["skip"], "parts": state["parts"]}
+        except Exception as exc:
+            control = {"error": f"MPI input preparation failed: {type(exc).__name__}: {exc}"}
+    control = comm.bcast(control, root=0)
+    if control["error"]:
+        if rank == 0:
+            print(control["error"], file=sys.stderr, flush=True)
+        return 1
+    if control["skip"]:
+        if rank == 0:
+            print(control["skip"], flush=True)
+        return 0
+
+    if control["parts"]:
+        # Import collectively before entering the MPI counting function.
+        import_error = None
+        try:
+            from LSS_python.tpcf_mpi import run_tpCF_mpi
+        except Exception as exc:
+            import_error = f"rank {rank}: {type(exc).__name__}: {exc}"
+        errors = [error for error in comm.allgather(import_error) if error]
+        if errors:
+            if rank == 0:
+                print("MPI counting import failed: " + "; ".join(errors), file=sys.stderr, flush=True)
+            return 1
+        if rank == 0:
+            print(f"Computing {', '.join(control['parts'])} using {comm.Get_size()} MPI ranks "
+                  f"and {args.nthreads} threads per rank", flush=True)
+        try:
+            result = run_tpCF_mpi(
+                state["data"] if rank == 0 else None,
+                state["random"] if rank == 0 else None,
+                np.linspace(args.smin, args.smax, args.sbin + 1), args.mubin, args.with_weight,
+                run_parts=control["parts"], refine_factors=args.xyz_refine_factors,
+                output_dict=state["outputs"] if rank == 0 else None,
+                nthreads=args.nthreads, verbose=args.verbose,
+                boxsize=args.boxsize, ngrids=args.ngrids, mpicomm=comm,
+            )
+        except Exception as exc:
+            if rank == 0:
+                print(f"MPI counting failed: {exc}", file=sys.stderr, flush=True)
+            return 1
+        if rank == 0:
+            state["counts"].update({name: result[name] for name in control["parts"]})
+    elif rank == 0:
+        print("All pair counts already exist, loading from disk", flush=True)
+
+    error = None
+    if rank == 0:
+        try:
+            if not args.only_run_rr:
+                from LSS_python.tpcf import cal_tpCF_from_pairs
+
+                print("Computing tpCF from pair counts...", flush=True)
+                counts = state["counts"]
+                result = cal_tpCF_from_pairs(
+                    counts["DD"], counts["DR"], counts["RR"], state["data"], state["random"],
+                    args.sbin, args.mubin, args.with_weight,
+                )
+                filename = Path(args.tpcf_filename)
+                filename.parent.mkdir(parents=True, exist_ok=True)
+                joblib.dump(result, filename)
+                print(f"Saved tpCF result to {filename}", flush=True)
+            print("Done!", flush=True)
+        except Exception as exc:
+            error = f"MPI result processing failed: {type(exc).__name__}: {exc}"
+    error = comm.bcast(error, root=0)
+    if error:
+        if rank == 0:
+            print(error, file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

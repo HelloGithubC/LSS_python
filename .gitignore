@@ -24,6 +24,11 @@ tests/*
 !tests/test_ap_curved.py
 !tests/validate_ap_curved.py
 !tests/validate_ap_migration.py
+!tests/test_pair_counting.py
+!tests/validate_pair_counting.py
+!tests/test_tpcf_mpi.py
+!tests/validate_tpcf_mpi.py
+!tests/test_cal_2pcf_box_mpi.py
 # Archived extensions are local reproducibility artifacts; rebuild from source.
 archive/**/*.so
 validation/
