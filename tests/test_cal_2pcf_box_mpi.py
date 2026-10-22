@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "bin" / "cal_2pCF_box_mpi"
+SCRIPT = Path(__file__).resolve().parents[1] / "bin" / "cal_MCF_box_mpi"
 BOX_SIZE = 20.0
 NGRIDS = 2
 SEDGES = np.linspace(0.5, 8.0, 4)

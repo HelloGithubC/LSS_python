@@ -3,7 +3,7 @@ from numba import njit
 import math
 
 from .base import Hz, DA, Hz_w0wa
-from .tpcf import xismu
+from .xismu import xismu
 from .HI import cal_HI_factor
 
 

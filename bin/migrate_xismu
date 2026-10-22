@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Migrate xismu object references by overwriting each input file in place.
+
+No backup files are created. Files with no legacy xismu references, including
+already migrated files, are skipped. Each rewrite is reloaded and checked
+before replacing the original file.
+"""
+
+import argparse
+import sys
+
+
+def main(argv=None):
+    """Migrate each supplied file in sequence, reporting per-file results."""
+    if argv is None:
+        argv = sys.argv[1:]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATH",
+        help="joblib or pickle files that may contain xismu objects",
+    )
+    if not argv:
+        parser.print_help()
+        return 0
+    args = parser.parse_args(argv)
+
+    # Import after parsing so help remains available in a minimal environment.
+    from LSS_python.xismu import migrate_xismu_file
+
+    failed = False
+    for path in args.paths:
+        try:
+            count = migrate_xismu_file(path)
+        except Exception as exc:
+            print(f"error: {path}: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        if count:
+            print(f"migrated: {path} ({count} unique xismu object(s))")
+        else:
+            print(f"skipped: {path} (no legacy xismu references)")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

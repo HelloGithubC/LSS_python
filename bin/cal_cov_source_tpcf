@@ -23,7 +23,7 @@ from LSS_python.cov import run_jackknife_tpCF, run_subsample_tpCF
 
 
 # ---------------------------------------------------------------------------
-# Data loading (mirrors cal_2pCF_box_weight_ap.read_data)
+# Data loading (mirrors cal_MCF_box_ap.read_data)
 # ---------------------------------------------------------------------------
 def read_data(filename, weight_set_one=False, with_weight=False):
     """

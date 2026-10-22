@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec 
 
-from LSS_python.tpcf import get_diff_array_test
+from LSS_python.xismu import get_diff_array_test
 
 def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, figsize=(12,12), **argv):
     fig = plt.figure(dpi=100, figsize=figsize)

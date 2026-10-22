@@ -17,7 +17,7 @@ import numpy as np
 
 def _load_xismu(filename, sbin, mubin):
     """Load an xismu object from a file."""
-    from LSS_python.tpcf import xismu
+    from LSS_python.xismu import xismu
 
     return xismu.load(filename, sbin=sbin, mubin=mubin)
 

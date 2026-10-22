@@ -10,12 +10,14 @@ Can save intermediate pair counts for re-use and supports weighted catalogs.
 
 import numpy as np 
 from LSS_python.tpcf import cal_tpCF_from_pairs, run_tpCF
+from LSS_python.AP import snap_box_convert_main
+from LSS_python.MCF import create_rho, create_rho_fix_r
 import joblib, os
 import argparse, sys
 
-def read_data(filename, weight_set_one=False):
+def read_data(filename, weight_set_one=False, with_weight=False):
     """
-    Read ordinary npy arrays, only supporting shapes of (N, 3) or (N, 4)
+    Read ordinary npy arrays and convert them to the required number of columns.
     
     Parameters
     ----------
@@ -23,32 +25,53 @@ def read_data(filename, weight_set_one=False):
         Path to the npy file containing catalog data
     weight_set_one : bool, optional
         If True, force the weight column (4th column) to 1.0, by default False
+    with_weight : bool, optional
+        If True, the returned array has 4 columns (x, y, z, weight).
+        If False, the returned array has 3 columns (x, y, z only).
         
     Returns
     -------
     numpy.ndarray
-        Processed catalog array with shape (N, 3) or (N, 4)
+        Catalog array with shape (N, 3) or (N, 4) as required
     """
     source = np.load(filename)
-    result_cols = 4 if weight_set_one else 3
-    result_array = np.zeros(shape=(source.shape[0], result_cols), dtype=source.dtype)
+    ncols = source.shape[1]
+    target_cols = 4 if with_weight else 3
 
-    if weight_set_one:
-        # Copy positions and set weights to 1.0
-        result_array[:, :3] = source[:, :3]
-        result_array[:, 3] = 1.0
-    else:
-        # Copy available columns (either 3 or 4)
-        result_array[:, :result_cols] = source[:, :result_cols]
+    # Fast path: input already has the required shape and no weight
+    # modification is needed, return directly without allocating new memory
+    if ncols == target_cols and not weight_set_one:
+        return source
+
+    # General path: convert to the required number of columns
+    result_array = np.zeros(shape=(source.shape[0], target_cols), dtype=source.dtype)
+    # Copy position columns (whatever is available, at most 3)
+    npos = min(ncols, 3)
+    result_array[:, :npos] = source[:, :npos]
+
+    # Handle the weight column if requested
+    if with_weight:
+        if weight_set_one or ncols < 4:
+            # Force weights to 1.0, or fill missing weights with 1.0
+            result_array[:, 3] = 1.0
+        else:
+            # Keep original weights
+            result_array[:, 3] = source[:, 3]
 
     return result_array
+
+def ensure_dot_prefix(filename):
+    """Prefix relative output paths with ./ so os.path.dirname is never empty."""
+    if os.path.isabs(filename) or filename.startswith("./"):
+        return filename
+    return "./" + filename
         
     
 # ============================================================================
 # Command-line argument parser
 # ============================================================================
 parser = argparse.ArgumentParser(
-    prog="cal_tpCF_box", 
+    prog="cal_MCF_box_ap", 
     usage="Calculate 2pCF with Corrfunc for simulation boxes",
     description="Compute two-point correlation function from data and random catalogs"
 )
@@ -89,6 +112,10 @@ parser.add_argument("--with_weight", "-ww",
 parser.add_argument("--set_weight_to_one", "-weightone", 
                    action="store_true", 
                    help="Force weights to 1.0 (valid only with --with_weight)")
+parser.add_argument("--weight_pow", "-weipow", 
+                   type=float, 
+                   default=1.0, 
+                   help="Raise data weights to this power, i.e. weight**weipow (valid only with --with_weight)")
 
 # Algorithm parameters
 parser.add_argument("--xyz_refine_factors", "-refine", 
@@ -126,6 +153,40 @@ parser.add_argument("--verbose", "-v",
                    action="store_true", 
                    help="Enable verbose output during computation")
 
+# MCF density re-calculation parameters (used after AP conversion)
+parser.add_argument("--rho-fix-n",
+                   action="store_true",
+                   help="Re-calculate rho using fixed neighbor number (create_rho). Must be used with --rho-param.")
+parser.add_argument("--rho-fix-r",
+                   action="store_true",
+                   help="Re-calculate rho using fixed radius (create_rho_fix_r). Must be used with --rho-param.")
+parser.add_argument("--rho-param",
+                   type=float,
+                   default=None,
+                   help="Parameter for rho re-calculation: k (neighbor number) for --rho-fix-n, or r (radius) for --rho-fix-r.")
+
+# Alcock-Paczyński conversion parameters
+parser.add_argument("--fiducial_values", "-fid",
+                   nargs="+",
+                   type=float,
+                   default=None,
+                   metavar="OMEGA_M W0 [WA]",
+                   help="Fiducial (true) cosmology: omega_m, w0[, wa]. Must be used together with --modify_values.")
+parser.add_argument("--modify_values", "-mod",
+                   nargs="+",
+                   type=float,
+                   default=None,
+                   metavar="OMEGA_M W0 [WA]",
+                   help="Modified (wrong) cosmology: omega_m, w0[, wa]. Must be used together with --fiducial_values.")
+parser.add_argument("--redshift", "-z",
+                   type=float,
+                   default=None,
+                   help="Redshift for AP conversion (required when using --fiducial_values/--modify_values)")
+parser.add_argument("--boxsize",
+                   type=float,
+                   default=None,
+                   help="Box size of the simulation (required when using --fiducial_values/--modify_values)")
+
 # ============================================================================
 # Parse command-line arguments
 # ============================================================================
@@ -152,6 +213,7 @@ sedges = np.linspace(smin, smax, sbin+1)  # Create separation bin edges
 # Weight configuration
 with_weight = argv.with_weight
 weight_set_one = argv.set_weight_to_one
+weight_pow = argv.weight_pow
 
 # Algorithm parameters
 xyz_refine_factors = argv.xyz_refine_factors
@@ -174,6 +236,70 @@ verbose = argv.verbose
 # If weight is not used, ignore weight-related settings
 if not with_weight:
     weight_set_one = False
+    weight_pow = 1.0
+
+# ============================================================================
+# Alcock-Paczyński conversion parameter validation
+# ============================================================================
+ap_enabled = False
+if argv.fiducial_values is not None or argv.modify_values is not None:
+    # Both must be provided together
+    if argv.fiducial_values is None or argv.modify_values is None:
+        parser.error("--fiducial_values and --modify_values must be provided together")
+    # Length must be equal
+    if len(argv.fiducial_values) != len(argv.modify_values):
+        parser.error(f"--fiducial_values ({len(argv.fiducial_values)} values) and "
+                     f"--modify_values ({len(argv.modify_values)} values) must have the same number of values")
+    # Length must be 2 or 3
+    if len(argv.fiducial_values) not in (2, 3):
+        parser.error("--fiducial_values and --modify_values must accept exactly 2 (omega_m, w0) or 3 (omega_m, w0, wa) values")
+    # redshift and boxsize are required
+    if argv.redshift is None:
+        parser.error("--redshift is required when using --fiducial_values/--modify_values")
+    if argv.boxsize is None:
+        parser.error("--boxsize is required when using --fiducial_values/--modify_values")
+
+    ap_enabled = True
+    ap_use_wa = len(argv.fiducial_values) == 3
+    if ap_use_wa:
+        omega_mf, w_f, wa_f = argv.fiducial_values
+        omega_mm, w_m, wa_m = argv.modify_values
+    else:
+        omega_mf, w_f = argv.fiducial_values
+        omega_mm, w_m = argv.modify_values
+        wa_f = 0.0
+        wa_m = 0.0
+    redshift = argv.redshift
+    boxsize = argv.boxsize
+
+    print(f"AP conversion enabled: fiducial=({omega_mf}, {w_f}" + (f", {wa_f}" if ap_use_wa else "") +
+          f") -> modify=({omega_mm}, {w_m}" + (f", {wa_m}" if ap_use_wa else "") +
+          f"), z={redshift}, boxsize={boxsize}")
+
+# ============================================================================
+# MCF density re-calculation parameter validation
+# ============================================================================
+rho_fix_n = argv.rho_fix_n
+rho_fix_r = argv.rho_fix_r
+rho_param = argv.rho_param
+
+# Check mutual exclusivity of --rho-fix-n and --rho-fix-r
+if rho_fix_n and rho_fix_r:
+    parser.error("--rho-fix-n and --rho-fix-r are mutually exclusive, choose one")
+
+rho_recalc_enabled = rho_fix_n or rho_fix_r
+
+if ap_enabled:
+    if with_weight:
+        # When AP is enabled, one of --rho-fix-n or --rho-fix-r must be provided
+        if not rho_recalc_enabled:
+            parser.error("When AP conversion is enabled, one of --rho-fix-n or --rho-fix-r must be provided")
+        if rho_param is None:
+            parser.error("--rho-param is required when using --rho-fix-n or --rho-fix-r")
+else:
+    # When AP is not enabled, warn if rho parameters are provided (they won't take effect)
+    if rho_recalc_enabled or rho_param is not None and with_weight:
+        print("WARNING: --rho-fix-n/--rho-fix-r/--rho-param are ignored when AP conversion is not enabled")
 
 # ============================================================================
 # Load data catalog (if not in RR-only mode)
@@ -189,7 +315,13 @@ if not only_run_rr:
     data_filename, data_fileext = os.path.splitext(data_filename)
 
     # Load data catalog with appropriate weight handling
-    data_catalog = read_data(data_dir + data_filename + data_fileext, weight_set_one=weight_set_one)
+    data_catalog = read_data(data_dir + data_filename + data_fileext, 
+                             weight_set_one=weight_set_one, with_weight=with_weight)
+    
+    # Apply power to data weights: weight -> weight**weight_pow
+    if weight_pow != 1.0:
+        print(f"Applying weight power: weight**{weight_pow}")
+        data_catalog[:, 3] = data_catalog[:, 3] ** weight_pow
 
 # ============================================================================
 # Parse random catalog path
@@ -208,6 +340,7 @@ if rr_filename is not None:
     RR_result_filename = rr_filename
 else:
     RR_result_filename = "./RR_temp.pkl"
+RR_result_filename = ensure_dot_prefix(RR_result_filename)
 
 # Check if RR-only mode and file already exists
 if only_run_rr and not force_rr and os.path.exists(RR_result_filename):
@@ -224,6 +357,7 @@ if not only_run_rr:
         tpCF_result_filename = tpcf_filename
     else:
         tpCF_result_filename = "./tpCF_temp.pkl"
+    tpCF_result_filename = ensure_dot_prefix(tpCF_result_filename)
     
     # Check if tpCF result already exists
     if os.path.exists(tpCF_result_filename) and not force:
@@ -234,7 +368,42 @@ if not only_run_rr:
 # Load random catalog
 # For random catalog, if weight is not used, set weight to 1
 # ============================================================================
-random_catalog = read_data(random_dir + random_filename + random_fileext, weight_set_one=not with_weight)
+random_catalog = read_data(random_dir + random_filename + random_fileext, 
+                           weight_set_one=not with_weight, with_weight=with_weight)
+
+# ============================================================================
+# Apply Alcock-Paczyński conversion (if enabled)
+# Only transform the first 3 columns (positions), preserve weights
+# ============================================================================
+if ap_enabled:
+    print("Applying AP conversion to data catalog...")
+    if not only_run_rr:
+        data_catalog[:, :3], boxsize_new = snap_box_convert_main(
+            data_catalog[:, :3], omega_mf, w_f, omega_mm, w_m,
+            redshift, boxsize, wa_f=wa_f, wa_m=wa_m, return_boxsize_new=True
+        )
+    print("Applying AP conversion to random catalog...")
+    random_catalog[:, :3] = snap_box_convert_main(
+        random_catalog[:, :3], omega_mf, w_f, omega_mm, w_m,
+        redshift, boxsize, wa_f=wa_f, wa_m=wa_m
+    )
+    print("AP conversion done.")
+
+    if with_weight and not only_run_rr:
+        print("Now creating rho again")
+        if rho_fix_n:
+            print(f"  Using create_rho with k={rho_param} (nthreads={nthreads})")
+            data_catalog[:, 3] = create_rho(
+                data_catalog[:, :3], boxsize=boxsize_new, k=int(rho_param),
+                nthreads=nthreads, only_return_rho=True
+            )
+        elif rho_fix_r:
+            print(f"  Using create_rho_fix_r with r={rho_param} (nthreads={nthreads})")
+            data_catalog[:, 3] = create_rho_fix_r(
+                data_catalog[:, :3], boxsize=boxsize_new, r=rho_param,
+                nthreads=nthreads, verbose=verbose
+            )
+
 
 # Dictionary to hold output filenames for pair counts
 # Will be passed to run_tpCF to save results to disk if specified
@@ -243,7 +412,6 @@ output_dict = {
     "DR": None,   # Data-Random pair counts
     "RR": None    # Random-Random pair counts
 }
-
 
 # ============================================================================
 # Execute pair counting and tpCF calculation

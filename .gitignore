@@ -29,6 +29,8 @@ tests/*
 !tests/test_tpcf_mpi.py
 !tests/validate_tpcf_mpi.py
 !tests/test_cal_2pcf_box_mpi.py
+!tests/test_xismu_reorganization.py
+!tests/test_xismu_migration.py
 # Archived extensions are local reproducibility artifacts; rebuild from source.
 archive/**/*.so
 validation/

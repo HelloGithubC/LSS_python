@@ -141,7 +141,7 @@ def convert_xismu(source, geometry, sbin2, mubin2, smin_mapping, smax_mapping,
         S, Mu = np.meshgrid(s, mu, indexing="ij")
     else:
         S, Mu = np.array(assistant.S, copy=True), np.array(assistant.Mu, copy=True)
-    from .tpcf import xismu
+    from .xismu import xismu
     result = xismu(smax=source.smax, sbin=sbin2, mubin=mubin2,
                    DDnorm=source.DDnorm, DRnorm=source.DRnorm, RRnorm=source.RRnorm,
                    DD=mapped[:, :, 0] * source.DDnorm, DR=mapped[:, :, 1] * source.DRnorm,

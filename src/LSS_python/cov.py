@@ -1,6 +1,18 @@
+"""Resampling workflows, sample reconstruction and covariance statistics.
+
+Spatial selection and cache policy stay here. Corrfunc measurement routines
+are provided by tpcf; result construction is provided by xismu. Imported public
+counter/helper names remain available for compatibility with existing users.
+"""
+
 import numpy as np 
 from numba import njit
-from .corrfunc import call_DDsmu
+from .pair_counting import get_neighbors
+from .tpcf import (
+    compute_DD_JK, compute_DR_JK, compute_RR_JK,
+    compute_subsample_pairs, extract_npairs,
+)
+from .xismu import create_xismu_from_pairs
 from tqdm import tqdm
 import time
 import os
@@ -683,10 +695,10 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
                 print("Computing RR...")
             start_time = time.time()
         
-        RR_result = call_DDsmu(
-            random, None, sedges, mubin, with_weight, sub_boxsize[0],
-            refine_factors, nthreads, autocorr=True
-        )
+        RR_result = compute_subsample_pairs(
+            None, random, sedges, mubin, with_weight, sub_boxsize[0],
+            refine_factors, nthreads, verbose, run_parts=("RR",),
+        )["RR_result"]
         
         # Generate muedges based on mubin
         computed_muedges = np.linspace(0, 1, mubin + 1)
@@ -729,28 +741,21 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
     if sedges[0] == 0.0 and RR_corrected[0, 0] >= nr:
         RR_corrected[0, 0] -= nr
     
-    # Process each subvolume
-    iterator = tqdm(enumerate(data_list), total=n_cubes, desc="Processing subvolumes (DD+DR)", disable=not verbose)
-    for idx, data_sub in iterator:
+    # Count prepared subvolumes before constructing their statistical results.
+    sub_pairs = compute_subsample_pairs(
+        data_list, random, sedges, mubin, with_weight, sub_boxsize[0],
+        refine_factors, nthreads, verbose, run_parts=("DD", "DR"),
+    )
+    DD_sub, DR_sub = sub_pairs["DD_sub"], sub_pairs["DR_sub"]
+    for idx, data_sub in enumerate(data_list):
         if data_sub is None or len(data_sub) < 2:
             DD_sub[idx] = None
             DR_sub[idx] = None
             xismu_sub[idx] = None
             continue
         
-        # Compute DD (autocorrelation within subvolume)
-        DD_result = call_DDsmu(
-            data_sub, None, sedges, mubin, with_weight, sub_boxsize[0],
-            refine_factors, nthreads, autocorr=True
-        )
-        DD_sub[idx] = DD_result
-        
-        # Compute DR (data vs random, using sub_boxsize)
-        DR_result = call_DDsmu(
-            data_sub, random, sedges, mubin, with_weight, sub_boxsize[0],
-            refine_factors, nthreads, autocorr=False
-        )
-        DR_sub[idx] = DR_result
+        DD_result = DD_sub[idx]
+        DR_result = DR_sub[idx]
         
         # Extract pair counts
         DD = extract_npairs(DD_result, with_weight).reshape(sbin, mubin)
@@ -857,433 +862,6 @@ def check_and_shift_data(data_list, boxsize, n, index_list=None):
             data_list_shifted.append(data_shifted)
     
     return data_list_shifted
-
-
-def get_neighbors(idx, n):
-    """
-    Get all neighboring subvolume indices for a given subvolume.
-    Includes all 26 neighbors (face, edge, and corner adjacent).
-    
-    Parameters
-    ----------
-    idx : int
-        Linear index of the subvolume.
-    n : int
-        Number of divisions along each axis.
-    
-    Returns
-    -------
-    neighbors : list of int
-        List of neighboring subvolume indices.
-    """
-    ix = idx // (n * n)
-    iy = (idx // n) % n
-    iz = idx % n
-    
-    neighbors = []
-    for dx in [-1, 0, 1]:
-        for dy in [-1, 0, 1]:
-            for dz in [-1, 0, 1]:
-                if dx == 0 and dy == 0 and dz == 0:
-                    continue
-                nx, ny, nz = ix + dx, iy + dy, iz + dz
-                # Check boundaries (no periodic)
-                if 0 <= nx < n and 0 <= ny < n and 0 <= nz < n:
-                    neighbor_idx = nx * n * n + ny * n + nz
-                    neighbors.append(neighbor_idx)
-    
-    return neighbors
-
-
-def compute_DD_JK(data_list, sedges, mubin, with_weight, boxsize,
-               refine_factors, nthreads, verbose, ngrids):
-    """
-    Compute DD for data catalog.
-    Computes internal pairs for each subvolume + cross-pairs between neighboring subvolumes.
-    This ensures the same geometric structure as RR.
-    
-    Parameters
-    ----------
-    data_list : list of ndarray
-        List of n^3 subvolume data arrays.
-    sedges : array-like
-        Separation bin edges.
-    mubin : int
-        Number of mu bins.
-    with_weight : bool
-        Whether to use weights.
-    boxsize : float
-        Box size.
-    refine_factors : tuple
-        (x_refine, y_refine, z_refine) factors.
-    nthreads : int
-        Number of threads.
-    verbose : bool
-        Whether to print progress.
-    ngrids : array-like
-        Number of divisions along each axis.
-    
-    Returns
-    -------
-    DD_internal : dict
-        Dictionary mapping subvolume index to DD result (internal pairs).
-    DD_cross : dict
-        Dictionary mapping (idx1, idx2) tuple to DD result (cross pairs).
-        Only includes pairs where idx1 < idx2.
-    """
-    n_cubes = len(data_list)
-    n = ngrids[0]  # Assume cubic grid for neighbor calculation
-    
-    if verbose:
-        print("Computing DD internal...")
-    
-    # Step 1: Compute DD internal for each subvolume
-    DD_internal = {}
-    iterator = tqdm(enumerate(data_list), total=n_cubes, desc="DD internal", disable=not verbose)
-    for idx, data in iterator:
-        if data is None or len(data) < 2:
-            DD_internal[idx] = None
-            continue
-        
-        result = call_DDsmu(
-            data, None, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=True
-        )
-        DD_internal[idx] = result
-    
-    if verbose:
-        print("Computing DD cross...")
-    
-    # Step 2: Compute DD cross between neighboring subvolumes
-    DD_cross = {}
-    computed_pairs = set()
-    pairs_to_compute = []
-    
-    for idx in range(n_cubes):
-        data1 = data_list[idx]
-        if data1 is None or len(data1) == 0:
-            continue
-        
-        neighbors = get_neighbors(idx, n)
-        
-        for neighbor_idx in neighbors:
-            pair = (min(idx, neighbor_idx), max(idx, neighbor_idx))
-            if pair in computed_pairs:
-                continue
-            computed_pairs.add(pair)
-            
-            data2 = data_list[neighbor_idx]
-            if data2 is None or len(data2) == 0:
-                continue
-            
-            pairs_to_compute.append((pair, data1, data2))
-    
-    iterator = tqdm(pairs_to_compute, desc="DD cross", disable=not verbose)
-    for pair, data1, data2 in iterator:
-        result = call_DDsmu(
-            data1, data2, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=False
-        )
-        result["npairs"] *= 2  # To be consistent with the number of pairs in the full catalog
-        DD_cross[pair] = result
-    
-    return DD_internal, DD_cross
-
-
-def compute_DR_JK(data_list, random_list, sedges, mubin, with_weight, boxsize,
-                         refine_factors, nthreads, verbose, ngrids):
-    """
-    Compute DR for data-random cross-correlation.
-    Computes internal pairs (same position) + cross-pairs between neighboring subvolumes.
-    This ensures the same geometric structure as DD and RR.
-    
-    Parameters
-    ----------
-    data_list : list of ndarray
-        List of n^3 subvolume data arrays.
-    random_list : list of ndarray
-        List of n^3 subvolume random arrays (same spatial division as data).
-    sedges : array-like
-        Separation bin edges.
-    mubin : int
-        Number of mu bins.
-    with_weight : bool
-        Whether to use weights.
-    boxsize : float
-        Box size.
-    refine_factors : tuple
-        (x_refine, y_refine, z_refine) factors.
-    nthreads : int
-        Number of threads.
-    verbose : bool
-        Whether to print progress.
-    ngrids : array-like
-        Number of divisions along each axis.
-    
-    Returns
-    -------
-    DR_internal : dict
-        Dictionary mapping subvolume index to DR result (data_i vs random_i).
-    DR_cross : dict
-        Dictionary mapping (idx1, idx2) tuple to DR result (data_i vs random_j).
-        Only includes pairs where idx1 < idx2.
-    """
-    n_cubes = len(data_list)
-    n = ngrids[0]  # Assume cubic grid for neighbor calculation
-    
-    # Step 1: Compute DR internal (same position: data_i vs random_i)
-    DR_internal = {}
-    iterator = tqdm(enumerate(zip(data_list, random_list)), total=n_cubes, desc="DR internal", disable=not verbose)
-    for idx, (data, random_sub) in iterator:
-        if data is None or len(data) == 0:
-            DR_internal[idx] = None
-            continue
-        if random_sub is None or len(random_sub) == 0:
-            DR_internal[idx] = None
-            continue
-        
-        result = call_DDsmu(
-            data, random_sub, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=False
-        )
-        DR_internal[idx] = result
-    
-    # Step 2: Compute DR cross between neighboring subvolumes
-    # DR is a cross-correlation, so (data_i, random_j) and (data_j, random_i) are different pairs
-    # With autocorr=False, Corrfunc computes both directions, so we need to include both
-    DR_cross = {}
-    pairs_to_compute = []
-    
-    for idx in range(n_cubes):
-        data = data_list[idx]
-        if data is None or len(data) == 0:
-            continue
-        
-        neighbors = get_neighbors(idx, n)
-        
-        for neighbor_idx in neighbors:
-            random_neighbor = random_list[neighbor_idx]
-            if random_neighbor is None or len(random_neighbor) == 0:
-                continue
-            
-            # Direction 1: data_i vs random_j (where j is neighbor of i)
-            pair_ij = (idx, neighbor_idx)
-            pairs_to_compute.append((pair_ij, data, random_neighbor))
-    
-    iterator = tqdm(pairs_to_compute, desc="DR cross", disable=not verbose)
-    for pair, data, random_sub in iterator:
-        result = call_DDsmu(
-            data, random_sub, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=False
-        )
-        DR_cross[pair] = result
-    
-    return DR_internal, DR_cross
-
-
-def compute_RR_JK(random_list, sedges, mubin, with_weight, boxsize,
-                refine_factors, nthreads, verbose, ngrids):
-    """
-    Compute RR for random catalog.
-    Computes internal pairs for each subvolume + cross-pairs between neighboring subvolumes.
-    This ensures the same geometric structure as DD.
-    
-    Parameters
-    ----------
-    random_list : list of ndarray
-        List of n^3 subvolume random arrays.
-    sedges : array-like
-        Separation bin edges.
-    mubin : int
-        Number of mu bins.
-    with_weight : bool
-        Whether to use weights.
-    boxsize : float
-        Box size.
-    refine_factors : tuple
-        (x_refine, y_refine, z_refine) factors.
-    nthreads : int
-        Number of threads.
-    verbose : bool
-        Whether to print progress.
-    ngrids : array-like
-        Number of divisions along each axis.
-    
-    Returns
-    -------
-    RR_internal : dict
-        Dictionary mapping subvolume index to RR result (internal pairs).
-    RR_cross : dict
-        Dictionary mapping (idx1, idx2) tuple to RR result (cross pairs).
-        Only includes pairs where idx1 < idx2.
-    RR_full : ndarray
-        Combined RR full result as flattened array (sum of internal + cross pairs).
-    """
-    n_cubes = len(random_list)
-    n = ngrids[0]  # Assume cubic grid for neighbor calculation
-    sbin = len(sedges) - 1
-    
-    if verbose:
-        print("Computing RR internal...")
-    
-    # Step 1: Compute RR internal for each subvolume
-    RR_internal = {}
-    iterator = tqdm(enumerate(random_list), total=n_cubes, desc="RR internal", disable=not verbose)
-    for idx, random_sub in iterator:
-        if random_sub is None or len(random_sub) < 2:
-            RR_internal[idx] = None
-            continue
-        
-        result = call_DDsmu(
-            random_sub, None, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=True
-        )
-        RR_internal[idx] = result
-    
-    if verbose:
-        print("Computing RR cross...")
-    
-    # Step 2: Compute RR cross between neighboring subvolumes
-    RR_cross = {}
-    computed_pairs = set()
-    pairs_to_compute = []
-    
-    for idx in range(n_cubes):
-        random1 = random_list[idx]
-        if random1 is None or len(random1) == 0:
-            continue
-        
-        neighbors = get_neighbors(idx, n)
-        
-        for neighbor_idx in neighbors:
-            pair = (min(idx, neighbor_idx), max(idx, neighbor_idx))
-            if pair in computed_pairs:
-                continue
-            computed_pairs.add(pair)
-            
-            random2 = random_list[neighbor_idx]
-            if random2 is None or len(random2) == 0:
-                continue
-            
-            pairs_to_compute.append((pair, random1, random2))
-    
-    iterator = tqdm(pairs_to_compute, desc="RR cross", disable=not verbose)
-    for pair, random1, random2 in iterator:
-        result = call_DDsmu(
-            random1, random2, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=False
-        )
-        result["npairs"] *= 2  # To be consistent with the number of pairs in the full catalog
-        RR_cross[pair] = result
-    
-    # Step 3: Sum all RR pairs - this is our final RR_full
-    RR_full = np.zeros((sbin, mubin), dtype=np.float64)
-    
-    for idx, result in RR_internal.items():
-        if result is not None:
-            RR_full += extract_npairs(result, with_weight).reshape(sbin, mubin)
-    
-    for pair, result in RR_cross.items():
-        if result is not None:
-            RR_full += extract_npairs(result, with_weight).reshape(sbin, mubin)
-    
-    # Flatten to match extract_npairs output format
-    RR_full = RR_full.flatten()
-    
-    return RR_internal, RR_cross, RR_full
-
-def extract_npairs(result, with_weight):
-    """
-    Extract npairs and weighted pairs from DDsmu result.
-    
-    Parameters
-    ----------
-    result : structured array, simple ndarray, or dict of these
-        DDsmu result. Can be:
-        - Structured array with 'npairs' and 'weightavg' fields
-        - Simple numpy array (already flattened)
-        - Dict of the above types (e.g., RR_internal, RR_cross)
-    with_weight : bool
-        Whether to use weights.
-    
-    Returns
-    -------
-    npairs : ndarray or dict of ndarray
-        Number of pairs (or weighted pairs). Returns None if result is None.
-    """
-    if result is None:
-        return None
-    
-    if isinstance(result, dict):
-        # result is a dict like RR_internal or RR_cross
-        return {k: extract_npairs(v, with_weight) for k, v in result.items()}
-    
-    if isinstance(result, np.ndarray) and result.dtype.names is not None:
-        # result is a structured array
-        npairs = result['npairs']
-        
-        if with_weight:
-            weightavg = result['weightavg']
-            if not np.all(weightavg == 0):
-                npairs = npairs * weightavg
-        
-        return npairs
-    else:
-        # result is already a simple array (from extract_npairs or direct computation)
-        return result
-
-
-def create_xismu_from_pairs(DD, DR, RR, norm_DD, norm_DR, norm_RR, sedges, muedges):
-    """
-    Create xismu object from pair counts.
-    
-    Parameters
-    ----------
-    DD : ndarray
-        DD pair counts (sbin, mubin).
-    DR : ndarray
-        DR pair counts (sbin, mubin).
-    RR : ndarray
-        RR pair counts (sbin, mubin).
-    norm_DD : float
-        Normalization factor for DD.
-    norm_DR : float
-        Normalization factor for DR.
-    norm_RR : float
-        Normalization factor for RR.
-    sedges : array-like
-        Separation bin edges.
-    muedges : array-like
-        Mu bin edges.
-    
-    Returns
-    -------
-    xismu_obj : xismu
-        xismu object containing the correlation function.
-    """
-    # Deferred import to avoid circular dependency:
-    # cov.py -> tpcf.py -> compressor.py -> cov.py
-    from .tpcf import xismu
-
-    sbin = len(sedges) - 1
-    mubin = len(muedges) - 1
-    smax = sedges[-1]
-    
-    # Create S and Mu meshgrid
-    s_array = (sedges[1:] + sedges[:-1]) / 2.0
-    mu_array = (muedges[1:] + muedges[:-1]) / 2.0
-    S, Mu = np.meshgrid(s_array, mu_array, indexing="ij")
-    
-    # Create xismu object
-    xismu_obj = xismu(
-        smax=smax, sbin=sbin, mubin=mubin,
-        DDnorm=norm_DD, DRnorm=norm_DR, RRnorm=norm_RR,
-        S=S, Mu=Mu,
-        DD=DD, DR=DR, RR=RR,
-        set_data=True
-    )
-    
-    return xismu_obj
 
 
 def compute_total_pairs_and_norm(DD_internal=None, DD_cross=None, DR_internal=None, DR_cross=None, 

@@ -7,7 +7,7 @@ from cobaya.likelihood import Likelihood
 from cobaya.run import run
 from cobaya.mpi import is_main_process, get_mpi
 
-from LSS_python.tpcf import xismu, get_diff_array, average_xismus_dict_list
+from LSS_python.xismu import xismu, get_diff_array, average_xismus_dict_list
 from LSS_python.AP import tpcf_convert_main
 from LSS_python.MCMC import run_mcmc_main_cobaya
 

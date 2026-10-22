@@ -3,7 +3,7 @@
 `LSS_python.tpcf_mpi.run_tpCF_mpi` is a separate MPI entry point for non-periodic
 Cartesian DD/DR/RR counting. It uses the cores and block tools in
 `LSS_python.pair_counting`. The command-line box workflow is available separately
-as `bin/cal_2pCF_box_mpi`.
+as `bin/cal_MCF_box_mpi`.
 
 ## Install and call collectively
 
@@ -61,14 +61,14 @@ and thread counts to fit the allocated cores.
 From the repository root, run:
 
 ```sh
-mpiexec -n 4 python bin/cal_2pCF_box_mpi data.npy random.npy 4 \
+mpiexec -n 4 python bin/cal_MCF_box_mpi data.npy random.npy 4 \
   --boxsize 900 --ngrids 3 \
   -smin 0.5 -smax 150 -sbin 150 -mubin 120 \
   --with_weight --save_dd_dr \
   --rr_filename results/RR.pkl --tpcf_filename results/tpCF.pkl
 ```
 
-The positional arguments and existing option names follow `cal_2pCF_box`.
+The positional arguments and existing option names follow `cal_MCF_box`.
 `nthreads` is per rank, so this example uses four MPI ranks with four OpenMP
 threads each. The additional required options `--boxsize` and `--ngrids` each
 accept one value or three axis values, for example `--boxsize 900 780 660

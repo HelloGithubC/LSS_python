@@ -90,7 +90,7 @@ class Converter:
         self.production_convert = production_convert
         self.pair_statistic = pair_statistic
         self.profile_diagnostics = profile_diagnostics
-        from LSS_python.tpcf import xismu
+        from LSS_python.xismu import xismu
         self._xismu = xismu
         self.sources = {}
         self.assistants = {}
@@ -142,7 +142,7 @@ def prepare_imports(project: Path):
     sys.path.insert(0, str(project / "tests"))
     sys.path.insert(0, str(project / "tests" / "ap_conversion"))
     from LSS_python.AP import tpcf_convert_main
-    from LSS_python.tpcf import xismu
+    from LSS_python.xismu import xismu
     from model import pair_statistic
     from normalization import profile_diagnostics
     return tpcf_convert_main, xismu, pair_statistic, profile_diagnostics

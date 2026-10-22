@@ -8,7 +8,7 @@ import pytest
 from LSS_python._ap_polygon import map_counts, polygon_rate
 from LSS_python._ap_dense import ap_geometry, validate_mapping
 from LSS_python.AP import _ap_convert_factors, tpcf_convert_main
-from LSS_python.tpcf import xismu
+from LSS_python.xismu import xismu
 
 
 def _area(points):

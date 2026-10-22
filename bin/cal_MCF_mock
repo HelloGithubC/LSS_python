@@ -61,12 +61,18 @@ def read_data(filename):
             # Already an array
             return source
 
+def ensure_dot_prefix(filename):
+    """Prefix relative output paths with ./ so os.path.dirname is never empty."""
+    if os.path.isabs(filename) or filename.startswith("./"):
+        return filename
+    return "./" + filename
+
         
 # ============================================================================
 # Command-line argument parser
 # ============================================================================
 parser = argparse.ArgumentParser(
-    prog="cal_2pCF_mock", 
+    prog="cal_MCF_mock", 
     usage="Calculate 2pCF with Corrfunc for mock/survey data",
     description="Compute two-point correlation function from mock catalogs and survey data"
 )
@@ -206,6 +212,7 @@ if rr_filename is not None:
     RR_result_filename = rr_filename
 else:
     RR_result_filename = "./RR_temp.pkl"
+RR_result_filename = ensure_dot_prefix(RR_result_filename)
 
 # Check if RR-only mode and file already exists
 if only_run_rr and not force_rr and os.path.exists(RR_result_filename):
@@ -222,6 +229,7 @@ if not only_run_rr:
         tpCF_result_filename = tpcf_filename
     else:
         tpCF_result_filename = "./tpCF_temp.pkl"
+    tpCF_result_filename = ensure_dot_prefix(tpCF_result_filename)
     
     # Check if tpCF result already exists
     if os.path.exists(tpCF_result_filename) and not force:

@@ -20,7 +20,7 @@ from .corrfunc import call_DDsmu
 
 __all__ = [
     "PAIR_TYPES", "PairCounts", "PairTask", "count_pairs", "merge_pair_counts",
-    "prepare_catalogs", "split_catalog_into_blocks", "build_pair_tasks",
+    "prepare_catalogs", "split_catalog_into_blocks", "get_neighbors", "build_pair_tasks",
     "count_pair_task", "sum_pair_counts", "pair_normalizations",
     "finalize_pair_counts", "count_pairs_in_blocks",
 ]
@@ -273,6 +273,42 @@ def split_catalog_into_blocks(data, boxsize, ngrids, with_weight=False):
     ordered = np.ascontiguousarray(data[order])
     offsets = np.concatenate(([0], np.cumsum(np.bincount(labels, minlength=np.prod(shape)))))
     return tuple(ordered[start:stop] for start, stop in zip(offsets[:-1], offsets[1:]))
+
+
+def get_neighbors(idx, n):
+    """
+    Get all neighboring subvolume indices for a given subvolume.
+    Includes all 26 neighbors (face, edge, and corner adjacent).
+
+    Parameters
+    ----------
+    idx : int
+        Linear index of the subvolume.
+    n : int
+        Number of divisions along each axis.
+
+    Returns
+    -------
+    neighbors : list of int
+        List of neighboring subvolume indices.
+    """
+    ix = idx // (n * n)
+    iy = (idx // n) % n
+    iz = idx % n
+
+    neighbors = []
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            for dz in [-1, 0, 1]:
+                if dx == 0 and dy == 0 and dz == 0:
+                    continue
+                nx, ny, nz = ix + dx, iy + dy, iz + dz
+                # Check boundaries (no periodic)
+                if 0 <= nx < n and 0 <= ny < n and 0 <= nz < n:
+                    neighbor_idx = nx * n * n + ny * n + nz
+                    neighbors.append(neighbor_idx)
+
+    return neighbors
 
 
 def build_pair_tasks(data_blocks, random_blocks, ngrids):

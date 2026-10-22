@@ -203,7 +203,7 @@ def main(argv=None):
     try:
         from mpi4py import MPI
     except ImportError:
-        print("Error: cal_2pCF_box_mpi requires mpi4py (install LSS_python[mpi])", file=sys.stderr)
+        print("Error: cal_MCF_box_mpi requires mpi4py (install LSS_python[mpi])", file=sys.stderr)
         return 1
 
     comm = MPI.COMM_WORLD

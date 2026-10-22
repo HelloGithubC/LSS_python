@@ -1015,7 +1015,7 @@ def get_fisher_from_tpcf(xismu_source_dict, xismu_assis_dict, snap_ids, redshift
     function_values : ndarray, shape (n_params, 2, n_output)
         Function values at the standardized points.
     """
-    from .tpcf import get_diff_array
+    from .xismu import get_diff_array
     best_fit = np.atleast_1d(np.asarray(best_fit, dtype=np.float64))
     n_params = len(best_fit)
 

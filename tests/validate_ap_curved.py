@@ -136,7 +136,7 @@ def prepare(project: Path):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     sys.path.insert(0, str(project / "src"))
     from LSS_python.AP import tpcf_convert_main
-    from LSS_python.tpcf import xismu
+    from LSS_python.xismu import xismu
     from model import pair_statistic
     return tpcf_convert_main, xismu, pair_statistic
 
