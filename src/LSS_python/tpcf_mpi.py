@@ -2,12 +2,14 @@
 
 All ranks call run_tpCF_mpi collectively. The designated root prepares spatial
 blocks and tasks; ranks receive the blocks needed by their assigned tasks and
-use pair_counting's serial cores. Raw integer and weighted histograms are reduced
+use pair_counting's serial cores. Catalog arrays travel in bounded MPI buffer
+messages; only small metadata uses pickle. Raw histograms are reduced
 with MPI SUM, then root returns Corrfunc-compatible structured arrays and writes
 requested files. MPI is imported lazily, keeping it an optional dependency.
 """
 
 from pathlib import Path
+import sys
 from time import perf_counter
 
 import joblib
@@ -25,6 +27,132 @@ from .pair_counting import (
 
 
 __all__ = ["run_tpCF_mpi"]
+
+_TRANSFER_CHUNK_BYTES = 256 * 1024**2
+
+
+def _array_layout(array):
+    """Describe a contiguous numeric buffer without including its contents."""
+    if not array.flags.c_contiguous or array.dtype.hasobject:
+        raise ValueError("MPI array transfers require C-contiguous, non-object arrays")
+    dtype = array.dtype.descr if array.dtype.names else array.dtype.str
+    return array.shape, dtype
+
+
+def _buffer_chunks(array):
+    """Yield byte views with bounded MPI counts, without copying the array."""
+    buffer = array.reshape(-1).view(np.uint8)
+    for start in range(0, buffer.size, _TRANSFER_CHUNK_BYTES):
+        yield buffer[start:start + _TRANSFER_CHUNK_BYTES]
+
+
+def _check_receive_allocation(comm, error, stage):
+    """Make allocation failures collective before sending any array buffers."""
+    errors = comm.allgather(error)
+    failures = [f"rank {rank}: {message}" for rank, message in enumerate(errors)
+                if message is not None]
+    if failures:
+        raise RuntimeError(f"MPI {stage} failed: " + "; ".join(failures))
+
+
+def _abort_transfer(comm, exc):
+    """Terminate peers when an in-progress buffer transfer cannot complete."""
+    try:
+        print(f"[MPI rank {comm.Get_rank()}] Buffer transfer failed: {_failure(exc)}",
+              file=sys.stderr, flush=True)
+    finally:
+        comm.Abort(1)
+
+
+def _distribute_work(comm, packages, root):
+    """Scatter small task/layout metadata, then send catalog buffers in chunks."""
+    from mpi4py import MPI
+
+    rank = comm.Get_rank()
+    metadata, error = None, None
+    if rank == root:
+        try:
+            metadata = [
+                (tasks, *({key: _array_layout(block) for key, block in blocks.items()}
+                          for blocks in (data, random)))
+                for tasks, data, random in packages
+            ]
+        except Exception as exc:
+            error = _failure(exc)
+    error = comm.bcast(error, root=root)
+    if error is not None:
+        raise RuntimeError(f"MPI catalog metadata failed on rank {root}: {error}")
+    tasks, data_layouts, random_layouts = comm.scatter(metadata, root=root)
+
+    local, error = None, None
+    try:
+        if rank == root:
+            local = packages[root]
+        else:
+            data, random = (
+                {key: np.empty(shape, dtype=np.dtype(dtype))
+                 for key, (shape, dtype) in layouts.items()}
+                for layouts in (data_layouts, random_layouts)
+            )
+            local = tasks, data, random
+    except Exception as exc:
+        error = _failure(exc)
+    _check_receive_allocation(comm, error, "catalog receive allocation")
+
+    try:
+        if rank == root:
+            for destination, (_, data, random) in enumerate(packages):
+                if destination == root:
+                    continue
+                for blocks in (data, random):
+                    for block in blocks.values():
+                        for chunk in _buffer_chunks(block):
+                            comm.Send([chunk, MPI.BYTE], dest=destination, tag=0)
+        else:
+            for blocks in local[1:]:
+                for block in blocks.values():
+                    for chunk in _buffer_chunks(block):
+                        comm.Recv([chunk, MPI.BYTE], source=root, tag=0)
+    except BaseException as exc:
+        _abort_transfer(comm, exc)
+        raise
+    return local
+
+
+def _broadcast_result(comm, result, root):
+    """Broadcast result layouts and bounded buffers, including structured dtypes."""
+    from mpi4py import MPI
+
+    rank = comm.Get_rank()
+    metadata, error = None, None
+    if rank == root:
+        try:
+            metadata = {name: None if result[name] is None else _array_layout(result[name])
+                        for name in PAIR_TYPES}
+        except Exception as exc:
+            error = _failure(exc)
+    metadata, error = comm.bcast((metadata, error), root=root)
+    if error is not None:
+        raise RuntimeError(f"MPI result metadata failed on rank {root}: {error}")
+
+    error = None
+    if rank != root:
+        try:
+            result = {name: None if layout is None else
+                      np.empty(layout[0], dtype=np.dtype(layout[1]))
+                      for name, layout in metadata.items()}
+        except Exception as exc:
+            error = _failure(exc)
+    _check_receive_allocation(comm, error, "result receive allocation")
+    try:
+        for name in PAIR_TYPES:
+            if result[name] is not None:
+                for chunk in _buffer_chunks(result[name]):
+                    comm.Bcast([chunk, MPI.BYTE], root=root)
+    except BaseException as exc:
+        _abort_transfer(comm, exc)
+        raise
+    return result
 
 
 def _log(message, verbose, rank):
@@ -260,6 +388,8 @@ def run_tpCF_mpi(data_catalog, random_catalog, sedges, mubin, with_weight,
     existing consumers retain their complete-result weight compatibility rule.
     Verbose logs describe preparation, distribution, per-rank task progress,
     reduction, and output. Progress is reported at completed task boundaries.
+    Catalogs and optional result broadcasts use direct buffer messages of at
+    most 256 MiB; task/layout metadata is sent separately using pickle.
     """
     try:
         from mpi4py import MPI
@@ -292,9 +422,11 @@ def run_tpCF_mpi(data_catalog, random_catalog, sedges, mubin, with_weight,
         raise RuntimeError(f"MPI preparation failed on rank {root}: {error}")
 
     if rank == root:
-        _log("Distributing task lists and required catalog blocks ...", config["verbose"], root)
+        _log("Distributing task metadata and catalog buffers "
+             f"(messages <= {_TRANSFER_CHUNK_BYTES / 1024**2:g} MiB) ...",
+             config["verbose"], root)
     distributed_at = perf_counter()
-    tasks, data_blocks, random_blocks = comm.scatter(packages, root=root)
+    tasks, data_blocks, random_blocks = _distribute_work(comm, packages, root)
     del packages
     _log(f"Received {len(tasks):,} tasks on {MPI.Get_processor_name()}, "
          f"data/random blocks={len(data_blocks):,}/{len(random_blocks):,}; "
@@ -352,5 +484,5 @@ def run_tpCF_mpi(data_catalog, random_catalog, sedges, mubin, with_weight,
     if error is not None:
         raise RuntimeError(f"MPI output failed on rank {root}: {error}")
     if config["broadcast_result"]:
-        return comm.bcast(result, root=root)
+        return _broadcast_result(comm, result, root)
     return result

@@ -139,7 +139,9 @@ enabled, and catalog precisions are unified using `prepare_catalogs`.
    and assigned using estimated pair-product costs. Grouping reuses input blocks;
    root computes assigned work as well.
 3. Each rank receives its task list and the distinct blocks required by those
-   tasks. The complete catalog is not unconditionally broadcast to every rank.
+   tasks. Task lists, block IDs, shapes, and dtypes are scattered as small Python
+   metadata. Catalog arrays are sent separately through direct MPI buffers.
+   The complete catalog is not unconditionally broadcast to every rank.
 4. Ranks use `count_pair_task` and `sum_pair_counts`. DD/RR off-diagonal
    multiplicity is applied once, and both DR block directions remain distinct.
 5. MPI reduces raw uint64 counts and float64 weight sums with SUM. Root restores
@@ -161,6 +163,81 @@ Python exceptions during root preparation, worker counting, and root output are
 propagated collectively as `RuntimeError` before the next collective phase.
 Every rank must participate; fatal native failures and MPI transport errors
 remain subject to the MPI runtime's failure behavior.
+
+## Bounded array-buffer transfers
+
+Catalog distribution uses `Send`/`Recv` with `MPI.BYTE`, iterating over contiguous
+byte views of each required block. Each message is at most 256 MiB, including
+when a block or a rank's total catalog payload exceeds 2 GiB. No per-rank joined
+catalog or large pickle stream is created. Root retains its original block
+references. Array dtype, coordinates, weights, and point order are unchanged;
+the existing spatial partition and counting rules are unchanged.
+
+After receiving metadata, non-root ranks allocate their final arrays. Allocation
+errors are exchanged before any catalog buffers are sent, so a sender does not
+wait for a receiver that already failed to allocate. An exception during an
+in-progress buffer transfer prints the failing rank and calls `Abort`; a process
+killed directly by the OS still requires MPI launcher/scheduler termination.
+The buffers retain the existing same-platform dtype representation expected
+across the cluster's compatible environments.
+
+`broadcast_result=True` also sends only small layout metadata through pickle;
+the Corrfunc structured arrays are broadcast in bounded byte buffers. Their
+dtype descriptions are preserved. Raw histogram `Reduce` calls remain as before.
+The public function and command-line arguments are unchanged. The chunk limit
+is an internal constant, not a new command-line option. These changes reduce
+serialization overhead; root catalog loading and spatial partition temporaries
+still use the existing implementation.
+
+The focused validation performs exactly two checks:
+
+```sh
+mpiexec -n 2 python tests/validate_mpi_buffers.py --output-dir /absolute/new/output
+```
+
+Run from the repository root with Python, mpi4py/system MPI, NumPy, Corrfunc,
+joblib, and the installed project available. No arguments prints help before MPI
+initialization. `--output-dir` selects the validation output directory. Both
+ranks temporarily use 128-byte messages, so small inputs exercise multiple
+messages without multi-GiB allocations; production still defaults to 256 MiB.
+
+1. Send deterministic float32 three-column and float64 four-column catalog views,
+   including an empty block, using rank 1 as root. Check shape, dtype, contiguity,
+   every element, every byte, and root's reuse of the original arrays.
+2. Generate 256 data and 512 random points with nonuniform float64 weights,
+   seed 20261022, boxsize 24, grid 2, six separation bins over 0..6, six mu bins,
+   and one thread. Compare MPI DD/DR/RR with whole-catalog serial Corrfunc:
+   integer counts must match exactly; weighted sums and xi use `rtol=2e-12`,
+   `atol=1e-10`. Exercise result-buffer broadcasting and compare its bytes across
+   ranks. Only comparison helpers are reused from `validate_tpcf_mpi.py`; its
+   broader validation routine is not invoked.
+
+Synthetic inputs are generated in memory. The driver writes
+`<output-dir>/summary.json` (settings, two outcomes, hosts, transfer hashes, and
+errors) and `<output-dir>/sample_counts.npz` (data, random, bin edges, and the
+MPI/serial structured counts). Reusing an output directory overwrites these two
+files; use a new directory to retain previous evidence. Stdout/stderr use the
+launcher's streams; the driver creates no independent log files or checkpoints.
+Corrfunc's temporary separation-bin file, if used, follows its existing cleanup
+behavior. This local check does not establish cross-node performance or an
+actual multi-GiB transfer.
+
+On 2026-10-22 this focused two-step driver passed with two ranks on the same
+local host. DD/DR/RR integer counts were identical; the maximum weighted-sum
+difference was `9.09e-13` and the maximum xi difference was `2.39e-15`.
+The actual run used `/home/xiaoliang/.conda/envs/xiaoliang/bin/python` and
+`/software/mpich4.3-gnu12/bin/mpiexec`. Evidence is under
+`/mnt/xiaodong/xiaoliang/software/LSS_python/validation/mpi_buffer_transfer/20261022_y_t59es5/`:
+`summary.json` records the two checks, `sample_counts.npz` retains their counting
+inputs/results, `execution.json` records the command, environment and exit code,
+and `validation.stdout.log`/`validation.stderr.log` capture launcher output.
+`file_inventory.csv` lists all absolute input/output paths and their actual
+status. `TMPDIR` was directed to this run's `tmp/` subdirectory; Corrfunc's
+temporary `tmp<random>` bin files were created there and the directory was empty
+after the successful run. No checkpoint or Python bytecode cache was generated.
+No broader regression suite, smoke test, production-catalog read, or Slurm
+submission was performed for this change. The validation used a new directory
+and did not overwrite earlier validation or production results.
 
 ## Validate
 
