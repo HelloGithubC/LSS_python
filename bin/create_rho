@@ -1,177 +1,139 @@
 #!/usr/bin/env python3
-"""
-Density mark calculator for simulation boxes.
-This script adds a local number-density mark to particle catalogs using
-LSS_python.MCF. The mark method is selected with --rho-method; currently only
-the "n<k>" k-nearest-neighbour mode (e.g. n30 -> k=30) is supported, based on
-LSS_python.MCF.create_rho. Future methods (e.g. "r<radius>" fixed-radius mode)
-can be added to the dispatch below.
+"""Generate raw density or gradient marks using canonical method tokens.
 
-The input must be a plain .npy array with shape (N, >=3); the first three
-columns are treated as positions. The output is the input data with the
-density mark appended as a 4th column (N, 4).
+Input: a float32/float64 .npy array with shape (N, >=3); only its first three
+position columns are used. Methods n<k> and r<radius> write [x,y,z,rho] (N,4).
+Method gn<k> writes [x,y,z,drhox,drhoy,drhoz] (N,6), using the existing Fortran
+gradient convention. Self is included; nearest-neighbor h is adaptive and
+fixed-radius h is radius/2. No weight-power transform is applied.
 
-Example
--------
-    create_rho snapshot.npy 2000.0 snapshot_rho.npy -method n30 -n 40
+The optional output defaults to <input_stem>_<method>.npy in the input directory.
+A custom output lacking the selected method token requires y/yes confirmation.
+Example: create_rho snapshot.npy 2000.0 -method n30 -n 40
 """
 
 import argparse
 import os
+from pathlib import Path
 import re
 import sys
 
 import numpy as np
 
-from LSS_python.MCF import create_rho
-
-METHOD_PATTERN = re.compile(r"^n(\d+)$")
-
-
-def parse_method(method):
-    """
-    Dispatch a --rho-method string to the corresponding density routine.
-
-    Returns
-    -------
-    tuple
-        (kind, value, error)
-        kind : str, dispatch key ("n" for k-nearest-neighbour mode)
-        value : int or float, the numeric payload (k for "n<k>")
-        error : str or None, error message when the method is not supported
-    """
-    match = METHOD_PATTERN.match(method)
-    if match:
-        value = int(match.group(1))
-        if value <= 0:
-            return None, None, f"k must be positive in method '{method}'"
-        return "n", value, None
-    return None, None, (
-        f"unsupported rho-method '{method}'. "
-        "Supported methods: n<digits> (e.g. n30)."
-    )
+from LSS_python.marks import create_drho, create_rho, create_rho_fix_r
+from LSS_python.weight_token import DEFAULT_MARK, parse_mark_token
 
 
-# ============================================================================
-# Command-line argument parser
-# ============================================================================
-parser = argparse.ArgumentParser(
-    prog="create_rho",
-    usage="Add a density mark to particle data with LSS_python",
-    description="Compute a local number-density mark and append it as a 4th column"
-)
+def build_parser():
+    """Build the generator CLI; method grammar belongs to weight_token."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("data_filename", help="Input .npy catalog, shape (N, >=3)")
+    parser.add_argument("BoxSize", type=float, help="Periodic simulation-box size")
+    parser.add_argument("output_filename", nargs="?",
+                        help="Output path (default: <input_stem>_<method>.npy beside input); "
+                             "a name without the selected method token requires y/yes")
+    parser.add_argument("--rho-method", "--method", "-method", default=DEFAULT_MARK,
+                        help="Method token: n<k>, gn<k>, or r<radius> (default: n30)")
+    parser.add_argument("--nthreads", "-n", type=int, default=os.cpu_count() or 1,
+                        help="Backend worker threads (default: available CPU count)")
+    parser.add_argument("--chunk-size", type=int, default=None,
+                        help="Query chunk size for r<radius> only (default: 100000)")
+    parser.add_argument("--force", "-force", "-f", action="store_true",
+                        help="Overwrite an existing output file")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Print progress and output shape")
+    return parser
 
-parser.add_argument("data_filename",
-                    help="Path to .npy file with shape (N, >=3); first 3 columns are positions",
-                    type=str)
-parser.add_argument("BoxSize",
-                    type=float,
-                    help="Periodic box size of the simulation")
-parser.add_argument("output_filename",
-                    help="Output .npy filename (input data plus rho as 4th column)")
 
-parser.add_argument("--rho-method", "-method",
-                    type=str,
-                    default="n30",
-                    help="Density mark method, currently only 'n<digits>' (e.g. n30 means "
-                         "k=30 nearest neighbours) (default: n30)")
-parser.add_argument("--nthreads", "-n",
-                    type=int,
-                    default=os.cpu_count() or 1,
-                    help="Number of threads (default: all available cores)")
-parser.add_argument("--ignore-self", "-ignore_self",
-                    action="store_true",
-                    help="Exclude the query point itself from its neighbour list (default: False)")
-parser.add_argument("--no-adaptive-h", "-no_adaptive_h",
-                    action="store_true",
-                    help="Disable adaptive smoothing length; requires -h_fixed (default: False)")
-parser.add_argument("--h-fixed", "-h_fixed",
-                    type=float,
-                    default=None,
-                    help="Fixed smoothing length h, used with --no-adaptive-h (default: None)")
-parser.add_argument("--force", "-force", "-f",
-                    action="store_true",
-                    help="Overwrite the output file even if it exists")
-parser.add_argument("--verbose", "-v",
-                    action="store_true",
-                    help="Enable verbose output")
+def _output_path(input_filename, output_filename, method):
+    """Choose a default name or add the NPY extension to an explicit output."""
+    if output_filename is None:
+        source = Path(input_filename)
+        return source.with_name(f"{source.stem}_{method}.npy")
+    output = Path(output_filename)
+    return output if str(output).endswith(".npy") else Path(str(output) + ".npy")
 
-if len(sys.argv) == 1:
-    parser.print_help()
-    sys.exit(0)
 
-args = parser.parse_args()
+def _confirm_output_method(output, method):
+    """Require affirmative input when the basename lacks the selected method."""
+    pattern = rf"(?<![A-Za-z0-9]){re.escape(method)}(?![A-Za-z0-9]|\.\d)"
+    if re.search(pattern, output.stem):
+        return True
+    print(f"Output filename {output.name!r} does not contain method token {method!r}.", flush=True)
+    try:
+        reply = input("Continue with this output name? Enter y or yes to proceed: ")
+    except (EOFError, KeyboardInterrupt):
+        reply = ""
+    if reply.strip().lower() in ("y", "yes"):
+        return True
+    print("Cancelled; no output was written.", flush=True)
+    return False
 
-data_filename = args.data_filename
-boxsize = args.BoxSize
-output_filename = args.output_filename
-nthreads = args.nthreads
 
-# ============================================================================
-# Validate arguments
-# ============================================================================
-if boxsize <= 0:
-    parser.error("BoxSize must be positive")
-if nthreads <= 0:
-    parser.error("nthreads must be positive")
+def main(argv=None):
+    """Validate one canonical method, dispatch its raw calculation and save it."""
+    parser = build_parser()
+    arguments = sys.argv[1:] if argv is None else list(argv)
+    if not arguments:
+        parser.print_help()
+        return 0
+    unsupported = {"--ignore-self", "-ignore_self", "--no-adaptive-h", "-no_adaptive_h",
+                   "--h-fixed", "-h_fixed"}
+    if any(argument.split("=", 1)[0] in unsupported for argument in arguments):
+        parser.error("canonical method tokens include self and use their default smoothing; "
+                     "non-default self/h settings are not encoded by this token grammar")
+    args = parser.parse_args(arguments)
+    try:
+        method = parse_mark_token(args.rho_method)
+        if not np.isfinite(args.BoxSize) or args.BoxSize <= 0:
+            raise ValueError("BoxSize must be finite and positive")
+        if args.nthreads <= 0:
+            raise ValueError("nthreads must be positive")
+        if args.chunk_size is not None:
+            if method.kind != "r":
+                raise ValueError("--chunk-size applies only to r<radius>")
+            if args.chunk_size <= 0:
+                raise ValueError("chunk-size must be positive")
+        if method.kind == "r" and not 0 < float(method.value) < args.BoxSize / 2:
+            raise ValueError("radius must be finite, positive and smaller than half BoxSize")
 
-method_kind, method_value, method_error = parse_method(args.rho_method)
-if method_error is not None:
-    parser.error(method_error)
+        output = _output_path(args.data_filename, args.output_filename, method.token)
+        if output.exists() and not args.force:
+            print(f"Output file {output} already exists. Use --force to re-compute.")
+            return 0
+        if not _confirm_output_method(output, method.token):
+            return 1
+        data = np.load(args.data_filename, allow_pickle=False)
+        if not isinstance(data, np.ndarray) or data.ndim != 2 or data.shape[1] < 3:
+            raise ValueError("input must be a plain .npy array with shape (N, >=3)")
+        if data.dtype not in (np.dtype("float32"), np.dtype("float64")):
+            raise ValueError("input positions must have float32 or float64 dtype")
+        pos = data[:, :3]
+        if not np.isfinite(pos).all():
+            raise ValueError("input positions must be finite")
+        if method.kind != "r" and not 2 <= method.value <= len(pos):
+            raise ValueError("adaptive neighbor count must satisfy 2 <= k <= number of positions")
+        if args.verbose:
+            print(f"Loading {args.data_filename}: {len(pos)} positions; BoxSize={args.BoxSize:g}", flush=True)
+            print(f"method={method.token}; nthreads={args.nthreads}; raw output, no power transform", flush=True)
+        if method.kind == "r":
+            mark = create_rho_fix_r(
+                pos, boxsize=args.BoxSize, r=float(method.value), nthreads=args.nthreads,
+                chunk_size=args.chunk_size or 100_000, verbose=args.verbose,
+            )
+        else:
+            calculation = {"n": create_rho, "gn": create_drho}[method.kind]
+            mark = calculation(pos, boxsize=args.BoxSize, k=method.value, nthreads=args.nthreads)
+        out = np.column_stack((pos, mark))
+        expected_columns = 6 if method.kind == "gn" else 4
+        if out.shape != (len(pos), expected_columns) or not np.isfinite(out).all():
+            raise ValueError("mark calculation returned an invalid shape or non-finite values")
+        np.save(output, out)
+        if args.verbose:
+            print(f"Wrote {output} with shape {out.shape}.", flush=True)
+    except (OSError, TypeError, ValueError) as error:
+        parser.error(str(error))
+    return 0
 
-use_adaptive_h = not args.no_adaptive_h
-if not use_adaptive_h and args.h_fixed is None:
-    parser.error("--no-adaptive-h requires --h-fixed")
 
-if os.path.exists(output_filename) and not args.force:
-    print(f"Output file {output_filename} already exists. Use -force to re-compute.")
-    sys.exit(0)
-
-# ============================================================================
-# Load data
-# ============================================================================
-if not os.path.isfile(data_filename):
-    print(f"ERROR: missing input file: {data_filename}", file=sys.stderr, flush=True)
-    sys.exit(1)
-
-if args.verbose:
-    print(f"Loading {data_filename} ...", flush=True)
-data = np.load(data_filename)
-if data.ndim != 2 or data.shape[1] < 3:
-    print(f"ERROR: expected shape (N, >=3), got {data.shape}: {data_filename}",
-          file=sys.stderr, flush=True)
-    sys.exit(1)
-
-pos = data[:, :3]
-if args.verbose:
-    print(f"Number of particles is {pos.shape[0]:d}; BoxSize is {boxsize:.0f}.", flush=True)
-    print(f"rho-method is {args.rho_method} (k={method_value}); "
-          f"Use nthreads: {nthreads:d}.", flush=True)
-
-# ============================================================================
-# Compute the density mark (method dispatch)
-# ============================================================================
-if method_kind == "n":
-    out = create_rho(
-        pos,
-        boxsize=boxsize,
-        k=method_value,
-        nthreads=nthreads,
-        only_return_rho=False,
-        ignore_self=args.ignore_self,
-        use_adaptive_h=use_adaptive_h,
-        h=args.h_fixed,
-    )
-    expected_cols = 4
-else:
-    print(f"ERROR: unhandled method kind '{method_kind}'", file=sys.stderr, flush=True)
-    sys.exit(1)
-
-if out.shape[0] != pos.shape[0] or out.shape[1] != expected_cols:
-    print(f"ERROR: unexpected create_rho output shape {out.shape}, "
-          f"expected ({pos.shape[0]:d}, {expected_cols:d})", file=sys.stderr, flush=True)
-    sys.exit(1)
-
-np.save(output_filename, out)
-if args.verbose:
-    print(f"Wrote {output_filename} with shape {out.shape}.", flush=True)
+if __name__ == "__main__":
+    raise SystemExit(main())

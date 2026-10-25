@@ -98,6 +98,19 @@ weight columns receive ones. `--set_weight_to_one` forces both catalogs' enabled
 weights to one. Without `--with_weight`, only position columns are used. Calling
 the command without arguments prints help before MPI initialization.
 
+The box CLI also accepts `--weight-method n30 -weipow 1` or an equivalent single
+`--weight-token n30_weipow1`; the method is no longer fixed to n30. Explicit
+methods/tokens require `--with_weight`, compatible duplicate arguments are
+allowed, and conflicting or joint identities are rejected. Data marks are
+powered once, while random weights retain their original values. Explicit
+method selection requires a data mark column. Saved result dictionaries include
+`weight_method`, `weight_power`, `weight_token`, and `weight_set_one` in addition
+to the existing numerical keys. Scalar gn marks and six-column gn vectors are
+supported; vectors are reduced to their Euclidean norm before the power. See
+`/mnt/xiaodong/xiaoliang/software/LSS_python/doc/weight_tokens.md` for the common
+contract across all five non-AP measurement CLIs. This does not change the
+library counting API or the cache policy.
+
 Add `--verbose` / `-v` to print the configuration, catalog shapes/dtypes/sizes,
 cache decisions, block populations, task counts, and per-rank assignments. Each
 rank then reports task progress and elapsed times at roughly 5% task intervals
@@ -264,3 +277,183 @@ was `1.14e-12`, and the largest uncorrected xi difference was `2.09e-15`, within
 `validation/tpcf_mpi/n1`, `n2`, and `n4`. All recorded ranks ran on the same host;
 these results establish local MPI correctness, without measuring cross-node
 performance.
+
+## Jackknife and subsample MPI entry points
+
+The command-line counterpart of `cal_cov_source_tpcf` is now
+`bin/cal_cov_source_tpcf_mpi`; see [its invocation and output documentation](cal_cov_source_tpcf_mpi.md).
+
+`LSS_python.tpcf_mpi` also exports `run_jackknife_tpCF_mpi` and
+`run_subsample_tpCF_mpi`. Their positional parameters, RR cache formats and
+root return values follow `cov.run_jackknife_tpCF` and `cov.run_subsample_tpCF`:
+
+```python
+from mpi4py import MPI
+from LSS_python.tpcf_mpi import run_jackknife_tpCF_mpi, run_subsample_tpCF_mpi
+
+# All ranks enter the call; data and random need exist only on root.
+result = run_jackknife_tpCF_mpi(
+    data, random, sedges, mubin, with_weight,
+    boxsize, ngrids, refine_factors=(2, 2, 1),
+    rr_filename=rr_filename, force_rr=False, nthreads=1,
+    verbose=True, full_output=True, mpicomm=MPI.COMM_WORLD, root=0,
+)
+```
+
+The example uses application-provided arrays/settings and does not create a
+caller file. Replace the function with `run_subsample_tpCF_mpi` for independent
+subvolumes, supplying a **single subvolume-sized** random catalog. Every rank
+must use the same entry point, communicator and root; remaining settings are
+read from root. Non-root catalogs and other mandatory measurement arguments may
+be `None`. MPI is still imported only when an MPI entry point is called.
+
+| Parameter | Meaning |
+| --- | --- |
+| `data`, `random` | Root's input arrays; enabled fourth-column weights are preserved, missing weights receive ones as in `cov` |
+| `sedges`, `mubin`, `with_weight` | Existing separation/mu binning and weight mode |
+| `boxsize`, `ngrids` | Full box geometry and subvolume divisions |
+| `refine_factors` | Existing Corrfunc spatial refinement factors |
+| `rr_filename=None` | Root alone loads/saves RR; `None` disables persistent RR caching |
+| `force_rr=False` | Reuse an existing compatible RR cache; true recomputes and overwrites it |
+| `nthreads=1` | OpenMP threads per MPI rank |
+| `verbose=False` | Cache decisions, assignment sizes, rank progress and completion |
+| `full_output=False` | Root returns the object array; true returns the existing full-output dictionary |
+| `correction=None` (Jackknife only) | Ordinary delete-one samples; `'mohammad21'` scales cross deductions and their pair normalizations |
+| `mpicomm=None`, `root=0` | Communicator defaults to `MPI.COMM_WORLD`; any valid root rank is supported |
+
+Other ranks return `None`. These two entries do not broadcast `xismu` objects.
+The default result is an object array of length `prod(ngrids)`. With
+`full_output=True`, Jackknife returns `xismu_jk`, `xismu_full`, `sedges`,
+`muedges`, and the DD/DR internal/cross maps; subsample returns `xismu_sub`,
+`sedges`, `muedges`, `DD_sub`, and `DR_sub`. As in serial, Jackknife RR maps live
+in its optional RR cache. The caller decides whether/where to save the returned
+objects; the entry points themselves write only the requested RR cache.
+
+The core call chains are:
+
+```text
+run_jackknife_tpCF_mpi
+  -> cov._run_jackknife_tpCF (shared serial/MPI workflow on root)
+     -> _count_jackknife_mpi
+        -> tpcf._prepare_jackknife_tasks -> pair_counting.build_pair_tasks
+        -> distribute buffers -> pair_counting.count_pair_task -> Corrfunc
+        -> gather labelled buffers -> restore internal/cross maps
+     -> cov.compute_jackknife_xi
+
+run_subsample_tpCF_mpi
+  -> cov._run_subsample_tpCF (shared serial/MPI workflow on root)
+     -> _count_subsample_mpi
+        -> shared RR: tpcf.compute_subsample_pairs on root, or existing cache
+        -> DD/DR: distribute independent subboxes
+           -> tpcf.compute_subsample_pairs on each rank -> Corrfunc
+           -> gather buffers by global subbox ID
+     -> existing per-subvolume normalization and xismu construction
+```
+
+`cov`'s public serial signatures are preserved. Its two shared private workflows
+accept counting callbacks so preparation, cache checks, zero-weight
+compatibility, self-pair handling, normalizations and reconstruction execute the
+same processing steps for serial and MPI. Jackknife defaults to
+`correction=None`; the optional `'mohammad21'` reconstruction is documented in
+[Jackknife correction](jackknife_correction.md). The previously validated
+`run_tpCF_mpi` counting/Reduce path is retained.
+
+For Jackknife, global coordinates and the existing cubic grid / 26-neighbor
+selection are retained; `smax <= min(boxsize / ngrids)` is required. Tasks are
+balanced by estimated pair products, grouped by first region, with root also
+counting. Cross DD/RR counts receive multiplicity two exactly once and both DR
+directions remain separate. Gathered results retain region identities and are
+restored to serial component order before summation and Jackknife deductions.
+
+For subsample, root retains the existing local-coordinate partition. A nonempty
+subbox's DD and DR go to the same rank, with assignments balanced by estimated
+`N*(N-1)/2 + N*Nrandom` cost. Empty and singleton subboxes remain `None` in their
+original global slots. Each working rank receives the shared random template;
+independent samples are gathered without summation. The common RR is one serial
+Corrfunc call on root, unless loaded from cache. This leaves RR acceleration
+outside this subsample implementation. There is no new neighbor/smax restriction
+for independent-subbox counting.
+
+Catalogs and structured result arrays use direct `MPI.BYTE` buffers, with the
+same production 256 MiB chunk limit as the full-count entry. Only commands,
+settings, task labels and layouts use Python metadata messages. Receive
+allocation and counting errors are exchanged before buffer traffic; exceptions
+inside an active buffer transfer call `Abort`. Root announces workflow failures
+to waiting workers. A process killed by the OS still requires the MPI launcher
+or scheduler to terminate peers; this implementation does not add process
+recovery. Root still owns all original catalogs and the existing partition
+allocation. It also gathers the component maps needed by the existing RR cache
+and result construction.
+
+Only root accesses cache paths. Existing RR files are read when allowed by the
+serial cache checks; `force_rr=True` replaces them. No backup/checkpoint is
+created. As in the serial workflow, a newly saved RR cache remains if a later
+DD/DR or reconstruction stage fails. Output-object saving and any Slurm
+submission remain the caller's responsibility. This change adds library entry
+points and the focused validation driver; production command-line entry points
+are not connected to resampling MPI by this change.
+
+### Focused validation and actual files (2026-10-24)
+
+The new driver runs one weighted float64 sample per method, with the same samples
+repeated using their RR caches. It depends on this installed project, NumPy,
+joblib, numba, tqdm, Corrfunc, mpi4py and a compatible system MPI. Run from the
+repository root:
+
+```sh
+mpiexec -n 2 python -B tests/validate_resampling_mpi.py \
+  --output-dir /absolute/new/output --root 1
+```
+
+No arguments prints help before importing MPI. `--output-dir` is the artifact
+directory and `--root` selects the input/output rank (default 1, requiring at
+least two ranks). Both ranks temporarily use 128-byte chunks to exercise
+multi-message catalog/result transfers; the production default stays 256 MiB.
+The script generates catalogs in memory, saves them to `catalogs.npz`, runs the
+serial and MPI measurements with separate fresh RR caches, compares all returned
+counts and objects, and checks a second MPI call with cache reuse and the default
+array return. Floating arrays use `rtol=2e-12, atol=1e-10`; exposed integer count
+fields use exact comparison. Its only two methods are Jackknife and subsample;
+it does not invoke other validation scripts or regression suites.
+
+The actual local two-rank run used root 1, seed 20261024, boxsize 20, grid 2,
+97 data points, 385 full-box random points for Jackknife, and 384 local-template
+random points for subsample. Data subbox populations were `[0,1,16,16,16,16,16,16]`,
+so the result includes empty/singleton handling. Six separation bins span
+0.5..5 and there are four mu bins. All returned pair arrays, normalizations,
+normalized counts and xi had maximum absolute difference **0**. Both RR cache
+comparisons passed, cached MPI results matched fresh results, and the cache
+hashes were unchanged. Jackknife returned eight exclusion samples; subsample
+returned six valid objects and `None` at slots 0 and 1. This sample did not test
+zero separation, float32 inputs, actual multi-GiB transfers, cross-node
+performance or fatal-process recovery.
+
+All actual artifacts are under:
+
+`/mnt/xiaodong/xiaoliang/software/LSS_python/validation/resampling_mpi/20261024_anv2vbyw/`
+
+| Filename relative to that absolute directory | Source and contents | Actual status |
+| --- | --- | --- |
+| `catalogs.npz` | Driver-generated data (97x4), full random (385x4), shared random (384x4), sedges | Generated |
+| `jackknife_serial.pkl`, `jackknife_mpi.pkl` | Full serial/MPI output dictionaries containing the full object and eight Jackknife objects, edges and effective DD/DR maps | Generated |
+| `subsample_serial.pkl`, `subsample_mpi.pkl` | Full serial/MPI output dictionaries with eight slots, edges and structured DD/DR maps | Generated |
+| `jackknife_RR_serial.pkl`, `jackknife_RR_mpi.pkl` | Existing-format effective RR internal/cross maps, full RR, edges and weight mode | Generated; cache reuse did not overwrite |
+| `subsample_RR_serial.pkl`, `subsample_RR_mpi.pkl` | Existing-format structured RR, edges, weight mode and subbox size | Generated; cache reuse did not overwrite |
+| `summary.json` | Settings, hosts, output paths and comparison metrics | Generated |
+| `execution.json` | Launcher command, environment, elapsed time and exit code 0 | Generated by the execution wrapper |
+| `validation.stdout.log` | MPI progress and both PASS messages | Generated by redirecting launcher stdout |
+| `validation.stderr.log` | tqdm progress bars (no exception traceback) | Generated by redirecting launcher stderr |
+| `file_inventory.csv` | Absolute paths, roles, contents, generation status and overwrite/cleanup policy | Generated after the run |
+| `tmp/tmp*` | Corrfunc's per-call temporary separation-bin text files; random suffixes were not logged | Temporary files managed by Corrfunc; no files remain in `tmp/` |
+
+The full absolute input/source/output inventory is `file_inventory.csv` in that
+directory. Input catalogs were synthetic; no production catalog or production RR
+was read. A unique directory was used, so earlier artifacts and production
+results were not overwritten. If the driver is rerun in the same directory, its
+catalog/result/summary filenames are overwritten and its existing RR caches are
+reused under serial cache rules; use a new directory for a fresh reference run.
+The driver writes no separate logs or execution record itself: the two log files
+and `execution.json` above came from the launch wrapper. `TMPDIR` was set to the
+run's `tmp/`, `OMP_NUM_THREADS=1`, and Python bytecode writing was disabled. No
+checkpoint, retained Corrfunc temporary file, or Slurm stdout/error file was
+created. No production job was submitted.

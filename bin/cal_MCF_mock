@@ -11,6 +11,10 @@ Can save intermediate pair counts for re-use and supports weighted catalogs.
 
 import numpy as np 
 from LSS_python.tpcf import run_tpCF_mock, cal_tpCF_from_pairs
+from LSS_python.weight_token import (
+    add_measurement_weight_arguments, resolve_measurement_weights,
+)
+from LSS_python.measurement_weights import prepare_mock_catalog, attach_weight_metadata
 import joblib, os
 import argparse, sys
 
@@ -21,7 +25,7 @@ def read_data(filename):
     Supports .npy files (structured or unstructured arrays) and .pkl files 
     (pickled dictionaries or arrays). Returns a unified (N, C) array format.
     
-    Expected columns: RA, DEC, R (comoving distance), WEIGHT [, WEIGHT_RHO]
+    Expected columns: RA, DEC, R, base weight, then a scalar mark or gn gx, gy, gz.
     
     Parameters
     ----------
@@ -87,7 +91,7 @@ parser.add_argument("nthreads",
 # Binning parameters
 parser.add_argument("-smin", 
                    type=float, 
-                   default=0.0, 
+                   default=1e-6,
                    help="Minimum separation (default: 0.0)")
 parser.add_argument("-smax", 
                    type=float, 
@@ -105,7 +109,10 @@ parser.add_argument("-mubin",
 # Weight handling options
 parser.add_argument("--with_weight", "-ww", 
                    action="store_true", 
-                   help="Load additional weight from 5th column (WEIGHT_RHO)")
+                   help="Use data marks after base weight; gn columns 5-7 are reduced to norm")
+parser.add_argument("--set_weight_to_one", "-weightone", action="store_true",
+                   help="Force enabled effective data/random weights to one")
+add_measurement_weight_arguments(parser)
 
 # Algorithm parameters
 parser.add_argument("--xyz_refine_factors", "-refine", 
@@ -150,7 +157,7 @@ if len(sys.argv) == 1:
     parser.print_help()
     exit(0)
 
-argv = parser.parse_args()
+argv = resolve_measurement_weights(parser.parse_args(), parser)
 
 # Extract catalog filenames
 mock_fileallname = argv.mock_filename
@@ -161,6 +168,9 @@ nthreads = argv.nthreads
 
 # Binning configuration
 smin = argv.smin
+if smin <= 0.0:
+    smin = 1e-6
+
 smax = argv.smax
 sbin = argv.sbin
 mubin = argv.mubin
@@ -168,6 +178,8 @@ sedges = np.linspace(smin, smax, sbin+1)  # Create separation bin edges
 
 # Weight configuration
 with_weight = argv.with_weight
+if with_weight:
+    print(f"Weight token: {argv.weight_token}; data mark is powered once before base weights")
 
 # Algorithm parameters
 xyz_refine_factors = argv.xyz_refine_factors
@@ -245,6 +257,17 @@ random_catalog = read_data(random_dir + random_filename + random_fileext)
 # Ensure both catalogs have the same data type for compatibility
 if mock_catalog.dtype != random_catalog.dtype:
     random_catalog = random_catalog.astype(mock_catalog.dtype)
+
+if not only_run_rr:
+    mock_catalog = prepare_mock_catalog(
+        mock_catalog, with_weight=with_weight, weight_set_one=argv.set_weight_to_one,
+        method=argv.weight_method, power=argv.weight_pow,
+        require_mark=argv.weight_method_explicit,
+    )
+random_catalog = prepare_mock_catalog(
+    random_catalog, with_weight=with_weight, weight_set_one=argv.set_weight_to_one,
+    is_data=False,
+)
 
 # Dictionary to hold output filenames for pair counts
 # Will be passed to run_tpCF_mock to save results to disk if specified
@@ -340,5 +363,6 @@ else:
     
     # Save tpCF result to disk
     print(f"Saving tpCF result to {tpCF_result_filename}")
+    attach_weight_metadata(tpCF_result, argv)
     joblib.dump(tpCF_result, tpCF_result_filename)
     print("Done!")

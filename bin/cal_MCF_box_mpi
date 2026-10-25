@@ -13,6 +13,11 @@ from time import perf_counter
 import joblib
 import numpy as np
 
+from LSS_python.weight_token import (
+    add_measurement_weight_arguments, resolve_measurement_weights,
+)
+from LSS_python.measurement_weights import prepare_box_catalog, attach_weight_metadata
+
 
 def positive_int(value):
     parsed = int(value)
@@ -26,7 +31,7 @@ def build_parser():
         description=__doc__,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("data_filename", help="Data .npy catalog, shape (N, 3) or (N, 4)")
+    parser.add_argument("data_filename", help="Data .npy: xyz, optionally one scalar mark or three gn gradient components")
     parser.add_argument("random_filename", help="Random .npy catalog, shape (M, 3) or (M, 4)")
     parser.add_argument("nthreads", type=positive_int, help="OpenMP threads per MPI rank")
     parser.add_argument("--boxsize", "-boxsize", nargs="+", type=float, required=True,
@@ -38,9 +43,10 @@ def build_parser():
     parser.add_argument("-sbin", type=positive_int, default=150, help="Separation bins")
     parser.add_argument("-mubin", type=positive_int, default=120, help="Mu bins")
     parser.add_argument("--with_weight", "-ww", action="store_true",
-                        help="Use fourth-column weights, filling missing weights with ones")
+                        help="Use data marks (gn vectors reduced to norm) and existing random weights")
     parser.add_argument("--set_weight_to_one", "-weightone", action="store_true",
                         help="Force data and random weights to one when --with_weight is enabled")
+    add_measurement_weight_arguments(parser)
     parser.add_argument("--xyz_refine_factors", "-refine", nargs=3, type=positive_int,
                         default=[2, 2, 1], help="Corrfunc x/y/z refinement factors")
     parser.add_argument("--tpcf_filename", "-tpcf", default="./tpCF_temp.pkl",
@@ -78,6 +84,7 @@ def parse_arguments(argv=None):
         parser.error("separations must be finite and satisfy 0 <= smin < smax")
     if args.smax > np.min(args.boxsize / args.ngrids):
         parser.error("smax must not exceed the smallest block width (boxsize/ngrids)")
+    resolve_measurement_weights(args, parser)
     return args
 
 
@@ -98,6 +105,8 @@ def print_configuration(args, nranks):
         ("mu bins", args.mubin),
         ("with_weight", args.with_weight),
         ("weight_set_one", args.with_weight and args.set_weight_to_one),
+        ("weight_pow", args.weight_pow),
+        ("weight_token", args.weight_token),
         ("refine factors", args.xyz_refine_factors),
         ("RR output", args.rr_filename),
         ("tpCF output", "unused (RR-only mode)" if args.only_run_rr else args.tpcf_filename),
@@ -109,22 +118,17 @@ def print_configuration(args, nranks):
     print("=" * 60, flush=True)
 
 
-def read_data(filename, with_weight=False, weight_set_one=False, *, verbose=False, name="catalog"):
-    """Load an N-by-3/4 catalog, retaining enabled weights and supplying unit weights."""
-    from LSS_python.pair_counting import prepare_catalogs
-
+def read_data(filename, with_weight=False, weight_set_one=False, *, weight_pow=1.0,
+              verbose=False, name="catalog", method="n30", is_data=True,
+              require_weight=False):
+    """Load raw marks once, preserving random weights and precision."""
     started = perf_counter()
     print(f"       Loading {name} from {filename} ...", flush=True)
     source = np.load(filename, allow_pickle=False)
-    if verbose:
-        print(f"       {name} file loaded: shape={source.shape}, dtype={source.dtype}, "
-              f"size={source.nbytes / 1024**3:.3f} GiB; preparing columns ...", flush=True)
-    catalog, _ = prepare_catalogs(source, with_weight=with_weight)
-    if not with_weight:
-        catalog = np.ascontiguousarray(catalog[:, :3])
-    elif weight_set_one:
-        catalog = catalog.copy()
-        catalog[:, 3] = 1.0
+    catalog = prepare_box_catalog(
+        source, with_weight=with_weight, weight_set_one=weight_set_one,
+        method=method, power=weight_pow, is_data=is_data, require_weight=require_weight,
+    )
     if verbose:
         print(f"       {name} ready: shape={catalog.shape}, dtype={catalog.dtype}, "
               f"size={catalog.nbytes / 1024**3:.3f} GiB, "
@@ -177,11 +181,12 @@ def prepare_run(args):
     if not args.only_run_rr:
         state["data"] = read_data(
             args.data_filename, args.with_weight, args.set_weight_to_one,
-            verbose=args.verbose, name="data",
+            weight_pow=args.weight_pow, verbose=args.verbose, name="data",
+            method=args.weight_method, require_weight=args.weight_method_explicit,
         )
     state["random"] = read_data(
         args.random_filename, args.with_weight, args.set_weight_to_one,
-        verbose=args.verbose, name="random",
+        verbose=args.verbose, name="random", is_data=False,
     )
     if not args.only_run_rr:
         started = perf_counter()
@@ -281,6 +286,7 @@ def main(argv=None):
                 print(f"       Saving tpCF result to {filename} ...", flush=True)
                 started = perf_counter()
                 filename.parent.mkdir(parents=True, exist_ok=True)
+                attach_weight_metadata(result, args)
                 joblib.dump(result, filename)
                 print(f"Saved tpCF result to {filename}", flush=True)
                 if args.verbose:

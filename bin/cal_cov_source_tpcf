@@ -20,66 +20,24 @@ import sys
 import joblib
 import numpy as np
 from LSS_python.cov import run_jackknife_tpCF, run_subsample_tpCF
+from LSS_python.weight_token import (
+    add_measurement_weight_arguments, resolve_measurement_weights,
+)
+from LSS_python.measurement_weights import prepare_box_catalog, attach_weight_metadata
 
 
 # ---------------------------------------------------------------------------
 # Data loading (mirrors cal_MCF_box_ap.read_data)
 # ---------------------------------------------------------------------------
-def read_data(filename, weight_set_one=False, with_weight=False):
-    """
-    Read ordinary npy arrays and convert them to the required number of columns.
-    
-    Parameters
-    ----------
-    filename : str
-        Path to the npy file containing catalog data
-    weight_set_one : bool, optional
-        If True, force the weight column (4th column) to 1.0, by default False
-    with_weight : bool, optional
-        If True, the returned array has 4 columns (x, y, z, weight).
-        If False, the returned array has 3 columns (x, y, z only).
-        
-    Returns
-    -------
-    numpy.ndarray
-        Catalog array with shape (N, 3) or (N, 4) as required
-    bool
-        Whether weights are used
-    """
-    source = np.load(filename)
-    ncols = source.shape[1]
-    target_cols = 4 if with_weight else 3
-
-    # Fail loudly when weights are requested but the catalog has no weight
-    # column; silently filling it with 1.0 would fake an unweighted result.
-    if with_weight and not weight_set_one and ncols < 4:
-        raise ValueError(
-            f"--with_weight requires a 4th (weight) column, but {filename} "
-            f"has only {ncols} columns. Add the weight column or drop "
-            "--with_weight."
-        )
-
-    # Fast path: input already has the required shape and no weight
-    # modification is needed, return directly without allocating new memory
-    if ncols == target_cols and not weight_set_one:
-        return source, with_weight
-
-    # General path: convert to the required number of columns
-    result_array = np.zeros(shape=(source.shape[0], target_cols), dtype=source.dtype)
-    # Copy position columns (whatever is available, at most 3)
-    npos = min(ncols, 3)
-    result_array[:, :npos] = source[:, :npos]
-
-    # Handle the weight column if requested
-    if with_weight:
-        if weight_set_one or ncols < 4:
-            # Force weights to 1.0, or fill missing weights with 1.0
-            result_array[:, 3] = 1.0
-        else:
-            # Keep original weights
-            result_array[:, 3] = source[:, 3]
-
-    return result_array, with_weight
+def read_data(filename, weight_set_one=False, with_weight=False, *,
+              method="n30", power=1.0, is_data=True, require_weight=True):
+    """Load data marks or unchanged random weights."""
+    catalog = prepare_box_catalog(
+        np.load(filename, allow_pickle=False), with_weight=with_weight,
+        weight_set_one=weight_set_one, method=method, power=power,
+        is_data=is_data, require_weight=require_weight,
+    )
+    return catalog, with_weight
 
 
 # ---------------------------------------------------------------------------
@@ -113,14 +71,15 @@ def main():
                         help="RR pkl file for caching (default: RR_temp.pkl)")
     parser.add_argument("--tpcf_filename", "-tpcf", type=str, default="tpCF_temp.pkl",
                         help="Output tpCF pkl file (default: tpCF_temp.pkl)")
+    parser.add_argument("--correction", choices=("none", "mohammad21"), default=None,
+                        help="Jackknife cross-pair correction (default: none; jk only)")
     
     # Weight handling options
     parser.add_argument("--with_weight", "-ww", action="store_true",
-                        help="Load weights from 4th column of catalog files")
+                        help="Use data marks (gn vectors reduced to norm) and existing random weights")
     parser.add_argument("--set_weight_to_one", "-weightone", action="store_true",
                         help="Force weights to 1.0 (valid only with --with_weight)")
-    parser.add_argument("--weight_pow", "-weipow", type=float, default=1.0,
-                        help="Raise data weights to this power, i.e. weight**weipow (valid only with --with_weight)")
+    add_measurement_weight_arguments(parser)
     
     parser.add_argument("--nthreads", "-n", type=int, default=32,
                         help="Number of threads (default: 32)")
@@ -135,7 +94,11 @@ def main():
         parser.print_help()
         sys.exit(0)
 
-    args = parser.parse_args()
+    args = resolve_measurement_weights(parser.parse_args(), parser)
+    if args.correction == "none":
+        args.correction = None
+    if args.cov_source_type != "jk" and args.correction is not None:
+        parser.error("--correction=mohammad21 is only valid for jk")
 
     # --- Derived parameters ---
     sedges = np.linspace(0.0, args.s_max, args.sbin + 1)
@@ -146,10 +109,7 @@ def main():
     weight_set_one = args.set_weight_to_one
     weight_pow = args.weight_pow
 
-    # If weight is not used, ignore weight-related settings
-    if not with_weight:
-        weight_set_one = False
-        weight_pow = 1.0
+    weight_token = args.weight_token
 
     # --- Print configuration ---
     if args.verbose:
@@ -160,6 +120,7 @@ def main():
         print(f"  random:          {args.random_filename}", flush=True)
         print(f"  boxsize:         {args.boxsize}", flush=True)
         print(f"  cov method:      {args.cov_source_type} ({rr_type_str})", flush=True)
+        print(f"  correction:      {args.correction}", flush=True)
         print(f"  ngrid:           {args.ngrid}", flush=True)
         print(f"  sbin:            {args.sbin}", flush=True)
         print(f"  mubin:           {args.mubin}", flush=True)
@@ -167,6 +128,7 @@ def main():
         print(f"  with_weight:     {with_weight}", flush=True)
         print(f"  weight_set_one:  {weight_set_one}", flush=True)
         print(f"  weight_pow:      {weight_pow}", flush=True)
+        print(f"  weight_token:    {weight_token}", flush=True)
         print(f"  rr_filename:     {args.rr_filename}", flush=True)
         print(f"  tpcf_filename:   {args.tpcf_filename}", flush=True)
         print(f"  nthreads:        {args.nthreads}", flush=True)
@@ -176,21 +138,17 @@ def main():
 
     # --- Step 1: Load data ---
     print(f"[1/3] Loading data from {args.data_filename} ...", flush=True)
-    data_catalog, _ = read_data(args.data_filename, weight_set_one=weight_set_one, with_weight=with_weight)
+    data_catalog, _ = read_data(args.data_filename, weight_set_one=weight_set_one, with_weight=with_weight,
+                                method=args.weight_method, power=weight_pow)
     if args.verbose:
         print(f"       data shape: {data_catalog.shape}, with_weight={with_weight}", flush=True)
 
     # --- Step 2: Load random ---
     print(f"[2/3] Loading random from {args.random_filename} ...", flush=True)
-    random_catalog, _ = read_data(args.random_filename, weight_set_one=weight_set_one, with_weight=with_weight)
+    random_catalog, _ = read_data(args.random_filename, weight_set_one=weight_set_one, with_weight=with_weight,
+                                  is_data=False)
     if args.verbose:
         print(f"       random shape: {random_catalog.shape}", flush=True)
-
-    # --- Apply weight_pow to data weights ---
-    if with_weight and weight_pow != 1.0:
-        if args.verbose:
-            print(f"       Applying weight_pow={weight_pow} to data weights ...", flush=True)
-        data_catalog[:, 3] = data_catalog[:, 3] ** weight_pow
 
     # --- Step 3: Compute covariance ---
     result_filename = args.tpcf_filename
@@ -232,8 +190,10 @@ def main():
             nthreads=args.nthreads,
             verbose=args.verbose,
             full_output=False,
+            correction=args.correction,
         )
 
+    attach_weight_metadata(result_dict, args)
     joblib.dump(result_dict, result_filename)
     print(f"       -> saved: {result_filename}", flush=True)
     print("Done.", flush=True)

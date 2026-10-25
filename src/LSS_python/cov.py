@@ -3,6 +3,7 @@
 Spatial selection and cache policy stay here. Corrfunc measurement routines
 are provided by tpcf; result construction is provided by xismu. Imported public
 counter/helper names remain available for compatibility with existing users.
+Optional Jackknife cross-pair corrections are applied during reconstruction.
 """
 
 import numpy as np 
@@ -251,7 +252,7 @@ def get_sub_box_shift_core(data, boxsize, ngrids, max_points_default=None, perod
 
 def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
                        boxsize, ngrids, refine_factors=(2, 2, 1), rr_filename=None, force_rr=False, nthreads=1, verbose=False,
-                       full_output=False):
+                       full_output=False, *, correction=None):
     """
     Main function to compute Jackknife two-point correlation function.
     
@@ -288,6 +289,10 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
         Whether to print progress information.
     full_output : bool
         If True, return all intermediate results.
+    correction : None or {'mohammad21'}, optional
+        None preserves ordinary delete-one reconstruction. 'mohammad21' scales
+        incident cross-pair deductions and their normalizations by the factor
+        in arXiv:2109.07071, Eq. 27. Raw counts and RR caches are unchanged.
     
     Returns
     -------
@@ -307,6 +312,21 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
         - 'RR_cross': dict of cross RR results
         - 'RR_full': RR full result
     """
+    return _run_jackknife_tpCF(
+        data, random, sedges, mubin, with_weight, boxsize, ngrids,
+        refine_factors, rr_filename, force_rr, nthreads, verbose, full_output,
+        correction=correction,
+    )
+
+
+def _run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
+                         boxsize, ngrids, refine_factors=(2, 2, 1),
+                         rr_filename=None, force_rr=False, nthreads=1,
+                         verbose=False, full_output=False, *, pair_counters=None,
+                         correction=None):
+    """Run the shared workflow with optional distributed counting callbacks."""
+    counters = ({"DD": compute_DD_JK, "DR": compute_DR_JK, "RR": compute_RR_JK}
+                if pair_counters is None else pair_counters)
     # Robustness: ensure data and random have consistent dtypes
     # Use the higher precision dtype
     if data.dtype != random.dtype:
@@ -346,6 +366,9 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
         ngrids = np.array(ngrids, dtype=np.int32)
     
     n_cubes = int(np.prod(ngrids))
+    alpha = _jackknife_alpha(correction, n_cubes)
+    if verbose:
+        print(f"Jackknife correction: {correction!r}, cross-deduction alpha={alpha:.12g}", flush=True)
     
     if verbose:
         print(f"Dividing data into {ngrids[0]}x{ngrids[1]}x{ngrids[2]} = {n_cubes} subvolumes...")
@@ -431,7 +454,7 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
             else:
                 print("Computing RR...")
         
-        RR_internal, RR_cross, RR_full = compute_RR_JK(
+        RR_internal, RR_cross, RR_full = counters["RR"](
             random_list, sedges, mubin, with_weight, boxsize,
             refine_factors, nthreads, verbose, ngrids
         )
@@ -458,7 +481,7 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
     # Step 2: Compute DD (internal + cross between neighboring subvolumes)
     if verbose:
         print("Computing DD...")
-    DD_internal, DD_cross = compute_DD_JK(
+    DD_internal, DD_cross = counters["DD"](
         data_list, sedges, mubin, with_weight, boxsize,
         refine_factors, nthreads, verbose, ngrids
     )
@@ -466,7 +489,7 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
     # Step 3: Compute DR (internal + cross between neighboring subvolumes)
     if verbose:
         print("Computing DR...")
-    DR_internal, DR_cross = compute_DR_JK(
+    DR_internal, DR_cross = counters["DR"](
         data_list, random_list, sedges, mubin, with_weight, boxsize,
         refine_factors, nthreads, verbose, ngrids
     )
@@ -477,7 +500,8 @@ def run_jackknife_tpCF(data, random, sedges, mubin, with_weight,
     # Step 4: Compute Jackknife correlation functions
     xi_results = compute_jackknife_xi(
         DD_internal, DD_cross, DR_internal, DR_cross, RR_internal, RR_cross,
-        data_list, random_list, sedges, mubin, with_weight, muedges=computed_muedges
+        data_list, random_list, sedges, mubin, with_weight,
+        muedges=computed_muedges, correction=correction,
     )
     
     if verbose:
@@ -553,6 +577,19 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
         - 'DD_sub': dict of DD results for each subvolume (if full_output)
         - 'DR_sub': dict of DR results for each subvolume (if full_output)
     """
+    return _run_subsample_tpCF(
+        data, random, sedges, mubin, with_weight, boxsize, ngrids,
+        refine_factors, rr_filename, force_rr, nthreads, verbose, full_output,
+    )
+
+
+def _run_subsample_tpCF(data, random, sedges, mubin, with_weight,
+                         boxsize, ngrids, refine_factors=(2, 2, 1),
+                         rr_filename=None, force_rr=False, nthreads=1,
+                         verbose=False, full_output=False, *, pair_counters=None):
+    """Run the shared workflow with optional distributed counting callbacks."""
+    count_subsamples = (compute_subsample_pairs if pair_counters is None
+                        else pair_counters["subsample"])
     # Robustness: ensure data and random have consistent dtypes
     # Use the higher precision dtype
     if data.dtype != random.dtype:
@@ -695,7 +732,7 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
                 print("Computing RR...")
             start_time = time.time()
         
-        RR_result = compute_subsample_pairs(
+        RR_result = count_subsamples(
             None, random, sedges, mubin, with_weight, sub_boxsize[0],
             refine_factors, nthreads, verbose, run_parts=("RR",),
         )["RR_result"]
@@ -742,7 +779,7 @@ def run_subsample_tpCF(data, random, sedges, mubin, with_weight,
         RR_corrected[0, 0] -= nr
     
     # Count prepared subvolumes before constructing their statistical results.
-    sub_pairs = compute_subsample_pairs(
+    sub_pairs = count_subsamples(
         data_list, random, sedges, mubin, with_weight, sub_boxsize[0],
         refine_factors, nthreads, verbose, run_parts=("DD", "DR"),
     )
@@ -1046,9 +1083,21 @@ def compute_total_pairs_and_norm(DD_internal=None, DD_cross=None, DR_internal=No
     return result
 
 
+def _jackknife_alpha(correction, nregions):
+    """Resolve Eq. 27's cross-deduction factor using the TOTAL region count."""
+    if correction is None:
+        return 1.0
+    if not isinstance(correction, str) or correction != 'mohammad21':
+        raise ValueError("correction must be None or 'mohammad21'")
+    if nregions is None or nregions < 3:
+        raise ValueError("'mohammad21' requires at least three Jackknife regions")
+    return nregions / (2.0 + np.sqrt(2.0) * (nregions - 1))
+
+
 def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_internal=None, DR_cross=None,
                                 RR_internal=None, RR_cross=None, data_list=None, random_list=None,
-                                sedges=None, mubin=None, with_weight=False, ngrids_1d=None):
+                                sedges=None, mubin=None, with_weight=False, ngrids_1d=None,
+                                *, correction=None):
     """
     Compute deductions (pairs and normalization) for excluding a subvolume.
     Returns what needs to be subtracted from totals.
@@ -1081,6 +1130,10 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
         Whether to use weights.
     ngrids_1d : int, optional
         Number of divisions along one axis.
+    correction : None or {'mohammad21'}, optional
+        Scale cross deductions only; internal deductions and excluded catalog
+        moments retain their original meanings. The total number of regions is
+        obtained from a catalog list, or ngrids_1d**3 when lists are absent.
     
     Returns
     -------
@@ -1101,6 +1154,15 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
         If none of DD_internal/DD_cross, DR_internal/DR_cross, RR_internal/RR_cross are provided.
     """
     import warnings
+
+    nregions = (len(data_list) if data_list is not None else
+                len(random_list) if random_list is not None else
+                ngrids_1d ** 3 if ngrids_1d is not None else None)
+    alpha = _jackknife_alpha(correction, nregions)
+
+    def cross_contribution(value):
+        counts = extract_npairs(value, with_weight).reshape(sbin, mubin)
+        return counts if alpha == 1.0 else alpha * counts
     
     sbin = len(sedges) - 1 if sedges is not None else None
     
@@ -1156,7 +1218,7 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
             for neighbor_idx in neighbors:
                 pair = (min(jk_idx, neighbor_idx), max(jk_idx, neighbor_idx))
                 if pair in DD_cross and DD_cross[pair] is not None:
-                    DD_deduct += extract_npairs(DD_cross[pair], with_weight).reshape(sbin, mubin)
+                    DD_deduct += cross_contribution(DD_cross[pair])
                     
         result['DD_deduct'] = DD_deduct
     
@@ -1176,12 +1238,12 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
                 # Direction 1: (jk_idx, neighbor_idx)
                 pair_ij = (jk_idx, neighbor_idx)
                 if pair_ij in DR_cross and DR_cross[pair_ij] is not None:
-                    DR_deduct += extract_npairs(DR_cross[pair_ij], with_weight).reshape(sbin, mubin)
+                    DR_deduct += cross_contribution(DR_cross[pair_ij])
                 
                 # Direction 2: (neighbor_idx, jk_idx)
                 pair_ji = (neighbor_idx, jk_idx)
                 if pair_ji in DR_cross and DR_cross[pair_ji] is not None:
-                    DR_deduct += extract_npairs(DR_cross[pair_ji], with_weight).reshape(sbin, mubin)
+                    DR_deduct += cross_contribution(DR_cross[pair_ji])
                     
         result['DR_deduct'] = DR_deduct
     
@@ -1200,7 +1262,7 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
             for neighbor_idx in neighbors:
                 pair = (min(jk_idx, neighbor_idx), max(jk_idx, neighbor_idx))
                 if pair in RR_cross and RR_cross[pair] is not None:
-                    RR_deduct += extract_npairs(RR_cross[pair], with_weight).reshape(sbin, mubin)
+                    RR_deduct += cross_contribution(RR_cross[pair])
                     
         result['RR_deduct'] = RR_deduct
     
@@ -1239,7 +1301,8 @@ def compute_jackknife_deductions(jk_idx, DD_internal=None, DD_cross=None, DR_int
 
 
 def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_internal, RR_cross,
-                         data_list, random_list, sedges, mubin, with_weight, muedges=None):
+                         data_list, random_list, sedges, mubin, with_weight, muedges=None,
+                         *, correction=None):
     """
     Compute two-point correlation function for each Jackknife sample.
     
@@ -1272,6 +1335,10 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
         Whether to use weights.
     muedges : array-like, optional
         Mu bin edges. If None, will use default linear spacing from 0 to 1.
+    correction : None or {'mohammad21'}, optional
+        Use ordinary delete-one samples by default. 'mohammad21' removes all
+        internal pairs and alpha times incident cross pairs, with matching
+        full-catalog pair normalization. The full-sample result is unchanged.
     
     Returns
     -------
@@ -1290,6 +1357,7 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
     """
     n_cubes = len(data_list)
     ngrids_1d = round(n_cubes ** (1/3))
+    alpha = _jackknife_alpha(correction, n_cubes)
     
     # Compute total pairs and normalization factors
     total_result = compute_total_pairs_and_norm(
@@ -1339,7 +1407,7 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
         deductions = compute_jackknife_deductions(
             jk_idx, DD_internal, DD_cross, DR_internal, DR_cross,
             RR_internal, RR_cross, data_list, random_list,
-            sedges, mubin, with_weight, ngrids_1d
+            sedges, mubin, with_weight, ngrids_1d, correction=correction,
         )
         
         # Compute Jackknife sample pairs by applying deductions
@@ -1370,6 +1438,17 @@ def compute_jackknife_xi(DD_internal, DD_cross, DR_internal, DR_cross, RR_intern
         
         # norm_RR_jk = N_r_jk * N_r_jk - sum(w_r_jk^2)
         norm_RR_jk = jk_random_weight * jk_random_weight - jk_random_weight_sq
+
+        if alpha != 1.0:
+            # Norms include all possible catalog pairs, including non-neighbor
+            # regions. Restore exactly the retained incident cross-pair mass.
+            retained = 1.0 - alpha
+            excluded_data = deductions['excluded_data_weight']
+            excluded_random = deductions['excluded_random_weight']
+            norm_DD_jk += retained * 2.0 * excluded_data * jk_data_weight
+            norm_DR_jk += retained * (excluded_data * jk_random_weight
+                                      + excluded_random * jk_data_weight)
+            norm_RR_jk += retained * 2.0 * excluded_random * jk_random_weight
         
         # Apply self-pair correction for s=0, mu=0 bin
         # When excluding a subvolume, we need to add back the self-pairs that were removed

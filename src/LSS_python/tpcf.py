@@ -16,7 +16,7 @@ from Corrfunc.mocks import DDsmu_mocks
 from tqdm import tqdm
 
 from .corrfunc import call_DDsmu
-from .pair_counting import get_neighbors
+from .pair_counting import PairCounts, build_pair_tasks, count_pair_task, get_neighbors
 from .xismu import (
     average_xismus_dict_list, cal_convert_factor, get_diff_array,
     get_diff_array_test, get_diff_array_2d, meannorm, packarray1d, packarray2d,
@@ -25,6 +25,7 @@ from .xismu import (
 __all__ = [
     "run_tpCF", "run_tpCF_mock", "cal_tpCF_from_pairs", "compute_DD_JK",
     "compute_DR_JK", "compute_RR_JK", "compute_subsample_pairs", "extract_npairs",
+    "pair_counts_to_corrfunc",
     "xismu", "meannorm", "packarray1d", "packarray2d", "cal_convert_factor",
     "average_xismus_dict_list", "get_diff_array", "get_diff_array_test",
     "get_diff_array_2d",
@@ -299,6 +300,94 @@ def cal_tpCF_from_pairs(DD_result, DR_result, RR_result, data, random, sbin, mub
 
     return result_dict
 
+def pair_counts_to_corrfunc(counts):
+    """Adapt raw PairCounts to the legacy flat DDsmu structured result.
+
+    No multiplicity, normalization, zero-weight fallback, or self-pair
+    correction is applied. Task callers supply their own explicit scaling.
+    """
+    if not isinstance(counts, PairCounts):
+        raise TypeError("counts must be PairCounts")
+    result = np.zeros(counts.npairs.size, dtype=[
+        ("smin", np.float64), ("smax", np.float64), ("savg", np.float64),
+        ("mu_max", np.float64), ("npairs", np.uint64), ("weightavg", np.float64),
+    ])
+    mubin = counts.npairs.shape[1]
+    result["smin"] = np.repeat(counts.sedges[:-1], mubin)
+    result["smax"] = np.repeat(counts.sedges[1:], mubin)
+    result["mu_max"] = np.tile(np.arange(1, mubin + 1) * (1.0 / mubin),
+                               len(counts.sedges) - 1)
+    result["npairs"] = counts.npairs.ravel()
+    if counts.with_weight:
+        np.divide(counts.wpairs.ravel(), result["npairs"],
+                  out=result["weightavg"], where=result["npairs"] != 0)
+    return result
+
+
+def _prepare_jackknife_tasks(pair_type, data_list, random_list, sedges,
+                             with_weight, boxsize, ngrids):
+    """Share region selection and geometry checks between serial and MPI paths."""
+    grid = np.asarray(ngrids)
+    if grid.ndim == 0:
+        grid = np.repeat(grid, 3)
+    if (grid.shape != (3,) or not np.issubdtype(grid.dtype, np.integer)
+            or np.any(grid <= 0)):
+        raise ValueError("ngrids must contain one or three positive integers")
+    # The existing covariance reconstruction uses one scalar grid division.
+    if np.any(grid != grid[0]):
+        raise ValueError("Jackknife reconstruction currently requires a cubic grid")
+    box = np.asarray(boxsize, dtype=np.float64)
+    if box.ndim == 0:
+        box = np.repeat(box, 3)
+    if box.shape != (3,) or np.any(~np.isfinite(box)) or np.any(box <= 0):
+        raise ValueError("boxsize must contain one or three finite positive lengths")
+    edges = np.asarray(sedges, dtype=np.float64)
+    if edges.ndim != 1 or len(edges) < 2:
+        raise ValueError("sedges must be a one-dimensional array of bin edges")
+    if edges[-1] > np.min(box / grid):
+        raise ValueError("smax must not exceed the smallest block width for Jackknife counting")
+
+    n_cubes = int(np.prod(grid))
+    empty = np.empty((0, 4 if with_weight else 3), dtype=np.float64)
+    data_blocks = ((empty,) * n_cubes if data_list is None else
+                   tuple(empty if block is None else block for block in data_list))
+    random_blocks = ((empty,) * n_cubes if random_list is None else
+                     tuple(empty if block is None else block for block in random_list))
+    first_blocks = random_blocks if pair_type == "RR" else data_blocks
+    tasks = sorted(
+        (task for task in build_pair_tasks(data_blocks, random_blocks, grid)
+         if task.pair_type == pair_type
+         and (not task.autocorr or len(first_blocks[task.first]) >= 2)),
+        key=lambda task: (task.first != task.second, task.first, task.second),
+    )
+    return tasks, data_blocks, random_blocks
+
+
+def _compute_jackknife_pairs(pair_type, data_list, random_list, sedges, mubin,
+                             with_weight, boxsize, refine_factors, nthreads,
+                             verbose, ngrids):
+    """Evaluate public block tasks and preserve the legacy internal/cross maps."""
+    tasks, data_blocks, random_blocks = _prepare_jackknife_tasks(
+        pair_type, data_list, random_list, sedges, with_weight, boxsize, ngrids,
+    )
+    internal = dict.fromkeys(range(len(data_blocks)))
+    cross = {}
+    for task in tqdm(tasks, desc=f"Jackknife {pair_type}", disable=not verbose):
+        _, counts = count_pair_task(
+            task, data_blocks, random_blocks, sedges, mubin, with_weight, boxsize,
+            nthreads=nthreads, refine_factors=refine_factors,
+        )
+        result = pair_counts_to_corrfunc(counts)
+        # Legacy cross maps already contain ordered DD/RR counts. Leave the
+        # public core result raw and scale only the adapted output, once.
+        result["npairs"] *= task.multiplicity
+        if task.first == task.second:
+            internal[task.first] = result
+        else:
+            cross[(task.first, task.second)] = result
+    return internal, cross
+
+
 def compute_DD_JK(data_list, sedges, mubin, with_weight, boxsize,
                refine_factors, nthreads, verbose, ngrids):
     """
@@ -335,63 +424,11 @@ def compute_DD_JK(data_list, sedges, mubin, with_weight, boxsize,
         Dictionary mapping (idx1, idx2) tuple to DD result (cross pairs).
         Only includes pairs where idx1 < idx2.
     """
-    n_cubes = len(data_list)
-    n = ngrids[0]  # Assume cubic grid for neighbor calculation
 
-    if verbose:
-        print("Computing DD internal...")
-
-    # Step 1: Compute DD internal for each subvolume
-    DD_internal = {}
-    iterator = tqdm(enumerate(data_list), total=n_cubes, desc="DD internal", disable=not verbose)
-    for idx, data in iterator:
-        if data is None or len(data) < 2:
-            DD_internal[idx] = None
-            continue
-
-        result = call_DDsmu(
-            data, None, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=True
-        )
-        DD_internal[idx] = result
-
-    if verbose:
-        print("Computing DD cross...")
-
-    # Step 2: Compute DD cross between neighboring subvolumes
-    DD_cross = {}
-    computed_pairs = set()
-    pairs_to_compute = []
-
-    for idx in range(n_cubes):
-        data1 = data_list[idx]
-        if data1 is None or len(data1) == 0:
-            continue
-
-        neighbors = get_neighbors(idx, n)
-
-        for neighbor_idx in neighbors:
-            pair = (min(idx, neighbor_idx), max(idx, neighbor_idx))
-            if pair in computed_pairs:
-                continue
-            computed_pairs.add(pair)
-
-            data2 = data_list[neighbor_idx]
-            if data2 is None or len(data2) == 0:
-                continue
-
-            pairs_to_compute.append((pair, data1, data2))
-
-    iterator = tqdm(pairs_to_compute, desc="DD cross", disable=not verbose)
-    for pair, data1, data2 in iterator:
-        result = call_DDsmu(
-            data1, data2, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=False
-        )
-        result["npairs"] *= 2  # To be consistent with the number of pairs in the full catalog
-        DD_cross[pair] = result
-
-    return DD_internal, DD_cross
+    return _compute_jackknife_pairs(
+        "DD", data_list, None, sedges, mubin, with_weight, boxsize,
+        refine_factors, nthreads, verbose, ngrids,
+    )
 
 def compute_DR_JK(data_list, random_list, sedges, mubin, with_weight, boxsize,
                          refine_factors, nthreads, verbose, ngrids):
@@ -429,59 +466,13 @@ def compute_DR_JK(data_list, random_list, sedges, mubin, with_weight, boxsize,
         Dictionary mapping subvolume index to DR result (data_i vs random_i).
     DR_cross : dict
         Dictionary mapping (idx1, idx2) tuple to DR result (data_i vs random_j).
-        Only includes pairs where idx1 < idx2.
+        Both directed region pairs (idx1, idx2) and (idx2, idx1) are retained.
     """
-    n_cubes = len(data_list)
-    n = ngrids[0]  # Assume cubic grid for neighbor calculation
 
-    # Step 1: Compute DR internal (same position: data_i vs random_i)
-    DR_internal = {}
-    iterator = tqdm(enumerate(zip(data_list, random_list)), total=n_cubes, desc="DR internal", disable=not verbose)
-    for idx, (data, random_sub) in iterator:
-        if data is None or len(data) == 0:
-            DR_internal[idx] = None
-            continue
-        if random_sub is None or len(random_sub) == 0:
-            DR_internal[idx] = None
-            continue
-
-        result = call_DDsmu(
-            data, random_sub, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=False
-        )
-        DR_internal[idx] = result
-
-    # Step 2: Compute DR cross between neighboring subvolumes
-    # DR is a cross-correlation, so (data_i, random_j) and (data_j, random_i) are different pairs
-    # With autocorr=False, Corrfunc computes both directions, so we need to include both
-    DR_cross = {}
-    pairs_to_compute = []
-
-    for idx in range(n_cubes):
-        data = data_list[idx]
-        if data is None or len(data) == 0:
-            continue
-
-        neighbors = get_neighbors(idx, n)
-
-        for neighbor_idx in neighbors:
-            random_neighbor = random_list[neighbor_idx]
-            if random_neighbor is None or len(random_neighbor) == 0:
-                continue
-
-            # Direction 1: data_i vs random_j (where j is neighbor of i)
-            pair_ij = (idx, neighbor_idx)
-            pairs_to_compute.append((pair_ij, data, random_neighbor))
-
-    iterator = tqdm(pairs_to_compute, desc="DR cross", disable=not verbose)
-    for pair, data, random_sub in iterator:
-        result = call_DDsmu(
-            data, random_sub, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=False
-        )
-        DR_cross[pair] = result
-
-    return DR_internal, DR_cross
+    return _compute_jackknife_pairs(
+        "DR", data_list, random_list, sedges, mubin, with_weight, boxsize,
+        refine_factors, nthreads, verbose, ngrids,
+    )
 
 def compute_RR_JK(random_list, sedges, mubin, with_weight, boxsize,
                 refine_factors, nthreads, verbose, ngrids):
@@ -521,78 +512,18 @@ def compute_RR_JK(random_list, sedges, mubin, with_weight, boxsize,
     RR_full : ndarray
         Combined RR full result as flattened array (sum of internal + cross pairs).
     """
-    n_cubes = len(random_list)
-    n = ngrids[0]  # Assume cubic grid for neighbor calculation
-    sbin = len(sedges) - 1
 
-    if verbose:
-        print("Computing RR internal...")
-
-    # Step 1: Compute RR internal for each subvolume
-    RR_internal = {}
-    iterator = tqdm(enumerate(random_list), total=n_cubes, desc="RR internal", disable=not verbose)
-    for idx, random_sub in iterator:
-        if random_sub is None or len(random_sub) < 2:
-            RR_internal[idx] = None
-            continue
-
-        result = call_DDsmu(
-            random_sub, None, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=True
-        )
-        RR_internal[idx] = result
-
-    if verbose:
-        print("Computing RR cross...")
-
-    # Step 2: Compute RR cross between neighboring subvolumes
-    RR_cross = {}
-    computed_pairs = set()
-    pairs_to_compute = []
-
-    for idx in range(n_cubes):
-        random1 = random_list[idx]
-        if random1 is None or len(random1) == 0:
-            continue
-
-        neighbors = get_neighbors(idx, n)
-
-        for neighbor_idx in neighbors:
-            pair = (min(idx, neighbor_idx), max(idx, neighbor_idx))
-            if pair in computed_pairs:
-                continue
-            computed_pairs.add(pair)
-
-            random2 = random_list[neighbor_idx]
-            if random2 is None or len(random2) == 0:
-                continue
-
-            pairs_to_compute.append((pair, random1, random2))
-
-    iterator = tqdm(pairs_to_compute, desc="RR cross", disable=not verbose)
-    for pair, random1, random2 in iterator:
-        result = call_DDsmu(
-            random1, random2, sedges, mubin, with_weight, boxsize,
-            refine_factors, nthreads, autocorr=False
-        )
-        result["npairs"] *= 2  # To be consistent with the number of pairs in the full catalog
-        RR_cross[pair] = result
-
-    # Step 3: Sum all RR pairs - this is our final RR_full
-    RR_full = np.zeros((sbin, mubin), dtype=np.float64)
-
-    for idx, result in RR_internal.items():
-        if result is not None:
-            RR_full += extract_npairs(result, with_weight).reshape(sbin, mubin)
-
-    for pair, result in RR_cross.items():
-        if result is not None:
-            RR_full += extract_npairs(result, with_weight).reshape(sbin, mubin)
-
-    # Flatten to match extract_npairs output format
-    RR_full = RR_full.flatten()
-
-    return RR_internal, RR_cross, RR_full
+    internal, cross = _compute_jackknife_pairs(
+        "RR", None, random_list, sedges, mubin, with_weight, boxsize,
+        refine_factors, nthreads, verbose, ngrids,
+    )
+    # Preserve per-component weight compatibility and the legacy cache format.
+    total = np.zeros((len(sedges) - 1, mubin), dtype=np.float64)
+    for results in (internal, cross):
+        for result in results.values():
+            if result is not None:
+                total += extract_npairs(result, with_weight).reshape(total.shape)
+    return internal, cross, total.ravel()
 
 def extract_npairs(result, with_weight):
     """

@@ -1,11 +1,13 @@
-"""MPI orchestration for the non-periodic ``run_tpCF`` pair-counting interface.
+"""MPI orchestration for non-periodic full, Jackknife and subsample measurements.
 
 All ranks call run_tpCF_mpi collectively. The designated root prepares spatial
 blocks and tasks; ranks receive the blocks needed by their assigned tasks and
 use pair_counting's serial cores. Catalog arrays travel in bounded MPI buffer
 messages; only small metadata uses pickle. Raw histograms are reduced
 with MPI SUM, then root returns Corrfunc-compatible structured arrays and writes
-requested files. MPI is imported lazily, keeping it an optional dependency.
+requested files. Resampling instead gathers region-labelled counts and reuses
+cov's cache, normalization and reconstruction workflow on root. MPI is imported
+lazily, keeping it an optional dependency.
 """
 
 from pathlib import Path
@@ -26,7 +28,7 @@ from .pair_counting import (
 )
 
 
-__all__ = ["run_tpCF_mpi"]
+__all__ = ["run_tpCF_mpi", "run_jackknife_tpCF_mpi", "run_subsample_tpCF_mpi"]
 
 _TRANSFER_CHUNK_BYTES = 256 * 1024**2
 
@@ -249,7 +251,7 @@ def _count_local_tasks(tasks, data_blocks, random_blocks, config, rank):
                  verbose, rank)
             last_report = now
         yield result
-    _log(f"All {total:,} local tasks counted; merging raw histograms ...", verbose, rank)
+    _log(f"All {total:,} local tasks counted.", verbose, rank)
 
 
 def _prepare_work(data, random, sedges, mubin, with_weight, run_parts,
@@ -486,3 +488,260 @@ def run_tpCF_mpi(data_catalog, random_catalog, sedges, mubin, with_weight,
     if config["broadcast_result"]:
         return _broadcast_result(comm, result, root)
     return result
+
+
+def _gather_array_maps(comm, local, root):
+    """Gather labelled result arrays through bounded buffers, retaining None."""
+    from mpi4py import MPI
+
+    rank = comm.Get_rank()
+    layouts, error = None, None
+    try:
+        layouts = {key: None if value is None else _array_layout(value)
+                   for key, value in local.items()}
+    except Exception as exc:
+        error = _failure(exc)
+    _check_receive_allocation(comm, error, "result layout preparation")
+    metadata = comm.gather(layouts, root=root)
+    received, error = None, None
+    if rank == root:
+        try:
+            received, seen = [], set()
+            for source, mapping in enumerate(metadata):
+                if seen.intersection(mapping):
+                    raise ValueError("Duplicate resampling task results")
+                seen.update(mapping)
+                received.append(local if source == root else {
+                    key: None if layout is None else np.empty(layout[0], dtype=np.dtype(layout[1]))
+                    for key, layout in mapping.items()
+                })
+        except Exception as exc:
+            error = _failure(exc)
+    _check_receive_allocation(comm, error, "resampling result receive allocation")
+    try:
+        if rank == root:
+            for source, mapping in enumerate(received):
+                if source == root:
+                    continue
+                for value in mapping.values():
+                    if value is not None:
+                        for chunk in _buffer_chunks(value):
+                            comm.Recv([chunk, MPI.BYTE], source=source, tag=1)
+        else:
+            for value in local.values():
+                if value is not None:
+                    for chunk in _buffer_chunks(value):
+                        comm.Send([chunk, MPI.BYTE], dest=root, tag=1)
+    except BaseException as exc:
+        _abort_transfer(comm, exc)
+        raise
+    if rank == root:
+        return {key: value for mapping in received for key, value in mapping.items()}
+    return None
+
+
+def _execute_resampling_work(comm, packages, config, root):
+    """Execute one collective counting phase, without statistical processing."""
+    tasks, data_blocks, random_blocks = _distribute_work(comm, packages, root)
+    rank = comm.Get_rank()
+    local, error = {}, None
+    try:
+        if config["method"] == "jackknife":
+            from .tpcf import pair_counts_to_corrfunc
+
+            for task, counts in _count_local_tasks(tasks, data_blocks, random_blocks, config, rank):
+                value = pair_counts_to_corrfunc(counts)
+                value["npairs"] *= task.multiplicity
+                local[task] = value
+        else:
+            from .tpcf import compute_subsample_pairs
+
+            _log(f"Counting DD/DR for {len(tasks)} assigned subvolumes ...", config["verbose"], rank)
+            if tasks:
+                counts = compute_subsample_pairs(
+                    [data_blocks[i] for i in tasks], random_blocks[0],
+                    config["sedges"], config["mubin"], config["with_weight"],
+                    config["boxsize"], config["refine_factors"], config["nthreads"],
+                    config["verbose"], run_parts=("DD", "DR"),
+                )
+                local = {(part, global_id): counts[part + "_sub"][index]
+                         for part in ("DD", "DR") for index, global_id in enumerate(tasks)}
+        _log(f"Counted {len(local)} results; gathering region-labelled buffers ...", config["verbose"], rank)
+    except Exception as exc:
+        error = _failure(exc)
+    _check_receive_allocation(comm, error, "resampling counting")
+    return _gather_array_maps(comm, local, root)
+
+
+def _dispatch_resampling_work(comm, packages, config, root):
+    """Root announces a phase after preparing its inputs successfully."""
+    _log(f"{config['method']}: tasks per rank={[len(p[0]) for p in packages]}; "
+         f"threads per rank={config['nthreads']}", config["verbose"], root)
+    comm.bcast(("count", config), root=root)
+    return _execute_resampling_work(comm, packages, config, root)
+
+
+def _count_jackknife_mpi(comm, root, pair_type, data_list, random_list, sedges,
+                          mubin, with_weight, boxsize, refine_factors, nthreads,
+                          verbose, ngrids):
+    """Distribute the same labelled tasks as the serial Jackknife counters."""
+    from .tpcf import _prepare_jackknife_tasks, extract_npairs
+
+    tasks, data_blocks, random_blocks = _prepare_jackknife_tasks(
+        pair_type, data_list, random_list, sedges, with_weight, boxsize, ngrids,
+    )
+    config = dict(method="jackknife", sedges=sedges, mubin=mubin,
+                  with_weight=with_weight, boxsize=boxsize, refine_factors=refine_factors,
+                  nthreads=nthreads, verbose=verbose)
+    packages = _assign_tasks(tasks, data_blocks, random_blocks, comm.Get_size())
+    results = _dispatch_resampling_work(comm, packages, config, root)
+    internal, cross = dict.fromkeys(range(len(data_blocks))), {}
+    # Restore serial component order before any floating-point summation.
+    for task in tasks:
+        if task.first == task.second:
+            internal[task.first] = results[task]
+        else:
+            cross[task.first, task.second] = results[task]
+    if pair_type != "RR":
+        return internal, cross
+    total = np.zeros((len(sedges) - 1, mubin), dtype=np.float64)
+    for mapping in (internal, cross):
+        for value in mapping.values():
+            if value is not None:
+                total += extract_npairs(value, with_weight).reshape(total.shape)
+    return internal, cross, total.ravel()
+
+
+def _count_subsample_mpi(comm, root, data_list, random, sedges, mubin,
+                         with_weight, boxsize, refine_factors=(2, 2, 1),
+                         nthreads=1, verbose=False, *, run_parts=("DD", "DR", "RR")):
+    """Keep one shared RR call on root; distribute independent DD/DR subboxes."""
+    from .tpcf import compute_subsample_pairs
+
+    if tuple(run_parts) == ("RR",):
+        return compute_subsample_pairs(
+            None, random, sedges, mubin, with_weight, boxsize, refine_factors,
+            nthreads, verbose, run_parts=("RR",),
+        )
+    if tuple(run_parts) != ("DD", "DR"):
+        raise ValueError("The subsample workflow must request RR or DD/DR separately")
+    size = comm.Get_size()
+    assigned, loads = [[] for _ in range(size)], [0] * size
+    eligible = [i for i, block in enumerate(data_list) if block is not None and len(block) >= 2]
+    for index in sorted(eligible, key=lambda i: (-len(data_list[i]), i)):
+        destination = min(range(size), key=lambda r: (loads[r], r))
+        assigned[destination].append(index)
+        n = len(data_list[index])
+        loads[destination] += n * (n - 1) // 2 + n * len(random)
+    shared_random = np.ascontiguousarray(random)
+    packages = [(tuple(sorted(indices)),
+                 {i: np.ascontiguousarray(data_list[i]) for i in sorted(indices)},
+                 {0: shared_random} if indices else {}) for indices in assigned]
+    config = dict(method="subsample", sedges=sedges, mubin=mubin,
+                  with_weight=with_weight, boxsize=boxsize, refine_factors=refine_factors,
+                  nthreads=nthreads, verbose=verbose)
+    results = _dispatch_resampling_work(comm, packages, config, root)
+    return {"DD_sub": {i: results.get(("DD", i)) for i in range(len(data_list))},
+            "DR_sub": {i: results.get(("DR", i)) for i in range(len(data_list))},
+            "RR_result": None}
+
+
+def _run_resampling_mpi(method, arguments, mpicomm, root):
+    """Root runs cov's shared workflow; peers service its counting phases."""
+    from functools import partial
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD if mpicomm is None else mpicomm
+    rank, size = comm.Get_rank(), comm.Get_size()
+    if (not isinstance(root, (int, np.integer)) or isinstance(root, (bool, np.bool_))
+            or not 0 <= root < size):
+        raise ValueError("root must be a valid rank in mpicomm")
+    if rank != root:
+        worker_error = None
+        while True:
+            command, payload = comm.bcast(None, root=root)
+            if command == "done":
+                if payload is not None or worker_error is not None:
+                    raise RuntimeError(f"MPI {method} failed: {payload or worker_error}")
+                return None
+            try:
+                _execute_resampling_work(comm, None, payload, root)
+            except Exception as exc:
+                # Counting/transport preparation errors are already collective.
+                # Remain in the command loop until root announces termination.
+                worker_error = _failure(exc)
+    result, error = None, None
+    try:
+        from .cov import _run_jackknife_tpCF, _run_subsample_tpCF
+
+        _positive_integer(arguments["nthreads"], "nthreads")
+        _positive_integer(arguments["mubin"], "mubin")
+        _log(f"Starting {method} on {size} MPI ranks ...", arguments["verbose"], root)
+        if method == "jackknife":
+            count = partial(_count_jackknife_mpi, comm, root)
+            counters = {"DD": lambda data, *args: count("DD", data, None, *args),
+                        "DR": lambda data, random, *args: count("DR", data, random, *args),
+                        "RR": lambda random, *args: count("RR", None, random, *args)}
+            workflow = _run_jackknife_tpCF
+        else:
+            counters = {"subsample": partial(_count_subsample_mpi, comm, root)}
+            workflow = _run_subsample_tpCF
+        result = workflow(**arguments, pair_counters=counters)
+        _log(f"{method} counting and reconstruction complete.", arguments["verbose"], root)
+    except Exception as exc:
+        error = _failure(exc)
+    comm.bcast(("done", error), root=root)
+    if error is not None:
+        raise RuntimeError(f"MPI {method} failed on rank {root}: {error}")
+    return result
+
+
+def run_jackknife_tpCF_mpi(data, random, sedges, mubin, with_weight,
+                            boxsize, ngrids, refine_factors=(2, 2, 1),
+                            rr_filename=None, force_rr=False, nthreads=1,
+                            verbose=False, full_output=False, *, mpicomm=None, root=0,
+                            correction=None):
+    """Collectively measure Jackknife samples, returning results only on root.
+
+    Parameters and root's return structure match cov.run_jackknife_tpCF. Every
+    rank calls with the same communicator/root; only root supplies catalogs and
+    measurement settings. DD/RR cross tasks retain multiplicity two; DR retains
+    both directions. The cubic grid requires smax <= min(boxsize / ngrids).
+    Root owns partitioning, RR cache I/O, normalization and reconstruction. All
+    numeric catalog/result payloads use bounded buffers, with region identities
+    retained. correction=None preserves ordinary delete-one reconstruction;
+    'mohammad21' applies Eq. 27 of arXiv:2109.07071 to cross deductions and their
+    normalizations on root. Raw counts, transfers and RR caches are unchanged.
+    nthreads is per rank. Python failures are announced to all ranks; native process deaths
+    still require termination by the MPI launcher or scheduler.
+    """
+    arguments = dict(data=data, random=random, sedges=sedges, mubin=mubin,
+                     with_weight=with_weight, boxsize=boxsize, ngrids=ngrids,
+                     refine_factors=refine_factors, rr_filename=rr_filename,
+                     force_rr=force_rr, nthreads=nthreads, verbose=verbose,
+                     full_output=full_output, correction=correction)
+    return _run_resampling_mpi("jackknife", arguments, mpicomm, root)
+
+
+def run_subsample_tpCF_mpi(data, random, sedges, mubin, with_weight,
+                           boxsize, ngrids, refine_factors=(2, 2, 1),
+                           rr_filename=None, force_rr=False, nthreads=1,
+                           verbose=False, full_output=False, *, mpicomm=None, root=0):
+    """Collectively measure independent subvolumes, returning only on root.
+
+    Parameters and return structure match cov.run_subsample_tpCF. All ranks
+    call with the same communicator/root; other inputs are taken from root.
+    random describes ONE subvolume and is reused without partitioning or
+    shifting. Root partitions data in local coordinates, handles the single RR
+    call/cache, and reconstructs samples with the serial normalization and
+    self-pair rules. DD/DR subboxes are distributed together and gathered by
+    global subbox ID, never summed across samples. Numeric payloads use bounded
+    buffers. Empty/singleton subboxes retain None. nthreads is per rank. This
+    entry adds no neighbor/smax restriction to independent-subbox counting.
+    """
+    arguments = dict(data=data, random=random, sedges=sedges, mubin=mubin,
+                     with_weight=with_weight, boxsize=boxsize, ngrids=ngrids,
+                     refine_factors=refine_factors, rr_filename=rr_filename,
+                     force_rr=force_rr, nthreads=nthreads, verbose=verbose,
+                     full_output=full_output)
+    return _run_resampling_mpi("subsample", arguments, mpicomm, root)

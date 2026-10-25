@@ -91,7 +91,11 @@ def _compare_pair(actual, expected, weighted):
 
 
 def _compare_xi(actual, expected):
-    assert actual.keys() == expected.keys()
+    metadata = {"weight_method", "weight_power", "weight_token", "weight_set_one"}
+    assert set(actual) - metadata == set(expected)
+    assert metadata <= set(actual)
+    assert actual["weight_method"] == ("n30" if actual["with_weight"] else None)
+    assert actual["weight_token"] == ("n30_weipow1" if actual["with_weight"] else None)
     for key, expected_value in expected.items():
         actual_value = actual[key]
         if isinstance(expected_value, np.ndarray):

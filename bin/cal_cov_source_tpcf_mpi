@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Compute tpCF / MCF covariance-source samples with MPI Corrfunc counting.
+
+Follow cal_cov_source_tpcf's arguments and output format. Rank zero loads
+catalogs, selects the RR cache and saves the xismu object array. All ranks
+participate in Jackknife or independent-subvolume counting. nthreads is the
+OpenMP thread count per rank. Run with mpiexec or the cluster's MPI launcher.
+"""
+
+import argparse
+from pathlib import Path
+import sys
+from time import perf_counter
+
+import joblib
+import numpy as np
+
+from LSS_python.weight_token import (
+    add_measurement_weight_arguments, resolve_measurement_weights,
+)
+from LSS_python.measurement_weights import prepare_box_catalog, attach_weight_metadata
+
+
+def positive_int(value):
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("data_filename", help="Data .npy catalog")
+    parser.add_argument("random_filename", help="Random .npy catalog; one subbox template for subsample")
+    parser.add_argument("boxsize", type=float, help="Full simulation-box size in Mpc/h")
+    parser.add_argument("ngrid", type=positive_int, help="Subbox divisions per axis")
+    parser.add_argument("cov_source_type", choices=("jk", "subsample"), help="Resampling method")
+    parser.add_argument("--sbin", type=positive_int, default=150, help="Separation bins")
+    parser.add_argument("--mubin", type=positive_int, default=120, help="Mu bins")
+    parser.add_argument("--s_max", type=float, default=150., help="Maximum separation in Mpc/h")
+    parser.add_argument("--rr_filename", "-rr", default="RR_temp.pkl", help="Root's RR cache filename")
+    parser.add_argument("--tpcf_filename", "-tpcf", default="tpCF_temp.pkl", help="Output xismu object-array filename")
+    parser.add_argument("--correction", choices=("none", "mohammad21"), default=None,
+                        help="Jackknife cross-pair correction (default: none; jk only)")
+    parser.add_argument("--with_weight", "-ww", action="store_true", help="Use data marks (gn vectors reduced to norm) and existing random weights")
+    parser.add_argument("--set_weight_to_one", "-weightone", action="store_true", help="Set enabled data/random weights to one")
+    add_measurement_weight_arguments(parser)
+    parser.add_argument("--nthreads", "-n", type=positive_int, default=32, help="OpenMP threads per MPI rank")
+    parser.add_argument("--force", "-f", action="store_true", help="Recompute an existing sample output")
+    parser.add_argument("--force_rr", "-frr", action="store_true", help="Recompute RR when measurement runs")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Print configuration and MPI progress")
+    return parser
+
+
+def parse_arguments(argv=None):
+    parser = build_parser()
+    arguments = sys.argv[1:] if argv is None else argv
+    if not arguments:
+        parser.print_help()
+        return None
+    args = parser.parse_args(arguments)
+    if not np.isfinite(args.boxsize) or args.boxsize <= 0:
+        parser.error("boxsize must be finite and positive")
+    if not np.isfinite(args.s_max) or args.s_max <= 0:
+        parser.error("--s_max must be finite and positive")
+    if args.cov_source_type == "jk" and args.s_max > args.boxsize / args.ngrid:
+        parser.error("Jackknife requires s_max <= boxsize/ngrid")
+    if args.correction == "none":
+        args.correction = None
+    if args.cov_source_type != "jk" and args.correction is not None:
+        parser.error("--correction=mohammad21 is only valid for jk")
+    resolve_measurement_weights(args, parser)
+    return args
+
+
+def read_data(filename, weight_set_one=False, with_weight=False, *,
+              method="n30", power=1.0, is_data=True, require_weight=True):
+    """Load data marks or unchanged random weights."""
+    catalog = prepare_box_catalog(
+        np.load(filename, allow_pickle=False), with_weight=with_weight,
+        weight_set_one=weight_set_one, method=method, power=power,
+        is_data=is_data, require_weight=require_weight,
+    )
+    return catalog
+
+
+def print_configuration(args, nranks):
+    print("=" * 60, flush=True)
+    print("MPI tpCF / MCF covariance-source calculation", flush=True)
+    for label, value in (
+        ("data", args.data_filename), ("random", args.random_filename),
+        ("cov method", args.cov_source_type), ("correction", args.correction),
+        ("boxsize", args.boxsize),
+        ("grid / subboxes", f"{args.ngrid}^3 / {args.ngrid ** 3}"),
+        ("subbox width", args.boxsize / args.ngrid),
+        ("s range / bins", f"[0, {args.s_max}] / {args.sbin}"),
+        ("mu bins", args.mubin), ("with_weight", args.with_weight),
+        ("weight_set_one", args.set_weight_to_one), ("weight_pow", args.weight_pow),
+        ("weight_token", args.weight_token), ("MPI ranks", nranks),
+        ("threads per rank", args.nthreads), ("RR cache", args.rr_filename),
+        ("sample output", args.tpcf_filename), ("force samples", args.force),
+        ("force RR", args.force_rr),
+    ):
+        print(f"  {label:20s}: {value}", flush=True)
+    if args.cov_source_type == "subsample":
+        print("  random describes ONE subbox; shared RR is counted once on root or loaded from cache.", flush=True)
+    print("=" * 60, flush=True)
+
+
+def prepare_run(args):
+    """Check root's output before reading catalogs and applying data weights."""
+    # Absolute cache paths also support bare filenames in cov's cache writer.
+    args.rr_filename = str(Path(args.rr_filename).expanduser().resolve())
+    args.tpcf_filename = str(Path(args.tpcf_filename).expanduser().resolve())
+    print("[1/4] Checking existing sample output ...", flush=True)
+    if Path(args.tpcf_filename).exists() and not args.force:
+        return {"skip": f"Output {args.tpcf_filename} exists, skipping. Use -f to overwrite."}
+    if args.verbose:
+        action = "forced recomputation" if args.force_rr else (
+            "reuse existing cache" if Path(args.rr_filename).exists() else "compute and save")
+        print(f"       RR: {action} -> {args.rr_filename}", flush=True)
+    print("[2/4] Loading data and random on rank 0 ...", flush=True)
+    catalogs = []
+    for label, filename in (("data", args.data_filename), ("random", args.random_filename)):
+        started = perf_counter()
+        print(f"       Loading {label} from {filename} ...", flush=True)
+        catalog = read_data(filename, args.set_weight_to_one, args.with_weight,
+                            method=args.weight_method, power=args.weight_pow if label == "data" else 1.0,
+                            is_data=label == "data")
+        catalogs.append(catalog)
+        if args.verbose:
+            print(f"       {label}: shape={catalog.shape}, dtype={catalog.dtype}, "
+                  f"size={catalog.nbytes / 1024**3:.3f} GiB, elapsed={perf_counter() - started:.2f}s", flush=True)
+    return {"skip": None, "data": catalogs[0], "random": catalogs[1]}
+
+
+def main(argv=None):
+    args = parse_arguments(argv)
+    if args is None:
+        return 0
+    try:
+        from mpi4py import MPI
+    except ImportError:
+        print("Error: cal_cov_source_tpcf_mpi requires mpi4py (install LSS_python[mpi])", file=sys.stderr)
+        return 1
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    started = perf_counter()
+    state, control = None, None
+    if rank == 0:
+        try:
+            if args.verbose:
+                print_configuration(args, comm.Get_size())
+            state = prepare_run(args)
+            control = {"skip": state["skip"], "error": None}
+        except Exception as exc:
+            control = {"error": f"MPI input preparation failed: {type(exc).__name__}: {exc}"}
+    control = comm.bcast(control, root=0)
+    if control["error"]:
+        if rank == 0:
+            print(control["error"], file=sys.stderr, flush=True)
+        return 1
+    if control["skip"]:
+        if rank == 0:
+            print(control["skip"], flush=True)
+        return 0
+
+    import_error = None
+    try:
+        from LSS_python.tpcf_mpi import run_jackknife_tpCF_mpi, run_subsample_tpCF_mpi
+    except Exception as exc:
+        import_error = f"rank {rank}: {type(exc).__name__}: {exc}"
+    errors = [error for error in comm.allgather(import_error) if error]
+    if errors:
+        if rank == 0:
+            print("MPI measurement import failed: " + "; ".join(errors), file=sys.stderr, flush=True)
+        return 1
+    measure = run_jackknife_tpCF_mpi if args.cov_source_type == "jk" else run_subsample_tpCF_mpi
+    if rank == 0:
+        print(f"[3/4] Computing {args.cov_source_type} with {comm.Get_size()} MPI ranks "
+              f"and {args.nthreads} threads per rank ...", flush=True)
+    try:
+        correction_options = {"correction": args.correction} if args.cov_source_type == "jk" else {}
+        result = measure(
+            state["data"] if rank == 0 else None,
+            state["random"] if rank == 0 else None,
+            np.linspace(0., args.s_max, args.sbin + 1) if rank == 0 else None,
+            args.mubin, args.with_weight, args.boxsize, args.ngrid,
+            rr_filename=args.rr_filename, force_rr=args.force_rr,
+            nthreads=args.nthreads, verbose=args.verbose, full_output=False,
+            mpicomm=comm, root=0,
+            **correction_options,
+        )
+    except Exception as exc:
+        if rank == 0:
+            print(f"MPI measurement failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+    error = None
+    if rank == 0:
+        try:
+            print(f"[4/4] Saving sample array to {args.tpcf_filename} ...", flush=True)
+            Path(args.tpcf_filename).parent.mkdir(parents=True, exist_ok=True)
+            attach_weight_metadata(result, args)
+            joblib.dump(result, args.tpcf_filename)
+            valid = sum(item is not None for item in result)
+            print(f"       -> saved {len(result)} sample slots ({valid} valid objects)", flush=True)
+            print(f"Done! Total elapsed: {perf_counter() - started:.2f}s", flush=True)
+        except Exception as exc:
+            error = f"MPI result saving failed: {type(exc).__name__}: {exc}"
+    error = comm.bcast(error, root=0)
+    if error:
+        if rank == 0:
+            print(error, file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

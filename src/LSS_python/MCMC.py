@@ -162,15 +162,39 @@ def get_params(sampler, bestfit=False):
             output_dict["bestfit"][name] = bestfit_values[i]
     return output_dict 
 
-def get_area(sampler, params=["x1", "x2"], level=0.68):
-    density_2d = sampler.get2DDensity(params[0], params[1])
+def get_area(sampler, params=["x1", "x2"], level=0.68, settings=None, **kwargs):
+    """
+    Calculate the area enclosed by the 2D joint confidence contour of two parameters.
+
+    Args:
+        sampler: getdist.MCSamples instance.
+        params: list or tuple of two parameter names, default ["x1", "x2"].
+        level: confidence level, default 0.68 (corresponding to 68% CL contour).
+        settings: dict, optional analysis settings (e.g. {"smooth_scale_2D": 0.5, "fine_bins_2D": 256}).
+        **kwargs: additional keyword arguments passed to sampler.get2DDensity (e.g. smooth_scale_2D=0.5).
+
+    Returns:
+        float: scalar area enclosed by the contour.
+    """
+    density_kwargs = {}
+    if settings is not None:
+        for k in ["smooth_scale_2D", "fine_bins_2D", "boundary_correction_order", "mult_bias_correction_order"]:
+            if k in settings:
+                density_kwargs[k] = settings[k]
+    density_kwargs.update(kwargs)
+
+    density_2d = sampler.get2DDensity(params[0], params[1], **density_kwargs)
 
     dx = density_2d.x[1] - density_2d.x[0]
     dy = density_2d.y[1] - density_2d.y[0]
     pixel_area = dx * dy
 
-    level = density_2d.getContourLevels([level,])[0]
-    return np.sum(density_2d.P > level) * pixel_area
+    threshold = density_2d.getContourLevels([level,])[0]
+    return float(np.sum(density_2d.P > threshold) * pixel_area)
+
+
+# Alias get_scale to get_area for convenience
+get_scale = get_area
 
 
 def run_mcmc_core_emcee(nwalkers, ndim, init_state, lnprob, args, moves, backend, pool, max_iterator, use_converge_factor, converge_factor, verbose, progress_kwargs, output):
