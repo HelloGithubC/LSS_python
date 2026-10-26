@@ -37,6 +37,7 @@ def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, figsize=(12,12), 
             axes_s[j].plot(s, xi_s, color=colors[i])
             mu_array, xi_mu = xismu_temp.integrate_tpcf(intximu=True, smin=mu_smin, smax=mu_smax, is_norm=False, mupack=mupack, mumax=mumax)
             xi_mu_list.append(xi_mu)
+            axes_mu[j].plot(mu_array[need_slice], xi_mu[need_slice], color=colors[i])
 
         if is_norm:
             mu_array, xi_mu_diff = get_diff_array_test(xismu_dict, snaps, return_mu=True, mupack=mupack)

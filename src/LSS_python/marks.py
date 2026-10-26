@@ -394,7 +394,7 @@ def create_drho(
     h=None,
     weights=None,
 ):
-    """Estimate local density gradient (drho) for each position.
+    """Estimate paired density and raw density gradient for each position.
 
     Parameters
     ----------
@@ -417,10 +417,14 @@ def create_drho(
 
     Returns
     -------
+    rho_array : ndarray
+        Density for each position, shape ``(n_galaxy,)``. It uses the same
+        neighbors, smoothing lengths and input weights as the gradient.
     drho_array : ndarray
-        Density gradient vectors for each position, shape ``(n_galaxy, 3)``.
+        Raw density gradient vectors, shape ``(n_galaxy, 3)``. Division by rho
+        and the mark power belong to the measurement preparation boundary.
     """
-    _, drho = create_rho(
+    return create_rho(
         pos=pos,
         boxsize=boxsize,
         k=k,
@@ -432,7 +436,6 @@ def create_drho(
         weights=weights,
         return_drho=True,
     )
-    return drho
 
 # Legacy SciPy implementation retained as disabled reference.
 '''

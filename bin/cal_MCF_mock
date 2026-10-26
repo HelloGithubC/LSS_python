@@ -25,7 +25,7 @@ def read_data(filename):
     Supports .npy files (structured or unstructured arrays) and .pkl files 
     (pickled dictionaries or arrays). Returns a unified (N, C) array format.
     
-    Expected columns: RA, DEC, R, base weight, then a scalar mark or gn gx, gy, gz.
+    Expected columns: RA, DEC, R, base weight, then a scalar mark or gn rho, gx, gy, gz.
     
     Parameters
     ----------
@@ -109,7 +109,7 @@ parser.add_argument("-mubin",
 # Weight handling options
 parser.add_argument("--with_weight", "-ww", 
                    action="store_true", 
-                   help="Use data marks after base weight; gn columns 5-7 are reduced to norm")
+                   help="Use data marks after base weight; gn rho and gradients use norm/rho by default")
 parser.add_argument("--set_weight_to_one", "-weightone", action="store_true",
                    help="Force enabled effective data/random weights to one")
 add_measurement_weight_arguments(parser)
@@ -263,6 +263,7 @@ if not only_run_rr:
         mock_catalog, with_weight=with_weight, weight_set_one=argv.set_weight_to_one,
         method=argv.weight_method, power=argv.weight_pow,
         require_mark=argv.weight_method_explicit,
+        divide_by_rho=argv.divide_by_rho,
     )
 random_catalog = prepare_mock_catalog(
     random_catalog, with_weight=with_weight, weight_set_one=argv.set_weight_to_one,

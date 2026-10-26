@@ -105,8 +105,10 @@ allowed, and conflicting or joint identities are rejected. Data marks are
 powered once, while random weights retain their original values. Explicit
 method selection requires a data mark column. Saved result dictionaries include
 `weight_method`, `weight_power`, `weight_token`, and `weight_set_one` in addition
-to the existing numerical keys. Scalar gn marks and six-column gn vectors are
-supported; vectors are reduced to their Euclidean norm before the power. See
+to the existing numerical keys. Seven-column gn data contain xyz,rho,gx,gy,gz
+and default to `(norm(gradient)/rho)**alpha`. `--no-divide-by-rho` uses the raw
+norm and accepts old six-column vectors. Scalar gn marks must already contain
+the selected scalar quantity. Gn results also record `gradient_divide_by_rho`. See
 `/mnt/xiaodong/xiaoliang/software/LSS_python/doc/weight_tokens.md` for the common
 contract across all five non-AP measurement CLIs. This does not change the
 library counting API or the cache policy.

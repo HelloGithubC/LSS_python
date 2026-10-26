@@ -1,6 +1,6 @@
 # Weight 计算拆分临时 Todo
 
-状态：三个阶段均已完成；已将现有 Fortran 梯度模长规则接入非 AP 测量工作链。
+状态：三个阶段均已完成；当前 gn 系列默认使用梯度模/密度，保留显式关闭除密度的选项。
 
 ## 阶段一：抽离计算部分（已完成）
 
@@ -29,7 +29,7 @@
 
 已确认：方法 token 使用 `n<k>`（等邻居数密度）、`gn<k>`（等邻居数梯度）、`r<radius>`（固定支撑半径密度）；完整 token 统一为 `<方法token>_weipow<alpha>`，保留 `n30_weipow...`。同方法的联合幂指数继续使用 `<方法token>_weipow<a1>_<a2>_...`，保留顺序。
 
-生成入口只根据方法 token 分流并输出原始量，测量入口负责应用幂指数。`gn<k>` 的生成文件保留现有 Fortran 定义的三分量梯度，共 6 列；密度两种方法为 4 列。阶段三在测量读入环节沿用 Fortran 已有的模长定义，不增加密度归一化。首轮短 token 固定默认自身/平滑约定；生成 CLI 明确拒绝非默认 self/h 参数，底层 marks API 保持可用。线程数和分块大小不进入方法 token。
+生成入口只根据方法 token 分流并输出原始量，测量入口负责构造 mark 和应用幂指数。`gn<k>` 当前保存 7 列位置、rho 和三分量原始梯度；密度两种方法为 4 列。2026-10-26 后 gn 默认在测量读入环节除以配套 rho，可用 --no-divide-by-rho 关闭。首轮短 token 固定默认自身/平滑约定；生成 CLI 明确拒绝非默认 self/h 参数，底层 marks API 保持可用。线程数和分块大小不进入方法 token。
 
 阶段二范围：仅修改当前 LSS_python 项目，当时测量脚本仅迁移导入，方法参数和统计接入留给阶段三；其他项目由用户手动迁移。阶段二曾发现两个脚本有项目外硬链接，已恢复关联链接在该轮开始前的内容并隔离本项目副本，处理记录已保留。
 
@@ -44,7 +44,7 @@
 - [x] 验证方法与完整 token 冲突会报错；幂运算只执行一次，random/base 不应用 data 的幂指数；n/r 和已经准备好的标量 gn mark 可用。
 - [x] 验证 AP 脚本和 marks 数值模块的内容保持不变，更新运行记录及完整文件清单。
 
-梯度规则已查明并按用户指示接入：`LSS_grad_fields.f90:350` 和 `LSS_chisq.f90:198` 均取三个分量的模长。五个非 AP 入口在共用读入边界支持 Cartesian 六列 `[x,y,z,gx,gy,gz]` 和 mock 七列 `[RA,DEC,R,base,gx,gy,gz]`。生成接口仍输出原始向量；模长及幂运算仅在内存执行，不写中间标量文件。已准备好的单列梯度 mark 继续可用，mock base/random 不应用 data 幂指数。
+首次适配时查明：`LSS_grad_fields.f90:350` 和 `LSS_chisq.f90:198` 均取三个分量的模长，当时支持 Cartesian 六列向量和 mock 七列向量。该段属于原始取模接入历史；当前默认流程及新输入格式见下方“梯度模除密度”。mock base/random 仍不应用 data 幂指数。
 
 验证进展：协议与端到端/旧 MPI 用例有 135 项通过；另 1 项仅因新增元数据字段触发旧字段集合断言，更新为允许四个明确的元数据键后单独复查通过；另加的 2 项向量防误读检查通过，合计 138 项检查通过对应验证。实际运行了本机双进程 MPI。首次环境内 MPI 通信受限的失败日志及所有重跑日志保留。
 
@@ -65,3 +65,15 @@
 - [x] 126 项 token/生成测试、10 项普通/MPI 测量链路测试、7 次实际命令行检查通过；完整记录见 [输出命名验证](validation/create_rho_output_naming/README.md)。
 
 `n30_loginv_weipow<alpha>` 的命名已讨论，本轮尚未接入 loginv 数值变换或扩展 token 语法；此次仅完成生成文件名和确认规则。
+
+## 后续调整：梯度模除密度（已完成，2026-10-26）
+
+- [x] 保持 n/gn 的 KDTree 路径与 r 的 freud 路径分离，所有原有密度/梯度核函数不变。
+- [x] create_drho 返回同一次查询得到的 `(rho, gradient)`；生成脚本保存七列 `[x,y,z,rho,gx,gy,gz]`。
+- [x] 五个非 AP 测量入口默认使用 `(norm(gradient)/rho)**alpha`；新增 --no-divide-by-rho / Python divide_by_rho=False 使用原始梯度模。
+- [x] 同步 mock 八列布局 `[RA,DEC,R,base,rho,gx,gy,gz]`，保持 base/random 的原有语义；已有单列 gn mark 由调用方按所选模式预先准备。
+- [x] 原六列 Cartesian / 七列 mock 梯度文件只允许显式 raw 模式；默认模式缺 rho 时明确报错，要求重生成，归一化 rho 必须有限且大于零。
+- [x] gn 结果新增 gradient_divide_by_rho 元数据；token 文字保持 gn<k>_weipow<alpha>，该开关作为附加计算约定记录，比较两种模式应使用不同输出路径。
+- [x] 216 项非 CLI 检查及 18 项 CLI/集成检查通过，包括五个入口两种 gn 模式和本机 MPI；AP 与计数/协方差数值模块未修改。
+
+当前实现、运行方式和完整输入/输出/日志/缓存清单见 [梯度归一化记录](validation/gradient_density_normalization/README.md)。早先六列取模和命名验证目录保留作为历史记录。

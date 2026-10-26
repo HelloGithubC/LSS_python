@@ -3,7 +3,7 @@
 
 Input: a float32/float64 .npy array with shape (N, >=3); only its first three
 position columns are used. Methods n<k> and r<radius> write [x,y,z,rho] (N,4).
-Method gn<k> writes [x,y,z,drhox,drhoy,drhoz] (N,6), using the existing Fortran
+Method gn<k> writes [x,y,z,rho,drhox,drhoy,drhoz] (N,7), using the existing Fortran
 gradient convention. Self is included; nearest-neighbor h is adaptive and
 fixed-radius h is radius/2. No weight-power transform is applied.
 
@@ -123,8 +123,12 @@ def main(argv=None):
         else:
             calculation = {"n": create_rho, "gn": create_drho}[method.kind]
             mark = calculation(pos, boxsize=args.BoxSize, k=method.value, nthreads=args.nthreads)
-        out = np.column_stack((pos, mark))
-        expected_columns = 6 if method.kind == "gn" else 4
+        if method.kind == "gn":
+            rho, gradient = mark
+            out = np.column_stack((pos, rho, gradient))
+        else:
+            out = np.column_stack((pos, mark))
+        expected_columns = 7 if method.kind == "gn" else 4
         if out.shape != (len(pos), expected_columns) or not np.isfinite(out).all():
             raise ValueError("mark calculation returned an invalid shape or non-finite values")
         np.save(output, out)

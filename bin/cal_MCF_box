@@ -18,12 +18,13 @@ import joblib, os
 import argparse, sys
 
 def read_data(filename, weight_set_one=False, with_weight=False, *,
-              method="n30", power=1.0, is_data=True, require_weight=False):
+              method="n30", power=1.0, is_data=True, require_weight=False, divide_by_rho=True):
     """Load raw Cartesian marks and apply the data power once."""
     return prepare_box_catalog(
         np.load(filename, allow_pickle=False), with_weight=with_weight,
         weight_set_one=weight_set_one, method=method, power=power,
         is_data=is_data, require_weight=require_weight,
+        divide_by_rho=divide_by_rho,
     )
 
 def ensure_dot_prefix(filename):
@@ -44,7 +45,7 @@ parser = argparse.ArgumentParser(
 
 # Required positional arguments
 parser.add_argument("data_filename", 
-                   help="Data .npy: xyz, optionally one scalar mark or three gn gradient components",
+                   help="Data .npy: xyz, optionally one scalar mark or gn rho plus three gradient components",
                    type=str)
 parser.add_argument("random_filename", 
                    help="Path to random catalog (npy format, shape (M, 3) or (M, 4))", 
@@ -74,7 +75,7 @@ parser.add_argument("-mubin",
 # Weight handling options
 parser.add_argument("--with_weight", "-ww", 
                    action="store_true", 
-                   help="Use data marks (gn vectors reduced to norm) and existing random weights")
+                   help="Use data marks (gn norm/rho by default) and existing random weights")
 parser.add_argument("--set_weight_to_one", "-weightone", 
                    action="store_true", 
                    help="Force weights to 1.0 (valid only with --with_weight)")
@@ -181,7 +182,7 @@ if not only_run_rr:
     data_catalog = read_data(data_dir + data_filename + data_fileext, 
                              weight_set_one=weight_set_one, with_weight=with_weight,
                              method=argv.weight_method, power=weight_pow,
-                             require_weight=argv.weight_method_explicit)
+                             require_weight=argv.weight_method_explicit, divide_by_rho=argv.divide_by_rho)
     if with_weight:
         print(f"Weight token: {weight_token}; raw data mark is powered once")
 

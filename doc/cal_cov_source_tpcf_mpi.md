@@ -64,9 +64,12 @@ All option names and aliases from the current serial script are retained.
 Non-AP measurement scripts now share the contract documented in
 `/mnt/xiaodong/xiaoliang/software/LSS_python/doc/weight_tokens.md`. Raw data marks
 are powered once; random weights are unchanged. Result xismu objects record the
-declared method, canonical power, token and unit-weight override. Six-column gn
-data use the Euclidean norm of columns 4-6 before the power; existing scalar
-gradient marks are also accepted. AP sources and cache policies are unchanged.
+declared method, canonical power, token and unit-weight override. Seven-column
+gn data use norm(columns 5-7)/rho(column 4) before the power. Add
+`--no-divide-by-rho` for raw norm; old six-column vectors are accepted only
+in that explicit raw mode. Scalar gn marks must already contain the selected
+scalar quantity. Gn result objects record `gradient_divide_by_rho` as well.
+AP sources and cache policies are unchanged.
 
 The workflow is:
 

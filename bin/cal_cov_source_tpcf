@@ -30,12 +30,13 @@ from LSS_python.measurement_weights import prepare_box_catalog, attach_weight_me
 # Data loading (mirrors cal_MCF_box_ap.read_data)
 # ---------------------------------------------------------------------------
 def read_data(filename, weight_set_one=False, with_weight=False, *,
-              method="n30", power=1.0, is_data=True, require_weight=True):
+              method="n30", power=1.0, is_data=True, require_weight=True, divide_by_rho=True):
     """Load data marks or unchanged random weights."""
     catalog = prepare_box_catalog(
         np.load(filename, allow_pickle=False), with_weight=with_weight,
         weight_set_one=weight_set_one, method=method, power=power,
         is_data=is_data, require_weight=require_weight,
+        divide_by_rho=divide_by_rho,
     )
     return catalog, with_weight
 
@@ -76,7 +77,7 @@ def main():
     
     # Weight handling options
     parser.add_argument("--with_weight", "-ww", action="store_true",
-                        help="Use data marks (gn vectors reduced to norm) and existing random weights")
+                        help="Use data marks (gn norm/rho by default) and existing random weights")
     parser.add_argument("--set_weight_to_one", "-weightone", action="store_true",
                         help="Force weights to 1.0 (valid only with --with_weight)")
     add_measurement_weight_arguments(parser)
@@ -139,7 +140,7 @@ def main():
     # --- Step 1: Load data ---
     print(f"[1/3] Loading data from {args.data_filename} ...", flush=True)
     data_catalog, _ = read_data(args.data_filename, weight_set_one=weight_set_one, with_weight=with_weight,
-                                method=args.weight_method, power=weight_pow)
+                                method=args.weight_method, power=weight_pow, divide_by_rho=args.divide_by_rho)
     if args.verbose:
         print(f"       data shape: {data_catalog.shape}, with_weight={with_weight}", flush=True)
 

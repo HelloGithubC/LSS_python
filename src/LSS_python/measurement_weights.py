@@ -1,8 +1,8 @@
 """Prepare raw catalog marks once for non-AP measurement command lines.
 
 This module does not generate marks or handle pair-count caches. Random
-weights are preserved. Gradient vectors are reduced to their Euclidean norm
-before data powers are applied once at this boundary.
+weights are preserved. Gradient vectors are divided by their paired density
+by default, reduced to their Euclidean norm, and powered once at this boundary.
 """
 
 import numpy as np
@@ -35,25 +35,41 @@ def apply_mark_power(mark, power):
     return result
 
 
-def _scalar_mark(source, method, offset):
-    """Select a scalar mark or reduce gn vectors using the existing Fortran norm."""
+def _scalar_mark(source, method, offset, divide_by_rho=True):
+    """Select a prepared scalar or compute the requested gn norm from raw fields."""
     method = parse_mark_token(method)
     columns = source.shape[1] - offset
-    if method.kind == "gn" and columns == 3:
+    if method.kind == "gn" and columns in (3, 4):
+        if columns == 4:
+            rho = source[:, offset]
+            gradient = source[:, offset + 1:]
+        else:
+            if divide_by_rho:
+                raise ValueError("gn normalization requires rho before the three gradient columns; "
+                                 "regenerate the catalog or use --no-divide-by-rho for raw gradients")
+            gradient = source[:, offset:]
+        if not np.isfinite(gradient).all():
+            raise ValueError("gradient components must be finite")
+        if divide_by_rho and (not np.isfinite(rho).all() or np.any(rho <= 0)):
+            raise ValueError("gn normalization requires finite, strictly positive rho")
         try:
-            with np.errstate(over="raise", invalid="raise"):
+            with np.errstate(divide="raise", over="raise", invalid="raise"):
+                if divide_by_rho:
+                    # Divide first to avoid overflow when the raw norm exceeds dtype range.
+                    gradient = gradient / rho[:, None]
                 # Equivalent to sqrt(gx**2 + gy**2 + gz**2), avoiding square overflow.
-                return np.hypot.reduce(source[:, offset:], axis=1)
+                return np.hypot.reduce(gradient, axis=1)
         except FloatingPointError as error:
             raise ValueError("gradient norm produces invalid or overflowing marks") from error
     if columns != 1:
-        expected = "one scalar raw-mark column or three gradient columns" if method.kind == "gn" else "one scalar raw-mark column"
+        expected = "one prepared scalar column or rho plus three gradient columns" if method.kind == "gn" else "one scalar raw-mark column"
         raise ValueError(f"{method.token} requires {expected}")
     return source[:, offset]
 
 
 def prepare_box_catalog(source, *, with_weight=False, weight_set_one=False,
-                        method="n30", power=1.0, is_data=True, require_weight=False):
+                        method="n30", power=1.0, is_data=True, require_weight=False,
+                        divide_by_rho=True):
     """Convert Cartesian input to three coordinates and one effective weight."""
     source = _catalog(source)
     pos = source[:, :3]
@@ -66,7 +82,7 @@ def prepare_box_catalog(source, *, with_weight=False, weight_set_one=False,
             raise ValueError("--with_weight requires a raw-mark/weight column; add it or drop --with_weight")
         weight = np.ones(len(source), dtype=source.dtype)
     elif is_data:
-        weight = apply_mark_power(_scalar_mark(source, method, 3), power)
+        weight = apply_mark_power(_scalar_mark(source, method, 3, divide_by_rho), power)
     else:
         weight = source[:, 3]
     result = np.column_stack((pos, weight))
@@ -76,7 +92,8 @@ def prepare_box_catalog(source, *, with_weight=False, weight_set_one=False,
 
 
 def prepare_mock_catalog(source, *, with_weight=False, weight_set_one=False,
-                         method="n30", power=1.0, is_data=True, require_mark=False):
+                         method="n30", power=1.0, is_data=True, require_mark=False,
+                         divide_by_rho=True):
     """Preserve survey base weights and combine powered data marks once."""
     source = _catalog(source)
     if source.shape[1] < 4:
@@ -93,7 +110,7 @@ def prepare_mock_catalog(source, *, with_weight=False, weight_set_one=False,
         effective = source[:, 3]
     else:
         if parse_mark_token(method).kind == "gn":
-            mark = _scalar_mark(source, method, 4)
+            mark = _scalar_mark(source, method, 4, divide_by_rho)
             extra = 1.0
         else:
             mark = source[:, 4]
@@ -113,6 +130,8 @@ def attach_weight_metadata(result, args):
         "weight_token": args.weight_token,
         "weight_set_one": bool(args.with_weight and args.set_weight_to_one),
     }
+    if args.with_weight and parse_mark_token(args.weight_method).kind == "gn":
+        metadata["gradient_divide_by_rho"] = bool(args.divide_by_rho)
     if result is None:
         return result
     if isinstance(result, dict):

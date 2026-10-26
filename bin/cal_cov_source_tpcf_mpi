@@ -44,7 +44,7 @@ def build_parser():
     parser.add_argument("--tpcf_filename", "-tpcf", default="tpCF_temp.pkl", help="Output xismu object-array filename")
     parser.add_argument("--correction", choices=("none", "mohammad21"), default=None,
                         help="Jackknife cross-pair correction (default: none; jk only)")
-    parser.add_argument("--with_weight", "-ww", action="store_true", help="Use data marks (gn vectors reduced to norm) and existing random weights")
+    parser.add_argument("--with_weight", "-ww", action="store_true", help="Use data marks (gn norm/rho by default) and existing random weights")
     parser.add_argument("--set_weight_to_one", "-weightone", action="store_true", help="Set enabled data/random weights to one")
     add_measurement_weight_arguments(parser)
     parser.add_argument("--nthreads", "-n", type=positive_int, default=32, help="OpenMP threads per MPI rank")
@@ -76,12 +76,13 @@ def parse_arguments(argv=None):
 
 
 def read_data(filename, weight_set_one=False, with_weight=False, *,
-              method="n30", power=1.0, is_data=True, require_weight=True):
+              method="n30", power=1.0, is_data=True, require_weight=True, divide_by_rho=True):
     """Load data marks or unchanged random weights."""
     catalog = prepare_box_catalog(
         np.load(filename, allow_pickle=False), with_weight=with_weight,
         weight_set_one=weight_set_one, method=method, power=power,
         is_data=is_data, require_weight=require_weight,
+        divide_by_rho=divide_by_rho,
     )
     return catalog
 
@@ -128,7 +129,7 @@ def prepare_run(args):
         print(f"       Loading {label} from {filename} ...", flush=True)
         catalog = read_data(filename, args.set_weight_to_one, args.with_weight,
                             method=args.weight_method, power=args.weight_pow if label == "data" else 1.0,
-                            is_data=label == "data")
+                            is_data=label == "data", divide_by_rho=args.divide_by_rho)
         catalogs.append(catalog)
         if args.verbose:
             print(f"       {label}: shape={catalog.shape}, dtype={catalog.dtype}, "

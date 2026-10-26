@@ -12,7 +12,7 @@ callers in other projects must update their imports separately.
 | Method | Meaning | Raw generator columns |
 | --- | --- | --- |
 | `n<k>` | Density from k nearest points, including self; adaptive h = max distance / 2 | x, y, z, rho |
-| `gn<k>` | Three-component gradient with the existing Fortran kernel-derivative convention; same neighbor rule | x, y, z, drhox, drhoy, drhoz |
+| `gn<k>` | Gradient magnitude divided by paired density by default; raw fields use the existing Fortran kernel-derivative convention and same neighbor rule | x, y, z, rho, drhox, drhoy, drhoz |
 | `r<radius>` | Density within the full support radius; h = radius / 2; includes self | x, y, z, rho |
 
 Counts are positive integers. Radii are positive finite decimals in the same
@@ -39,6 +39,10 @@ The generator rejects the old `--ignore-self`, `--no-adaptive-h`, and
 token. Custom scientific parameters remain available through the existing
 `LSS_python.marks` functions; no new token syntax for them is introduced here.
 Thread and chunk settings are runtime options, not part of scientific identity.
+For gn measurements, `--no-divide-by-rho` explicitly selects raw gradient
+magnitude. The token spelling is unchanged; the saved gn result additionally
+records `gradient_divide_by_rho` as true/false. Different overrides therefore
+require distinct output paths and this metadata when comparing results.
 
 ## Python APIs
 
@@ -62,6 +66,14 @@ Parsed weight tokens preserve the `mark`, `powers`, `token`, `power`, and
 radius values use Decimal to preserve their canonical text without binary
 floating-point rounding. Decimal formatting does not round to the current
 Decimal context precision.
+
+The numerical API `LSS_python.marks.create_drho(...)` now returns
+`(rho_array, gradient_array)`, with shapes `(N,)` and `(N,3)`. Both are raw
+fields from the same neighbor query. Update callers that previously received
+only the gradient. The shared measurement APIs `prepare_box_catalog` and
+`prepare_mock_catalog` accept `divide_by_rho=True` (default); false uses the
+raw norm. They normalize vectors before taking the norm, mathematically
+equivalent to `norm(gradient)/rho`, to avoid avoidable raw-norm overflow.
 
 ## Command-line token tools
 
@@ -98,7 +110,7 @@ progress. `--force`/`-f` permits output replacement. No arguments prints help.
 Processing: parse method through the package token module; validate input and
 runtime settings; call create_rho/create_drho/create_rho_fix_r; combine positions
 with the raw result; save NPY. Density output has four columns and gradient
-output has six. Input precision is preserved. A missing `.npy` suffix on an
+output has seven: xyz, rho, gx, gy, gz. Input precision is preserved. A missing `.npy` suffix on an
 explicit output is added before checking whether output exists. Existing output
 is skipped without `--force`, without asking for name confirmation because no
 calculation will run. Otherwise the output basename must contain the exact
@@ -126,12 +138,17 @@ actual naming/confirmation verification and file inventory are in
 
 The generator accepts method tokens only: it rejects a full weight token rather
 than silently discarding its power. It never raises raw marks to a power.
-The non-AP measurement contract is described below. Six-column gradient
-outputs remain raw vectors. Measurement CLIs reduce them to
-`sqrt(drhox**2 + drhoy**2 + drhoz**2)` before applying the requested power.
-This follows the scalar definition already used at
+The non-AP measurement contract is described below. Seven-column gradient
+outputs retain both raw density and raw vectors. Measurement CLIs use
+`sqrt(drhox**2 + drhoy**2 + drhoz**2) / rho` by default before applying the
+requested power. The underlying vector kernel and norm convention remain the
+ones previously checked against
 `/Raid6/1/teamxdli_a/xiaoliang/software/LSSCode/src_gfortran/LSS_grad_fields.f90:350`
-and `LSS_chisq.f90:198`; no density division or other normalization is added.
+and `LSS_chisq.f90:198`; density division is now explicitly applied at the
+measurement boundary. Existing six-column files lack rho: regenerate them
+(use --force to replace an existing output), or choose --no-divide-by-rho
+to measure the original raw-gradient magnitude. No density is inferred from
+the filename and there is no extra neighbor query at measurement time.
 
 Generator dependencies are NumPy, SciPy, Numba and tqdm, plus freud-analysis for
 radius queries. No dependency installation or scheduler submission is needed
@@ -167,11 +184,17 @@ marks, infer their method from filenames, or prove their provenance. The
 generator still outputs raw marks. Apply their power exactly once at the shared
 measurement loading boundary; there is no second script-level power operation.
 
-Cartesian data use `[x,y,z,raw_mark]`, or `[x,y,z,gx,gy,gz]` for gn methods.
-For gn vectors, the shared loading boundary first computes the Euclidean norm
-and then applies `norm**alpha` exactly once. The norm uses successive hypot
-operations to avoid unnecessary overflow from squaring large finite components.
-Already prepared scalar gn marks remain supported. Other enabled data layouts
+Cartesian data use `[x,y,z,raw_mark]`, or `[x,y,z,rho,gx,gy,gz]` for gn methods.
+The default gn data weight is `(norm(gradient)/rho)**alpha`. Add
+`--no-divide-by-rho` to get `norm(gradient)**alpha`; this option requires -ww
+and a gn method, and also accepts old six-column xyz,gx,gy,gz input in that
+explicit raw mode. Division always precedes the mark power, and rho must be
+finite and strictly positive when used. The norm uses successive hypot
+operations to avoid unnecessary square overflow. Prepared scalar gn marks
+remain supported: their sole mark column must already represent norm/rho
+in default mode, or raw norm in explicit raw mode; it is powered once with
+no further density division because the scalar layout contains no density.
+Other enabled data layouts
 are rejected. Legacy box calls
 may still supply three-column data and receive unit weights; explicit methods
 require a mark column. Covariance inputs retain their stricter requirement for
@@ -186,25 +209,29 @@ with the default power 1; explicit method selection or a nonunit power requires
 a separate mark. Random mock weights remain the product of their existing
 weight columns, without the data exponent. Both pair counting and normalization
 receive the same prepared four-column catalog, and the input arrays/files are
-not mutated. Scalar gn mock input has exactly five columns. Vector gn mock input
-has exactly seven: `[RA,DEC,R,base_weight,gx,gy,gz]`; its final data weight is
-`base_weight * sqrt(gx**2 + gy**2 + gz**2)**alpha`. Other gn column counts are
+not mutated. Scalar gn mock input has exactly five columns. The new raw-field
+gn mock layout has eight: `[RA,DEC,R,base_weight,rho,gx,gy,gz]`; its final data
+weight is `base_weight * (sqrt(gx**2 + gy**2 + gz**2)/rho)**alpha` by default.
+With --no-divide-by-rho, rho is ignored and the raw norm is powered; old
+seven-column base+gradient input is accepted only in that explicit raw mode.
+Other gn column counts are
 rejected to keep the mark layout unambiguous. A zero gradient with a negative
 power and non-finite or overflowing weights are rejected.
 
-For example, generate a six-column raw-gradient catalog and measure it with:
+For example, generate paired raw fields once and measure both modes with:
 
 ```sh
-create_rho /absolute/path/positions.npy 2000 /absolute/path/gradient.npy -method gn30 -n 8
-cal_MCF_box /absolute/path/gradient.npy /absolute/path/random.npy 8 -ww --weight-token gn30_weipow-0.5 -tpcf /absolute/path/result.pkl -rr /absolute/path/rr.pkl
+create_rho /absolute/path/positions.npy 2000 -method gn30 -n 8
+cal_MCF_box /absolute/path/positions_gn30.npy /absolute/path/random.npy 8 -ww --weight-token gn30_weipow-0.5 -tpcf /absolute/path/normalized.pkl -rr /absolute/path/rr.pkl
+cal_MCF_box /absolute/path/positions_gn30.npy /absolute/path/random.npy 8 -ww --weight-token gn30_weipow-0.5 --no-divide-by-rho -tpcf /absolute/path/raw.pkl -rr /absolute/path/rr.pkl
 ```
 
 Replace the illustrative absolute paths with existing inputs and writable output
 locations. These example files are not created by the documentation. No
 intermediate scalar-mark file is written: the norm and powered four-column
 catalog exist only in memory. The gradient integration checks and complete
-actual file inventory are recorded in
-`/mnt/xiaodong/xiaoliang/software/LSS_python/validation/weight_refactor_gradient_norm/README.md`.
+actual file inventory for the current normalization change are recorded in
+`/mnt/xiaodong/xiaoliang/software/LSS_python/validation/gradient_density_normalization/README.md`.
 
 `--set_weight_to_one`/`-weightone` explicitly sets enabled effective data and
 random weights to one before counting. This now also applies consistently to
@@ -216,6 +243,9 @@ Saved correlation dictionaries and each nonempty covariance xismu object have
 `weight_set_one`. The first three are None for unweighted results. Other result
 fields and the covariance array layout are unchanged. Existing consumers that
 assert an exact dictionary key set must allow these four additional fields.
+Enabled gn results additionally have `gradient_divide_by_rho`, recording the
+explicitly selected normalization convention. n/r and unweighted results retain
+the existing four-field metadata layout.
 No pair-count cache policy, cache naming or AP computation is changed.
 
 The shared implementation is

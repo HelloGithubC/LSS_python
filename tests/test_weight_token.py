@@ -161,14 +161,15 @@ def test_generator_dispatch_and_raw_output(generator, tmp_path, method, option, 
         args += ["--chunk-size", "7"]
         expected_mark = create_rho_fix_r(positions, 12.0, r=2.0, chunk_size=7)
     elif method == "gn6":
-        expected_mark = create_drho(positions, 12.0, k=6)
+        rho, gradient = create_drho(positions, 12.0, k=6)
+        expected_mark = np.column_stack((rho, gradient))
     else:
         expected_mark = create_rho(positions, 12.0, k=6)
     assert generator(args) == 0
     actual = np.load(output.with_suffix(output.suffix + ".npy"))
     assert actual.dtype == dtype
     np.testing.assert_array_equal(actual, np.column_stack((positions, expected_mark)))
-    assert actual.shape == (40, 6 if method == "gn6" else 4)
+    assert actual.shape == (40, 7 if method == "gn6" else 4)
 
 
 def test_generator_default_and_output_protection(generator, tmp_path, capsys, monkeypatch):
@@ -213,7 +214,7 @@ def test_generator_default_name_uses_input_directory_and_method(generator, tmp_p
     assert generator([str(source), "12", "--method", method, "-n", "1"]) == 0
     output = tmp_path / f"snapshot.v2_{method}.npy"
     assert output.exists()
-    assert np.load(output).shape == (40, 6 if method == "gn6" else 4)
+    assert np.load(output).shape == (40, 7 if method == "gn6" else 4)
 
 
 @pytest.mark.parametrize("name,method", [

@@ -1,7 +1,7 @@
 """Canonical mark-method and weight tokens, using only the standard library.
 
-Methods are ``n<k>`` (nearest-neighbor density), ``gn<k>`` (the existing
-three-component density gradient), and ``r<radius>`` (fixed-support density).
+Methods are ``n<k>`` (nearest-neighbor density), ``gn<k>`` (gradient magnitude
+divided by its paired density by default), and ``r<radius>`` (fixed-support density).
 Weight tokens append ``_weipow<a1>[_<a2>...]`` to one method token. Powers
 are ordered, and their evaluation belongs to measurement callers.
 
@@ -175,6 +175,8 @@ def add_measurement_weight_arguments(parser: argparse.ArgumentParser) -> None:
                         help="Apply this power once to the raw data mark (default: 1)")
     parser.add_argument("--weight-token", default=None,
                         help="Single canonical <method>_weipow<alpha>; requires --with_weight")
+    parser.add_argument("--no-divide-by-rho", dest="divide_by_rho", action="store_false",
+                        help="Use raw gradient magnitude instead of magnitude/rho (gn methods with --with_weight only)")
 
 
 def resolve_measurement_weights(args, parser: argparse.ArgumentParser):
@@ -183,6 +185,8 @@ def resolve_measurement_weights(args, parser: argparse.ArgumentParser):
     args.weight_method_explicit = method_arg is not None or token_arg is not None
     try:
         if not args.with_weight:
+            if not args.divide_by_rho:
+                raise ValueError("--no-divide-by-rho requires --with_weight and a gn method")
             if args.weight_method_explicit:
                 raise ValueError("--weight-method/--weight-token requires --with_weight")
             args.set_weight_to_one = False
@@ -201,6 +205,8 @@ def resolve_measurement_weights(args, parser: argparse.ArgumentParser):
             method = parse_mark_token(DEFAULT_MARK if method_arg is None else method_arg)
             power = normalize_weight_power(1 if power_arg is None else power_arg)
             parsed = parse_weight_token(make_weight_token(power, mark=method.token))
+        if not args.divide_by_rho and parsed.method.kind != "gn":
+            raise ValueError("--no-divide-by-rho applies only to gn methods")
         numeric_power = float(parsed.power)
         if not math.isfinite(numeric_power) or (numeric_power == 0 and Decimal(parsed.power) != 0):
             raise ValueError("measurement power is outside the finite nonzero float range")

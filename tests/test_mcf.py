@@ -173,8 +173,9 @@ def test_create_drho_and_return_drho():
     assert rho.shape == (60,)
     assert drho.shape == (60, 3)
 
-    # Test create_drho helper matches create_rho(return_drho=True)[1]
-    drho_direct = create_drho(pos, boxsize=boxsize, k=20, weights=weights)
+    # The helper retains both raw fields from the same neighbor query.
+    rho_direct, drho_direct = create_drho(pos, boxsize=boxsize, k=20, weights=weights)
+    np.testing.assert_array_equal(rho, rho_direct)
     np.testing.assert_allclose(drho, drho_direct, rtol=1e-12)
 
     # Test return_drho=True with only_return_rho=False (7 columns: x, y, z, rho, drhox, drhoy, drhoz)

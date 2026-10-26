@@ -48,6 +48,8 @@ def test_configuration(options, token):
     ["-ww", "--weight-token", "n30_weipow-1_1"],
     ["-ww", "--weight-method", "r2.0"], ["-ww", "-weipow", "nan"],
     ["-ww", "-weipow", "1e1000"], ["-ww", "-weipow", "1e-1000"],
+    ["--no-divide-by-rho"], ["-ww", "--no-divide-by-rho"],
+    ["-ww", "--weight-method", "r2", "--no-divide-by-rho"],
 ])
 def test_configuration_rejects_conflicts_or_invalid_identity(options):
     with pytest.raises(SystemExit) as error:
@@ -109,15 +111,20 @@ def test_mock_base_only_compatibility_and_missing_mark():
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 @pytest.mark.parametrize("power", [2, -0.5, 0])
 @pytest.mark.parametrize("mock", [False, True])
-def test_gradient_norm_precedes_power_and_preserves_input(dtype, power, mock):
+@pytest.mark.parametrize("divide_by_rho", [True, False])
+def test_gradient_norm_precedes_power_and_preserves_input(dtype, power, mock, divide_by_rho):
     positions = np.array([[1, 2, 3], [4, 5, 6]], dtype=dtype)
     gradient = np.array([[0, -3, 4], [-2, 3, -6]], dtype=dtype)
     base = np.array([2, 3], dtype=dtype)
-    source = np.column_stack((positions, base, gradient) if mock else (positions, gradient))
+    rho = np.array([2, 4], dtype=dtype)
+    source = np.column_stack((positions, base, rho, gradient) if mock else (positions, rho, gradient))
     original = source.copy()
     prepare = prepare_mock_catalog if mock else prepare_box_catalog
-    result = prepare(source, with_weight=True, method="gn6", power=power)
-    expected = np.array([5, 7], dtype=dtype) ** power
+    result = prepare(source, with_weight=True, method="gn6", power=power, divide_by_rho=divide_by_rho)
+    expected = np.array([5, 7], dtype=dtype)
+    if divide_by_rho:
+        expected /= rho
+    expected = expected ** power
     if mock:
         expected *= base
     np.testing.assert_allclose(result[:, 3], expected, rtol=2e-7)
@@ -129,7 +136,7 @@ def test_gradient_norm_precedes_power_and_preserves_input(dtype, power, mock):
 
 @pytest.mark.parametrize("dtype,scale", [(np.float32, 1e20), (np.float64, 1e200)])
 def test_gradient_norm_avoids_unnecessary_square_overflow(dtype, scale):
-    source = np.array([[1, 2, 3, scale, -scale, scale]], dtype=dtype)
+    source = np.array([[1, 2, 3, 1, scale, -scale, scale]], dtype=dtype)
     result = prepare_box_catalog(source, with_weight=True, method="gn6")
     np.testing.assert_allclose(result[:, 3] / scale, np.sqrt(3), rtol=2e-7)
 
@@ -140,19 +147,63 @@ def test_gradient_norm_avoids_unnecessary_square_overflow(dtype, scale):
     ([1.5e308, 1.5e308, 0], 1),
 ])
 def test_invalid_gradient_weights_are_rejected(mock, gradient, power):
-    source = np.array([[1, 2, 3, 2, *gradient] if mock else [1, 2, 3, *gradient]], dtype=float)
+    source = np.array([[1, 2, 3, 2, 1, *gradient] if mock else [1, 2, 3, 1, *gradient]], dtype=float)
     prepare = prepare_mock_catalog if mock else prepare_box_catalog
     with pytest.raises(ValueError):
         prepare(source, with_weight=True, method="gn6", power=power)
 
 
 @pytest.mark.parametrize("mock", [False, True])
-@pytest.mark.parametrize("columns", [2, 4])
+@pytest.mark.parametrize("columns", [2, 5])
 def test_gradient_ambiguous_column_counts_are_rejected(mock, columns):
     source = np.ones((2, (4 if mock else 3) + columns))
     prepare = prepare_mock_catalog if mock else prepare_box_catalog
-    with pytest.raises(ValueError, match="one scalar raw-mark column or three gradient columns"):
+    with pytest.raises(ValueError, match="one prepared scalar column or rho plus three gradient columns"):
         prepare(source, with_weight=True, method="gn6")
+
+
+@pytest.mark.parametrize("mock", [False, True])
+def test_legacy_gradient_vectors_require_explicit_raw_mode(mock):
+    source = np.array([[1, 2, 3, 2, 0, -3, 4] if mock else [1, 2, 3, 0, -3, 4]], dtype=float)
+    prepare = prepare_mock_catalog if mock else prepare_box_catalog
+    with pytest.raises(ValueError, match="requires rho"):
+        prepare(source, with_weight=True, method="gn6")
+    result = prepare(source, with_weight=True, method="gn6", divide_by_rho=False)
+    assert result[0, 3] == (10 if mock else 5)
+
+
+@pytest.mark.parametrize("rho", [0, -1, np.nan, np.inf])
+@pytest.mark.parametrize("mock", [False, True])
+def test_normalized_gradient_requires_positive_finite_density(rho, mock):
+    source = np.array([[1, 2, 3, 2, rho, 0, -3, 4] if mock else [1, 2, 3, rho, 0, -3, 4]], dtype=float)
+    prepare = prepare_mock_catalog if mock else prepare_box_catalog
+    with pytest.raises(ValueError, match="strictly positive rho"):
+        prepare(source, with_weight=True, method="gn6", power=0)
+    result = prepare(source, with_weight=True, method="gn6", divide_by_rho=False)
+    assert result[0, 3] == (10 if mock else 5)
+
+
+def test_density_division_avoids_raw_norm_overflow():
+    source = np.array([[1, 2, 3, 2, 1.5e308, 1.5e308, 0]])
+    result = prepare_box_catalog(source, with_weight=True, method="gn6")
+    np.testing.assert_allclose(result[0, 3] / 1e308, np.sqrt(2) * .75)
+    with pytest.raises(ValueError, match="overflowing"):
+        prepare_box_catalog(source, with_weight=True, method="gn6", divide_by_rho=False)
+
+
+@pytest.mark.parametrize("divide_by_rho", [True, False])
+def test_gradient_division_configuration_and_metadata(divide_by_rho):
+    options = ["-ww", "--weight-token", "gn6_weipow2"]
+    if not divide_by_rho:
+        options.append("--no-divide-by-rho")
+    args = settings(options)
+    assert args.divide_by_rho is divide_by_rho
+    result = {}
+    attach_weight_metadata(result, args)
+    assert result["gradient_divide_by_rho"] is divide_by_rho
+    objects = [SimpleNamespace()]
+    attach_weight_metadata(objects, args)
+    assert objects[0].gradient_divide_by_rho is divide_by_rho
 
 
 def test_metadata_matches_saved_effective_weight_identity():
@@ -192,7 +243,7 @@ def _box_inputs(tmp_path, covariance=False, method="r2"):
         np.save(tmp_path / "positions.npy", data_pos)
         _run(tmp_path, "create_rho", ["positions.npy", "12", "data_gn6.npy", "-method", "gn6", "-n", "1"])
         data = np.load(tmp_path / "data_gn6.npy")
-        assert data.shape == (len(data_pos), 6)
+        assert data.shape == (len(data_pos), 7)
     else:
         np.save(tmp_path / f"data_{method}.npy", data)
     np.save(tmp_path / "random.npy", random)
@@ -200,36 +251,48 @@ def _box_inputs(tmp_path, covariance=False, method="r2"):
 
 
 @pytest.mark.parametrize("script", ["cal_MCF_box", "cal_MCF_box_mpi"])
-@pytest.mark.parametrize("method", ["r2", "gn6"])
-def test_box_cli_effective_weights_and_metadata(tmp_path, script, method):
+@pytest.mark.parametrize("method,divide_by_rho", [("r2", True), ("gn6", True), ("gn6", False)])
+def test_box_cli_effective_weights_and_metadata(tmp_path, script, method, divide_by_rho):
     data, random = _box_inputs(tmp_path, method=method)
     args = [f"data_{method}.npy", "random.npy", "1", "-smin", ".1", "-smax", "3", "-sbin", "2", "-mubin", "2",
             "-ww", "--weight-token", f"{method}_weipow2", "-tpcf", "result.pkl", "-rr", "rr.pkl"]
     if script.endswith("_mpi"):
         args += ["--boxsize", "12", "--ngrids", "2"]
+    if not divide_by_rho:
+        args.append("--no-divide-by-rho")
     _run(tmp_path, script, args, mpi=script.endswith("_mpi"))
     result = joblib.load(tmp_path / "result.pkl")
     assert result["weight_token"] == f"{method}_weipow2"
-    mark = np.sqrt(np.sum(data[:, 3:] ** 2, axis=1)) if method == "gn6" else data[:, 3]
+    mark = np.sqrt(np.sum(data[:, 4:] ** 2, axis=1)) if method == "gn6" else data[:, 3]
+    if method == "gn6":
+        assert result["gradient_divide_by_rho"] is divide_by_rho
+        if divide_by_rho:
+            mark /= data[:, 3]
     np.testing.assert_allclose(result["sum_wd"], np.sum(mark ** 2))
     np.testing.assert_allclose(result["sum_wr"], np.sum(random[:, 3]))
 
 
 @pytest.mark.parametrize("script", ["cal_cov_source_tpcf", "cal_cov_source_tpcf_mpi"])
-@pytest.mark.parametrize("method", ["r2", "gn6"])
-def test_covariance_cli_effective_weights_and_metadata(tmp_path, script, method):
+@pytest.mark.parametrize("method,divide_by_rho", [("r2", True), ("gn6", True), ("gn6", False)])
+def test_covariance_cli_effective_weights_and_metadata(tmp_path, script, method, divide_by_rho):
     from LSS_python.cov import run_subsample_tpCF
 
     data, random = _box_inputs(tmp_path, covariance=True, method=method)
     args = [f"data_{method}.npy", "random.npy", "12", "2", "subsample", "-n", "1", "--s_max", "3",
             "--sbin", "2", "--mubin", "2", "-ww", "--weight-method", method, "-weipow", "2",
             "-tpcf", "result.pkl", "-rr", str(tmp_path / "rr.pkl")]
+    if not divide_by_rho:
+        args.append("--no-divide-by-rho")
     _run(tmp_path, script, args, mpi=script.endswith("_mpi"))
     objects = joblib.load(tmp_path / "result.pkl")
     valid = [item for item in objects if item is not None]
     assert len(valid) == 8
     assert all(item.weight_token == f"{method}_weipow2" for item in valid)
-    mark = np.sqrt(np.sum(data[:, 3:] ** 2, axis=1)) if method == "gn6" else data[:, 3]
+    mark = np.sqrt(np.sum(data[:, 4:] ** 2, axis=1)) if method == "gn6" else data[:, 3]
+    if method == "gn6":
+        assert all(item.gradient_divide_by_rho is divide_by_rho for item in valid)
+        if divide_by_rho:
+            mark /= data[:, 3]
     expected_data = np.column_stack((data[:, :3], mark ** 2))
     reference = run_subsample_tpCF(
         expected_data, random, np.linspace(0, 3, 3), 2, with_weight=True,
@@ -243,23 +306,31 @@ def test_covariance_cli_effective_weights_and_metadata(tmp_path, script, method)
                 np.testing.assert_allclose(getattr(actual, name), getattr(expected, name))
 
 
-@pytest.mark.parametrize("method", ["r2", "gn6"])
-def test_mock_cli_powers_only_mark_and_normalizes_same_effective_weight(tmp_path, method):
+@pytest.mark.parametrize("method,divide_by_rho", [("r2", True), ("gn6", True), ("gn6", False)])
+def test_mock_cli_powers_only_mark_and_normalizes_same_effective_weight(tmp_path, method, divide_by_rho):
     rng = np.random.default_rng(87)
     coords = np.column_stack((rng.uniform(20, 60, 40), rng.uniform(-10, 10, 40), rng.uniform(100, 110, 40)))
     base, marks = rng.uniform(0.7, 1.3, 40), rng.uniform(1.2, 2.1, 40)
     if method == "gn6":
         gradient = rng.normal(size=(len(coords), 3))
-        data = np.column_stack((coords, base, gradient))
+        rho = rng.uniform(.5, 2, len(coords))
+        data = np.column_stack((coords, base, rho, gradient))
         marks = np.sqrt(np.sum(gradient ** 2, axis=1))
+        if divide_by_rho:
+            marks /= rho
     else:
         data = np.column_stack((coords, base, marks))
     random = np.column_stack((coords + [0.1, 0.1, 0.2], rng.uniform(0.8, 1.2, 40)))
     np.save(tmp_path / "data.npy", data)
     np.save(tmp_path / "random.npy", random)
-    _run(tmp_path, "cal_MCF_mock", ["data.npy", "random.npy", "1", "-smin", ".1", "-smax", "15",
-         "-sbin", "2", "-mubin", "2", "-ww", "--weight-token", f"{method}_weipow2", "-tpcf", "result.pkl", "-rr", "rr.pkl"])
+    args = ["data.npy", "random.npy", "1", "-smin", ".1", "-smax", "15",
+            "-sbin", "2", "-mubin", "2", "-ww", "--weight-token", f"{method}_weipow2", "-tpcf", "result.pkl", "-rr", "rr.pkl"]
+    if not divide_by_rho:
+        args.append("--no-divide-by-rho")
+    _run(tmp_path, "cal_MCF_mock", args)
     result = joblib.load(tmp_path / "result.pkl")
     assert result["weight_token"] == f"{method}_weipow2"
+    if method == "gn6":
+        assert result["gradient_divide_by_rho"] is divide_by_rho
     np.testing.assert_allclose(result["sum_wd"], np.sum(base * marks ** 2))
     np.testing.assert_allclose(result["sum_wr"], np.sum(random[:, 3]))
