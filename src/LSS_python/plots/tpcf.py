@@ -33,9 +33,9 @@ def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, figsize=(12,12), 
             raise ValueError("The length of snaps (the element of snaps_list) should be 2.")
         for j, snap in enumerate(snaps):
             xismu_temp = xismu_dict[snap]
-            s, xi_s = xismu_temp.integrate_tpcf(s_xis=True, smin=s_smin, smax=s_smax, is_norm=False, mupack=1, mumax=1.0)
+            s, xi_s = xismu_temp.integrate_tpcf(s_xis=True, smin=s_smin, smax=s_smax, is_norm=is_norm, mupack=1, mumax=1.0)
             axes_s[j].plot(s, xi_s, color=colors[i])
-            mu_array, xi_mu = xismu_temp.integrate_tpcf(intximu=True, smin=mu_smin, smax=mu_smax, is_norm=False, mupack=mupack, mumax=mumax)
+            mu_array, xi_mu = xismu_temp.integrate_tpcf(intximu=True, smin=mu_smin, smax=mu_smax, is_norm=is_norm, mupack=mupack, mumax=mumax)
             xi_mu_list.append(xi_mu)
             axes_mu[j].plot(mu_array[need_slice], xi_mu[need_slice], color=colors[i])
 
