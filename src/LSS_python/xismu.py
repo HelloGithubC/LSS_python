@@ -669,12 +669,9 @@ def average_xismus_dict_list(xismus_dict_list, debug=False):
 
         if has_all_moments:
             moments = {name: total / count for name, total in moment_sums.items()}
-            wd, wr = moments["sum_wd"], moments["sum_wr"]
-            norms = {
-                "DD": wd * wd - moments["sum_wd2"],
-                "DR": wd * wr,
-                "RR": wr * wr - moments["sum_wr2"],
-            }
+            # Direct ensemble average of the normalization constants avoids the Jensen's
+            # inequality bias: mean(W_R^2 - Q_R) != mean(W_R)^2 - mean(Q_R).
+            norms = {name: total / count for name, total in norm_sums.items()}
         else:
             if debug:
                 warnings.warn(

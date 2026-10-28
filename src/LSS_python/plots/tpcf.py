@@ -20,6 +20,9 @@ def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, figsize=(12,12), 
     mumax = argv.get("mumax", 0.97)
     need_slice = argv.get("need_slice", slice(None, None, None))
     is_norm = argv.get("is_norm", True)
+    s_is_norm = argv.get("s_is_norm", False)
+    exact_diff = argv.get("exact_diff", False)
+    eta = argv.get("eta", 0.2)
 
     if isinstance(xismu_dicts_list, dict):
         xismu_dicts_list = [xismu_dicts_list, ]
@@ -33,15 +36,19 @@ def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, figsize=(12,12), 
             raise ValueError("The length of snaps (the element of snaps_list) should be 2.")
         for j, snap in enumerate(snaps):
             xismu_temp = xismu_dict[snap]
-            s, xi_s = xismu_temp.integrate_tpcf(s_xis=True, smin=s_smin, smax=s_smax, is_norm=is_norm, mupack=1, mumax=1.0)
+            s, xi_s = xismu_temp.integrate_tpcf(s_xis=True, smin=s_smin, smax=s_smax, is_norm=s_is_norm, mupack=1, mumax=1.0)
             axes_s[j].plot(s, xi_s, color=colors[i])
             mu_array, xi_mu = xismu_temp.integrate_tpcf(intximu=True, smin=mu_smin, smax=mu_smax, is_norm=is_norm, mupack=mupack, mumax=mumax)
             xi_mu_list.append(xi_mu)
             axes_mu[j].plot(mu_array[need_slice], xi_mu[need_slice], color=colors[i])
 
-        if is_norm:
-            mu_array, xi_mu_diff = get_diff_array_test(xismu_dict, snaps, return_mu=True, mupack=mupack)
+        if is_norm and not exact_diff:
+            mu_array, xi_mu_diff = get_diff_array_test(
+                xismu_dict, snaps, return_mu=True, mupack=mupack,
+                smin=mu_smin, smax=mu_smax, mumax=mumax, eta=eta
+            )
         else:
-            xi_mu_diff = xi_mu_list[1] - xi_mu_list[0]
+            # snap1 - snap2
+            xi_mu_diff = xi_mu_list[0] - xi_mu_list[1]
         ax_diff.plot(mu_array[need_slice], xi_mu_diff[need_slice], color=colors[i])
     return fig
