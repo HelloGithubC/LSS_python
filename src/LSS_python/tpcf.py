@@ -19,7 +19,7 @@ from .corrfunc import call_DDsmu
 from .pair_counting import PairCounts, build_pair_tasks, count_pair_task, get_neighbors
 from .xismu import (
     average_xismus_dict_list, cal_convert_factor, get_diff_array,
-    get_diff_array_test, get_diff_array_2d, meannorm, packarray1d, packarray2d,
+    get_diff_array_2d, meannorm, packarray1d, packarray2d,
 )
 
 __all__ = [
@@ -27,7 +27,7 @@ __all__ = [
     "compute_DR_JK", "compute_RR_JK", "compute_subsample_pairs", "extract_npairs",
     "pair_counts_to_corrfunc",
     "xismu", "meannorm", "packarray1d", "packarray2d", "cal_convert_factor",
-    "average_xismus_dict_list", "get_diff_array", "get_diff_array_test",
+    "average_xismus_dict_list", "get_diff_array",
     "get_diff_array_2d",
 ]
 

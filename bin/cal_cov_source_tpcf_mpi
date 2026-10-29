@@ -2,7 +2,7 @@
 """Compute tpCF / MCF covariance-source samples with MPI Corrfunc counting.
 
 Follow cal_cov_source_tpcf's arguments and output format. Rank zero loads
-catalogs, selects the RR cache and saves the xismu object array. All ranks
+catalogs, selects the RR cache and saves compact xismu samples. All ranks
 participate in Jackknife or independent-subvolume counting. nthreads is the
 OpenMP thread count per rank. Run with mpiexec or the cluster's MPI launcher.
 """
@@ -12,8 +12,8 @@ from pathlib import Path
 import sys
 from time import perf_counter
 
-import joblib
 import numpy as np
+from LSS_python.xismu import XismuCovarianceIO
 
 from LSS_python.weight_token import (
     add_measurement_weight_arguments, resolve_measurement_weights,
@@ -41,7 +41,7 @@ def build_parser():
     parser.add_argument("--mubin", type=positive_int, default=120, help="Mu bins")
     parser.add_argument("--s_max", type=float, default=150., help="Maximum separation in Mpc/h")
     parser.add_argument("--rr_filename", "-rr", default="RR_temp.pkl", help="Root's RR cache filename")
-    parser.add_argument("--tpcf_filename", "-tpcf", default="tpCF_temp.pkl", help="Output xismu object-array filename")
+    parser.add_argument("--tpcf_filename", "-tpcf", default="tpCF_temp.pkl", help="Output compact covariance sample filename")
     parser.add_argument("--correction", choices=("none", "mohammad21"), default=None,
                         help="Jackknife cross-pair correction (default: none; jk only)")
     parser.add_argument("--with_weight", "-ww", action="store_true", help="Use data marks (gn norm/rho by default) and existing random weights")
@@ -117,6 +117,7 @@ def prepare_run(args):
     args.tpcf_filename = str(Path(args.tpcf_filename).expanduser().resolve())
     print("[1/4] Checking existing sample output ...", flush=True)
     if Path(args.tpcf_filename).exists() and not args.force:
+        XismuCovarianceIO.load(args.tpcf_filename)
         return {"skip": f"Output {args.tpcf_filename} exists, skipping. Use -f to overwrite."}
     if args.verbose:
         action = "forced recomputation" if args.force_rr else (
@@ -204,7 +205,8 @@ def main(argv=None):
             print(f"[4/4] Saving sample array to {args.tpcf_filename} ...", flush=True)
             Path(args.tpcf_filename).parent.mkdir(parents=True, exist_ok=True)
             attach_weight_metadata(result, args)
-            joblib.dump(result, args.tpcf_filename)
+            XismuCovarianceIO.save(args.tpcf_filename, result, args.cov_source_type,
+                                   overwrite=args.force)
             valid = sum(item is not None for item in result)
             print(f"       -> saved {len(result)} sample slots ({valid} valid objects)", flush=True)
             print(f"Done! Total elapsed: {perf_counter() - started:.2f}s", flush=True)

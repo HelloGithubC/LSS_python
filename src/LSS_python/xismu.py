@@ -19,8 +19,9 @@ from .base import traz
 
 __all__ = [
     "xismu", "meannorm", "packarray1d", "packarray2d", "cal_convert_factor",
-    "average_xismus_dict_list", "get_diff_array", "get_diff_array_test",
+    "average_xismus_dict_list", "get_diff_array",
     "get_diff_array_2d", "create_xismu_from_pairs", "migrate_xismu_file",
+    "XismuCovarianceIO",
 ]
 
 def meannorm(X, axis=0):
@@ -867,87 +868,6 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
     else:
         return result_array
 
-def get_diff_array_test(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
-                        compressor=None, intximu_new=False, mupack=1,
-                        remove_last_one=True, eta=0.2,
-                        use_hard_floor=False, **kwargs) -> np.ndarray:
-    """Subtract two snapshots after regularized mean-one normalization.
-
-    For each full angular profile ``x`` with mean ``m`` and standard deviation
-    ``s``, return ``1 + (x - m) / scale``. The default smooth scale is
-    ``hypot(m, eta * s)``; ``use_hard_floor=True`` selects
-    ``max(abs(m), eta * s)`` instead. Thus ``eta`` is the coefficient of the
-    standard deviation in both methods. Each full profile has mean one before
-    the optional last-bin removal.
-
-    Integration and pairing follow :func:`get_diff_array`. Normalize the full
-    profile before optionally removing its last bin and subtracting snapshots.
-    """
-    if "is_norm" in kwargs:
-        raise TypeError("get_diff_array_test always uses regularized normalization")
-    if "remove_after_diff" in kwargs:
-        raise TypeError("remove_after_diff has been removed and is no longer supported")
-    if not np.isscalar(eta) or not np.isfinite(eta) or eta < 0:
-        raise ValueError("eta must be a finite non-negative scalar")
-    if not isinstance(use_hard_floor, (bool, np.bool_)):
-        raise TypeError("use_hard_floor must be a boolean")
-
-    integrate_tpcf_func = kwargs.get("integrate_tpcf_func")
-    integrate_tpcf_kwargs = kwargs.get("integrate_tpcf_kwargs", {})
-    if intximu_new and integrate_tpcf_func is not None:
-        raise ValueError(
-            "intximu_new cannot be used with integrate_tpcf_func; "
-            "the custom integration function must select its own behavior"
-        )
-    if integrate_tpcf_func is None and not intximu_new:
-        return get_diff_array(
-            tpcf_dict_list, snap_ids, shift=shift, return_mu=return_mu,
-            compressor=compressor, mupack=mupack, remove_last_one=remove_last_one,
-            norm_method="regu_hard" if use_hard_floor else "regu", eta=eta,
-            **kwargs,
-        )
-    smin = kwargs.get("smin", 6.0)
-    smax = kwargs.get("smax", 40.0)
-    mumax = kwargs.get("mumax", 0.97)
-
-    def integrate_and_normalize(obj):
-        if integrate_tpcf_func is not None:
-            mu, values = integrate_tpcf_func(obj, **integrate_tpcf_kwargs)
-        elif intximu_new:
-            mu, values = obj.intximu(
-                smin=smin, smax=smax, mupack=mupack, is_norm=False,
-                mumax=mumax, remove_last_one=False,
-            )
-        else:
-            mu, values = obj.integrate_tpcf(
-                smin=smin, smax=smax, intximu=True, mupack=mupack,
-                is_norm=False, mumax=mumax, remove_last_one=False,
-            )
-        mu = np.asarray(mu)
-        values = np.asarray(values, dtype=float)
-        if values.ndim != 1 or mu.shape != values.shape or not np.all(np.isfinite(values)):
-            raise ValueError("integrated profile must contain finite one-dimensional values")
-        if values.size == 0:
-            raise ValueError("integrated profile has no angular bins")
-        mean = float(np.mean(values))
-        spread = float(np.std(values))
-        scale = (
-            max(abs(mean), eta * spread)
-            if use_hard_floor else np.hypot(mean, eta * spread)
-        )
-        if scale == 0.0:
-            raise ValueError("normalization scale is zero; the profile has no defined shape")
-        normalized = 1.0 + (values - mean) / scale
-        if remove_last_one:
-            return mu[:-1], normalized[:-1]
-        return mu, normalized
-
-    return get_diff_array(
-        tpcf_dict_list, snap_ids, shift=shift, return_mu=return_mu,
-        compressor=compressor, mupack=mupack, remove_last_one=remove_last_one,
-        integrate_tpcf_func=integrate_and_normalize,
-    )
-
 def get_diff_array_2d(tpcf_dict_list, snap_ids, shift=5, compressor=None, **kwargs) -> np.ndarray:
     """
     Get difference array from 2D tpcf data using get_specific_2d method.
@@ -1086,6 +1006,163 @@ def create_xismu_from_pairs(DD, DR, RR, norm_DD, norm_DR, norm_RR, sedges, muedg
     )
 
     return xismu_obj
+
+
+class XismuCovarianceIO:
+    """Save and load covariance samples without duplicating shared arrays.
+
+    The stored DD, DR and RR are the *normalized* arrays already present on
+    each object. All other instance attributes are retained. Loading restores
+    the instance state directly, without running normalization or changing the
+    first bin. Files use joblib/pickle and must only be loaded from trusted
+    sources. ``load`` accepts only the compact covariance format.
+
+    ``save(filename, samples, covariance_type)`` accepts a one-dimensional
+    sequence of xismu objects or None, and ``covariance_type`` is ``"jk"`` or
+    ``"subsample"``. Existing files are replaced only with ``overwrite=True``.
+    ``load(filename)`` returns a one-dimensional numpy object array.
+    """
+
+    _FORMAT = "LSS_python.xismu_covariance"
+    _VERSION = 1
+    _ARRAYS = ("S", "Mu", "DD", "DR", "RR")
+
+    @staticmethod
+    def _same_array(left, right):
+        """Compare values, dtype and floating-point bit patterns exactly."""
+        return (isinstance(left, np.ndarray) and isinstance(right, np.ndarray)
+                and left.shape == right.shape and left.dtype == right.dtype
+                and np.ascontiguousarray(left).tobytes()
+                == np.ascontiguousarray(right).tobytes())
+
+    @classmethod
+    def _validate_samples(cls, samples, covariance_type):
+        if covariance_type not in ("jk", "subsample"):
+            raise ValueError('covariance_type must be "jk" or "subsample"')
+        if not isinstance(samples, (list, tuple, np.ndarray)):
+            raise TypeError("samples must be a one-dimensional sequence")
+        if isinstance(samples, np.ndarray) and samples.ndim != 1:
+            raise ValueError("samples must be one-dimensional")
+
+        reference = None
+        states = []
+        for index, sample in enumerate(samples):
+            if sample is None:
+                states.append(None)
+                continue
+            if type(sample) is not xismu:
+                raise TypeError(f"sample {index} must be an xismu object or None")
+            state = vars(sample)
+            try:
+                shape = (state["sbin"], state["mubin"])
+                arrays = {name: state[name] for name in cls._ARRAYS}
+                norms = [state[name] for name in ("DDnorm", "DRnorm", "RRnorm")]
+            except KeyError as exc:
+                raise ValueError(f"sample {index} is missing attribute {exc.args[0]}") from exc
+            if (not all(isinstance(n, (int, np.integer)) and n > 0 for n in shape)
+                    or any(not isinstance(a, np.ndarray) or a.shape != shape
+                           or a.dtype.hasobject for a in arrays.values())
+                    or any(norm is None or np.ndim(norm) != 0
+                           or not np.issubdtype(np.asarray(norm).dtype, np.number)
+                           for norm in norms)):
+                raise ValueError(f"sample {index} has invalid dimensions, arrays or norms")
+            if reference is None:
+                reference = sample
+            else:
+                for name in ("S", "Mu"):
+                    if not cls._same_array(arrays[name], getattr(reference, name)):
+                        raise ValueError(f"sample {index} has different {name} coordinates")
+                if covariance_type == "subsample":
+                    if not cls._same_array(arrays["RR"], reference.RR):
+                        raise ValueError(f"sample {index} has different RR")
+                    if not np.array_equal(np.asarray(norms[2]), np.asarray(reference.RRnorm), equal_nan=True):
+                        raise ValueError(f"sample {index} has different RRnorm")
+            state = dict(state)
+            del state["S"], state["Mu"]
+            if covariance_type == "subsample":
+                del state["RR"]
+            states.append(state)
+        if reference is None:
+            raise ValueError("samples must contain at least one xismu object")
+        return reference, states
+
+    @classmethod
+    def save(cls, filename, samples, covariance_type, *, overwrite=False):
+        """Save samples, atomically replacing an existing file when requested."""
+        reference, states = cls._validate_samples(samples, covariance_type)
+        payload = {
+            "format": cls._FORMAT,
+            "version": cls._VERSION,
+            "covariance_type": covariance_type,
+            "S": reference.S,
+            "Mu": reference.Mu,
+            "samples": states,
+        }
+        if covariance_type == "subsample":
+            payload["RR"] = reference.RR
+        if overwrite:
+            destination = os.path.realpath(os.fspath(filename))
+            directory = os.path.dirname(destination)
+            prefix = "." + os.path.basename(destination) + ".write-"
+            with tempfile.TemporaryDirectory(prefix=prefix, dir=directory) as temporary_dir:
+                temporary_file = os.path.join(temporary_dir, "result.pkl")
+                with open(temporary_file, "xb") as stream:
+                    joblib.dump(payload, stream)
+                if os.path.exists(destination):
+                    os.chmod(temporary_file, stat.S_IMODE(os.stat(destination).st_mode))
+                os.replace(temporary_file, destination)
+        else:
+            # Exclusive creation prevents races between concurrent writers.
+            stream = open(filename, "xb")
+            try:
+                with stream:
+                    joblib.dump(payload, stream)
+            except BaseException:
+                os.unlink(filename)
+                raise
+
+    @classmethod
+    def load(cls, filename):
+        """Load a compact file as a one-dimensional array of xismu samples."""
+        try:
+            payload = joblib.load(filename)
+        except (OSError, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            raise ValueError(f"cannot read covariance file: {filename}") from exc
+
+        if not isinstance(payload, dict) or payload.get("format") != cls._FORMAT:
+            raise ValueError("unrecognized covariance file format; convert legacy files with migrate_xismu_covariance")
+        if payload.get("version") != cls._VERSION:
+            raise ValueError(f"unsupported covariance file version: {payload.get('version')!r}")
+        covariance_type = payload.get("covariance_type")
+        states = payload.get("samples")
+        if (covariance_type not in ("jk", "subsample") or not isinstance(states, list)
+                or not isinstance(payload.get("S"), np.ndarray)
+                or not isinstance(payload.get("Mu"), np.ndarray)
+                or (covariance_type == "subsample" and not isinstance(payload.get("RR"), np.ndarray))):
+            raise ValueError("invalid covariance file contents")
+        result = np.empty(len(states), dtype=object)
+        for index, state in enumerate(states):
+            if state is None:
+                result[index] = None
+                continue
+            if not isinstance(state, dict) or any(key in state for key in ("S", "Mu")):
+                raise ValueError(f"invalid state for sample {index}")
+            if covariance_type == "subsample" and "RR" in state:
+                raise ValueError(f"invalid RR for sample {index}")
+            obj = xismu.__new__(xismu)
+            obj.__dict__.update(state)
+            obj.S = payload["S"].copy()
+            obj.Mu = payload["Mu"].copy()
+            if covariance_type == "subsample":
+                obj.RR = payload["RR"].copy()
+            result[index] = obj
+        try:
+            cls._validate_samples(result, covariance_type)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid covariance file contents: {exc}") from exc
+        return result
 
 
 # In-place migration of historical object archives.

@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec 
 
-from LSS_python.xismu import get_diff_array_test
+from LSS_python.xismu import get_diff_array
 
 def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, figsize=(12,12), **argv):
     fig = plt.figure(dpi=100, figsize=figsize)
@@ -43,7 +43,7 @@ def tpcf_comparison(xismu_dicts_list, snaps_list, colors_list, figsize=(12,12), 
             axes_mu[j].plot(mu_array[need_slice], xi_mu[need_slice], color=colors[i])
 
         if is_norm and not exact_diff:
-            mu_array, xi_mu_diff = get_diff_array_test(
+            mu_array, xi_mu_diff = get_diff_array(
                 xismu_dict, snaps, return_mu=True, mupack=mupack,
                 smin=mu_smin, smax=mu_smax, mumax=mumax, eta=eta
             )

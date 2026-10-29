@@ -6,7 +6,7 @@
 
 | 模块 | 核心职责和入口 |
 | --- | --- |
-| `LSS_python.xismu` | `xismu`；积分/重分箱；`average_xismus_dict_list`；`get_diff_array*`；`meannorm`、`packarray1d/2d`、`cal_convert_factor`；`create_xismu_from_pairs`；`migrate_xismu_file` |
+| `LSS_python.xismu` | `xismu`；积分/重分箱；`average_xismus_dict_list`；`get_diff_array`、`get_diff_array_2d`；`meannorm`、`packarray1d/2d`、`cal_convert_factor`；`create_xismu_from_pairs`；`migrate_xismu_file` |
 | `LSS_python.tpcf` | `run_tpCF`、`run_tpCF_mock`、`cal_tpCF_from_pairs`；`compute_DD_JK`、`compute_DR_JK`、`compute_RR_JK`、`compute_subsample_pairs`、`extract_npairs` |
 | `LSS_python.cov` | `run_jackknife_tpCF`、`run_subsample_tpCF`；分区、RR 缓存、归一化、Jackknife 扣除和 ξ 重建、协方差统计 |
 | `LSS_python.pair_counting` | 既有通用计数/任务接口；共享的非周期 `get_neighbors` |

@@ -16,6 +16,7 @@ from LSS_python.measurement_weights import (
     apply_mark_power, attach_weight_metadata, prepare_box_catalog, prepare_mock_catalog,
 )
 from LSS_python.weight_token import add_measurement_weight_arguments, resolve_measurement_weights
+from LSS_python.xismu import XismuCovarianceIO
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -284,7 +285,7 @@ def test_covariance_cli_effective_weights_and_metadata(tmp_path, script, method,
     if not divide_by_rho:
         args.append("--no-divide-by-rho")
     _run(tmp_path, script, args, mpi=script.endswith("_mpi"))
-    objects = joblib.load(tmp_path / "result.pkl")
+    objects = XismuCovarianceIO.load(tmp_path / "result.pkl")
     valid = [item for item in objects if item is not None]
     assert len(valid) == 8
     assert all(item.weight_token == f"{method}_weipow2" for item in valid)

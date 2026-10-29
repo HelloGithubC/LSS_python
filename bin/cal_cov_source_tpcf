@@ -17,9 +17,9 @@ import argparse
 import os
 import sys
 
-import joblib
 import numpy as np
 from LSS_python.cov import run_jackknife_tpCF, run_subsample_tpCF
+from LSS_python.xismu import XismuCovarianceIO
 from LSS_python.weight_token import (
     add_measurement_weight_arguments, resolve_measurement_weights,
 )
@@ -71,7 +71,7 @@ def main():
     parser.add_argument("--rr_filename", "-rr", type=str, default="RR_temp.pkl",
                         help="RR pkl file for caching (default: RR_temp.pkl)")
     parser.add_argument("--tpcf_filename", "-tpcf", type=str, default="tpCF_temp.pkl",
-                        help="Output tpCF pkl file (default: tpCF_temp.pkl)")
+                        help="Output compact covariance sample file (default: tpCF_temp.pkl)")
     parser.add_argument("--correction", choices=("none", "mohammad21"), default=None,
                         help="Jackknife cross-pair correction (default: none; jk only)")
     
@@ -96,6 +96,8 @@ def main():
         sys.exit(0)
 
     args = resolve_measurement_weights(parser.parse_args(), parser)
+    # The shared cache writer expects a directory even for the default filename.
+    args.rr_filename = os.path.abspath(os.path.expanduser(args.rr_filename))
     if args.correction == "none":
         args.correction = None
     if args.cov_source_type != "jk" and args.correction is not None:
@@ -165,6 +167,7 @@ def main():
             print(f"       created dir: {result_dir}", flush=True)
 
     if os.path.exists(result_filename) and not args.force:
+        XismuCovarianceIO.load(result_filename)
         print(f"       output file already exists, skipping. Use -f to overwrite.", flush=True)
         return
 
@@ -195,7 +198,8 @@ def main():
         )
 
     attach_weight_metadata(result_dict, args)
-    joblib.dump(result_dict, result_filename)
+    XismuCovarianceIO.save(result_filename, result_dict, args.cov_source_type,
+                           overwrite=args.force)
     print(f"       -> saved: {result_filename}", flush=True)
     print("Done.", flush=True)
 

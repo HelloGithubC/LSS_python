@@ -59,7 +59,7 @@ def test_legacy_function_exports_are_the_same_implementations():
 
     for name in (
         "meannorm", "packarray1d", "packarray2d", "cal_convert_factor",
-        "average_xismus_dict_list", "get_diff_array", "get_diff_array_test",
+        "average_xismus_dict_list", "get_diff_array",
         "get_diff_array_2d",
     ):
         assert getattr(tpcf, name) is getattr(results, name)
@@ -67,6 +67,36 @@ def test_legacy_function_exports_are_the_same_implementations():
         assert getattr(cov, name) is getattr(tpcf, name)
     assert cov.create_xismu_from_pairs is results.create_xismu_from_pairs
     assert cov.get_neighbors is pair_counting.get_neighbors
+
+
+def test_plot_uses_regularized_difference():
+    import matplotlib.pyplot as plt
+    from LSS_python.plots.tpcf import tpcf_comparison
+
+    class Profile:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=float)
+
+        def integrate_tpcf(self, **kwargs):
+            if kwargs.get("s_xis"):
+                return np.arange(3), self.values
+            values = self.values
+            mu = np.arange(3)
+            if kwargs["is_norm"]:
+                values = (1 + (values - values.mean()) / abs(values.mean()))[:-1]
+                mu = mu[:-1]
+            return mu, values
+
+    first = np.array([1.0, 2.0, 4.0])
+    pair = {11: Profile(first), 26: Profile([1, 1, 1])}
+    fig = tpcf_comparison(pair, (11, 26), ["black"], mupack=1, eta=0.5)
+    try:
+        line = fig.axes[-1].lines[0]
+        expected = ((first - first.mean()) / np.hypot(first.mean(), 0.5 * first.std()))[:-1]
+        np.testing.assert_array_equal(line.get_xdata(), [0, 1])
+        np.testing.assert_allclose(line.get_ydata(), expected)
+    finally:
+        plt.close(fig)
 
 
 def test_subsample_counter_keeps_raw_order_and_skips_small_subvolumes(monkeypatch):

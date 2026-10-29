@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Replace a legacy covariance object array with compact xismu storage.
+
+The original file is replaced only after a compact temporary file in the same
+filesystem has been reloaded and checked. No backup is created. Only load
+trusted joblib/pickle files; loading an untrusted file can execute code.
+"""
+
+import argparse
+import os
+import stat
+import sys
+import tempfile
+
+
+def _unchanged_stat(before, after):
+    return all(getattr(before, key) == getattr(after, key) for key in
+               ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))
+
+
+def migrate(path, covariance_type):
+    """Replace a legacy file, or return None for an existing compact file."""
+    import joblib
+    import numpy as np
+    from LSS_python.xismu import XismuCovarianceIO, _same_migration_value, xismu
+
+    source = os.path.realpath(os.fspath(path))
+    initial = os.stat(source)
+    if not stat.S_ISREG(initial.st_mode):
+        raise ValueError("input must be a regular file")
+    original = joblib.load(source)
+    if isinstance(original, dict) and original.get("format") == XismuCovarianceIO._FORMAT:
+        # Validate supported versions and contents before reporting success.
+        del original
+        XismuCovarianceIO.load(source)
+        if not _unchanged_stat(initial, os.stat(source)):
+            raise RuntimeError("input file changed during validation")
+        return None
+    if not isinstance(original, np.ndarray) or original.ndim != 1:
+        raise ValueError("input must be a legacy one-dimensional xismu object array")
+    if not any(item is not None for item in original) or not all(
+        item is None or type(item) is xismu for item in original
+    ):
+        raise ValueError("input must contain xismu objects or None")
+
+    directory = os.path.dirname(source)
+    prefix = "." + os.path.basename(source) + ".compact-"
+    with tempfile.TemporaryDirectory(prefix=prefix, dir=directory) as temporary_dir:
+        temporary_file = os.path.join(temporary_dir, "result.pkl")
+        XismuCovarianceIO.save(temporary_file, original, covariance_type)
+        restored = XismuCovarianceIO.load(temporary_file)
+        if original.shape != restored.shape:
+            raise ValueError("verification failed: sample shape changed")
+        for index, (before, after) in enumerate(zip(original, restored)):
+            if before is None or after is None:
+                if before is not after:
+                    raise ValueError(f"verification failed: sample {index} changed")
+                continue
+            if vars(before).keys() != vars(after).keys():
+                raise ValueError(f"verification failed: sample {index} attributes changed")
+            for name, value in vars(before).items():
+                other = vars(after)[name]
+                if isinstance(value, np.ndarray) and not value.dtype.hasobject:
+                    matches = XismuCovarianceIO._same_array(value, other)
+                else:
+                    matches = _same_migration_value(value, other)
+                if not matches:
+                    raise ValueError(f"verification failed: sample {index} attribute {name} changed")
+        os.chmod(temporary_file, stat.S_IMODE(initial.st_mode))
+        new_size = os.path.getsize(temporary_file)
+        if not _unchanged_stat(initial, os.stat(source)):
+            raise RuntimeError("input file changed during conversion; refusing to replace it")
+        os.replace(temporary_file, source)
+    return initial.st_size, new_size
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("path", metavar="PATH", help="legacy covariance joblib file to replace")
+    parser.add_argument("--covariance-type", required=True, choices=("jk", "subsample"),
+                        help="type of covariance samples in the input file")
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        parser.print_help()
+        return 0
+    args = parser.parse_args(argv)
+    try:
+        result = migrate(args.path, args.covariance_type)
+    except Exception as exc:
+        print(f"error: {args.path}: {exc}", file=sys.stderr)
+        return 1
+    if result is None:
+        print(f"skipped: {args.path} (already converted)")
+    else:
+        before, after = result
+        print(f"converted: {args.path} ({before} -> {after} bytes)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

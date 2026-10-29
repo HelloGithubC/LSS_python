@@ -3,8 +3,9 @@
 `/mnt/xiaodong/xiaoliang/software/LSS_python/bin/cal_cov_source_tpcf_mpi`
 is the MPI counterpart of `bin/cal_cov_source_tpcf`. It generates Jackknife or
 subsample correlation measurements for subsequent covariance analysis. It saves
-the same joblib object array as the serial command, with canonical
-`LSS_python.xismu.xismu` objects, and does not calculate a covariance matrix.
+the same compact covariance-sample format as the serial command. The
+`XismuCovarianceIO.load` reader returns canonical `LSS_python.xismu.xismu`
+objects; neither command calculates a covariance matrix.
 
 ## Invocation and dependencies
 
@@ -56,7 +57,7 @@ All option names and aliases from the current serial script are retained.
 | `--weight-method` | Declare the raw mark method n<k>, gn<k>, or r<radius>; requires -ww, default n30 |
 | `--weight-token` | Alternative single canonical method/power identity; conflicts and joint tokens are rejected |
 | `-rr / --rr_filename` | RR joblib cache, default `RR_temp.pkl` in the working directory |
-| `-tpcf / --tpcf_filename` | Sample-array output, default `tpCF_temp.pkl` in the working directory |
+| `-tpcf / --tpcf_filename` | Compact sample output, default `tpCF_temp.pkl` in the working directory; read using `XismuCovarianceIO.load` |
 | `-f / --force` | Recompute an existing sample output; RR remains reusable unless `-frr` is also set |
 | `-frr / --force_rr` | Recompute and overwrite RR when the measurement actually runs |
 | `-v / --verbose` | Configuration, catalog sizes/dtypes, cache decisions, assignments and progress |
@@ -87,7 +88,7 @@ The workflow is:
    sharing a local random template. Subsample's common RR is counted once on root
    or read from cache. Catalog/result arrays use the existing bounded MPI buffers.
 5. Rank zero creates the output parent directory and saves the returned object
-   array with `joblib.dump`. Python input/import/save failures are communicated
+   array using `XismuCovarianceIO.save`. Python input/import/save failures are communicated
    before peers proceed or exit. Native process termination still depends on the
    MPI launcher/scheduler's termination policy.
 
@@ -102,9 +103,10 @@ requires a new sample-output path or `-f`; the raw RR cache can be reused.
 Both output filenames are explicit: `_mpi` is not appended automatically. Relative
 output/cache names are resolved against rank zero's working directory. Use
 separate RR paths for Jackknife and subsample because their cache schemas differ.
-Existing outputs are replaced only with `-f`; existing RR is replaced only when
-counting runs with `-frr`. No backup is created. Saving follows the serial
-joblib behavior, without an atomic replacement step. An RR cache saved before a
+Existing sample outputs are validated as compact and skipped unless `-f` is
+set; old object arrays must first be migrated. With `-f`, saving uses a temporary
+directory alongside the output followed by atomic replacement. Existing RR is replaced only when
+counting runs with `-frr`. No backup is created. An RR cache saved before a
 later failure remains available. The command itself creates no log file,
 checkpoint or persistent transport file. Redirect stdout/stderr or use the
 scheduler's log configuration as needed. Corrfunc manages its temporary bin files
