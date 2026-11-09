@@ -7,6 +7,10 @@ Method gn<k> writes [x,y,z,rho,drhox,drhoy,drhoz] (N,7), using the existing Fort
 gradient convention. Self is included; nearest-neighbor h is adaptive and
 fixed-radius h is radius/2. No weight-power transform is applied.
 
+With --mock, input is (N, 4) [RA_deg, DEC_deg, chi_Mpc/h, base_weight].
+Coordinates are converted to non-periodic Cartesian positions for the density
+calculation; output retains the four input columns and appends the raw mark.
+
 The optional output defaults to <input_stem>_<method>.npy in the input directory.
 A custom output lacking the selected method token requires y/yes confirmation.
 Example: create_rho snapshot.npy 2000.0 -method n30 -n 40
@@ -28,7 +32,7 @@ def build_parser():
     """Build the generator CLI; method grammar belongs to weight_token."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_filename", help="Input .npy catalog, shape (N, >=3)")
-    parser.add_argument("BoxSize", type=float, help="Periodic simulation-box size")
+    parser.add_argument("BoxSize", nargs="?", help="Periodic box size; in --mock mode, optional output path")
     parser.add_argument("output_filename", nargs="?",
                         help="Output path (default: <input_stem>_<method>.npy beside input); "
                              "a name without the selected method token requires y/yes")
@@ -41,6 +45,8 @@ def build_parser():
     parser.add_argument("--force", "-force", "-f", action="store_true",
                         help="Overwrite an existing output file")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print progress and output shape")
+    parser.add_argument("--mock", action="store_true",
+                        help="Survey catalog [RA_deg, DEC_deg, chi_Mpc/h, weight]; no periodic box")
     return parser
 
 
@@ -84,8 +90,18 @@ def main(argv=None):
     args = parser.parse_args(arguments)
     try:
         method = parse_mark_token(args.rho_method)
-        if not np.isfinite(args.BoxSize) or args.BoxSize <= 0:
-            raise ValueError("BoxSize must be finite and positive")
+        if args.mock:
+            if args.output_filename is not None:
+                raise ValueError("--mock accepts only an input and optional output; omit BoxSize")
+            output_filename = args.BoxSize
+            boxsize = None
+        else:
+            if args.BoxSize is None:
+                raise ValueError("BoxSize is required unless --mock is specified")
+            boxsize = float(args.BoxSize)
+            if not np.isfinite(boxsize) or boxsize <= 0:
+                raise ValueError("BoxSize must be finite and positive")
+            output_filename = args.output_filename
         if args.nthreads <= 0:
             raise ValueError("nthreads must be positive")
         if args.chunk_size is not None:
@@ -93,10 +109,10 @@ def main(argv=None):
                 raise ValueError("--chunk-size applies only to r<radius>")
             if args.chunk_size <= 0:
                 raise ValueError("chunk-size must be positive")
-        if method.kind == "r" and not 0 < float(method.value) < args.BoxSize / 2:
+        if method.kind == "r" and boxsize is not None and not 0 < float(method.value) < boxsize / 2:
             raise ValueError("radius must be finite, positive and smaller than half BoxSize")
 
-        output = _output_path(args.data_filename, args.output_filename, method.token)
+        output = _output_path(args.data_filename, output_filename, method.token)
         if output.exists() and not args.force:
             print(f"Output file {output} already exists. Use --force to re-compute.")
             return 0
@@ -107,28 +123,40 @@ def main(argv=None):
             raise ValueError("input must be a plain .npy array with shape (N, >=3)")
         if data.dtype not in (np.dtype("float32"), np.dtype("float64")):
             raise ValueError("input positions must have float32 or float64 dtype")
-        pos = data[:, :3]
+        if args.mock:
+            if data.shape[1] != 4 or not np.isfinite(data).all():
+                raise ValueError("--mock requires finite [RA_deg, DEC_deg, chi_Mpc/h, weight] columns")
+            ra, dec, chi = data[:, 0], data[:, 1], data[:, 2]
+            if np.any((dec < -90) | (dec > 90)) or np.any(chi < 0):
+                raise ValueError("declination must be in [-90, 90] degrees and distance nonnegative")
+            ra_rad, dec_rad = np.deg2rad(ra), np.deg2rad(dec)
+            transverse = chi * np.cos(dec_rad)
+            pos = np.column_stack((transverse * np.cos(ra_rad), transverse * np.sin(ra_rad), chi * np.sin(dec_rad)))
+            output_columns = data
+        else:
+            pos = data[:, :3]
+            output_columns = pos
         if not np.isfinite(pos).all():
             raise ValueError("input positions must be finite")
         if method.kind != "r" and not 2 <= method.value <= len(pos):
             raise ValueError("adaptive neighbor count must satisfy 2 <= k <= number of positions")
         if args.verbose:
-            print(f"Loading {args.data_filename}: {len(pos)} positions; BoxSize={args.BoxSize:g}", flush=True)
+            print(f"Loading {args.data_filename}: {len(pos)} positions; BoxSize={boxsize}", flush=True)
             print(f"method={method.token}; nthreads={args.nthreads}; raw output, no power transform", flush=True)
         if method.kind == "r":
             mark = create_rho_fix_r(
-                pos, boxsize=args.BoxSize, r=float(method.value), nthreads=args.nthreads,
+                pos, boxsize=boxsize, r=float(method.value), nthreads=args.nthreads,
                 chunk_size=args.chunk_size or 100_000, verbose=args.verbose,
             )
         else:
             calculation = {"n": create_rho, "gn": create_drho}[method.kind]
-            mark = calculation(pos, boxsize=args.BoxSize, k=method.value, nthreads=args.nthreads)
+            mark = calculation(pos, boxsize=boxsize, k=method.value, nthreads=args.nthreads)
         if method.kind == "gn":
             rho, gradient = mark
-            out = np.column_stack((pos, rho, gradient))
+            out = np.column_stack((output_columns, rho, gradient))
         else:
-            out = np.column_stack((pos, mark))
-        expected_columns = 7 if method.kind == "gn" else 4
+            out = np.column_stack((output_columns, mark))
+        expected_columns = output_columns.shape[1] + (4 if method.kind == "gn" else 1)
         if out.shape != (len(pos), expected_columns) or not np.isfinite(out).all():
             raise ValueError("mark calculation returned an invalid shape or non-finite values")
         np.save(output, out)

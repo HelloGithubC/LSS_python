@@ -251,11 +251,15 @@ if not only_run_rr:
 # ============================================================================
 # Load mock and random catalogs
 # ============================================================================
-mock_catalog = read_data(mock_dir + mock_filename + mock_fileext)
+if not only_run_rr:
+    mock_catalog = read_data(mock_dir + mock_filename + mock_fileext)
+else:
+    mock_catalog = None
+
 random_catalog = read_data(random_dir + random_filename + random_fileext)
 
 # Ensure both catalogs have the same data type for compatibility
-if mock_catalog.dtype != random_catalog.dtype:
+if not only_run_rr and mock_catalog.dtype != random_catalog.dtype:
     random_catalog = random_catalog.astype(mock_catalog.dtype)
 
 if not only_run_rr:
