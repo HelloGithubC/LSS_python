@@ -27,9 +27,9 @@ def fftpower_comparison(fftpower_dicts_list, snaps_list, colors_list, figsize=(1
             raise ValueError("The length of snaps (the element of snaps_list) should be 2.")
         for j, snap in enumerate(snaps):
             fftpower_temp = fftpower_dict[snap]
-            k, Pk = fftpower_temp.intergrate_fftpower(k_min=k_kmin, k_max=k_kmax, mu_min=-1.0, mu_max=-1.0, integrate="mu", norm=False)
+            k, Pk = fftpower_temp.integrate_fftpower(k_min=k_kmin, k_max=k_kmax, mu_min=-1.0, mu_max=-1.0, integrate="mu", norm=False)
             axes_k[j].loglog(k, Pk, color=colors[i])
-            mu, Pmu = fftpower_temp.intergrate_fftpower(k_min=mu_kmin, k_max=mu_kmax, mu_min=-1.0, mu_max=mu_max, integrate="k", norm=True)
+            mu, Pmu = fftpower_temp.integrate_fftpower(k_min=mu_kmin, k_max=mu_kmax, mu_min=-1.0, mu_max=mu_max, integrate="k", norm=True)
             axes_mu[j].plot(mu, Pmu, color=colors[i])
             Pmus.append(Pmu)
         
