@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""Compute mock/survey 2pCF using MPI-distributed Corrfunc block tasks.
+
+Rank zero reads catalogs, selects cached counts, and writes results. All ranks
+participate in run_tpCF_mock_mpi; nthreads specifies the OpenMP threads per rank.
+"""
+
+import argparse
+from pathlib import Path
+import sys
+from time import perf_counter
+
+import joblib
+import numpy as np
+
+from LSS_python.measurement_weights import attach_weight_metadata, prepare_mock_catalog
+from LSS_python.weight_token import (
+    add_measurement_weight_arguments, resolve_measurement_weights,
+)
+
+
+def positive_int(value):
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "mock_filename",
+        help="Mock data .npy or .pkl plain array: RA, DEC, R (comoving distance), base weight, "
+             "optionally one scalar mark or gn rho plus three gradient components",
+    )
+    parser.add_argument(
+        "random_filename",
+        help="Random .npy or .pkl plain array, shape (M, >=4): RA, DEC, R, weight",
+    )
+    parser.add_argument("nthreads", type=positive_int, help="OpenMP threads per MPI rank")
+    parser.add_argument(
+        "--ngrids", "-ngrids", nargs="+", type=positive_int, required=True,
+        help="One grid division or three axis divisions for temporary 3D Cartesian partitioning; "
+             "smax <= min(block_width) on axes with ngrids > 1",
+    )
+    parser.add_argument(
+        "-smin", type=float, default=1e-6,
+        help="Minimum separation (0 is clamped to 1e-6 for DDsmu_mocks)",
+    )
+    parser.add_argument("-smax", type=float, default=150.0, help="Maximum separation")
+    parser.add_argument("-sbin", type=positive_int, default=150, help="Separation bins")
+    parser.add_argument("-mubin", type=positive_int, default=120, help="Mu bins")
+    parser.add_argument(
+        "--with_weight", "-ww", action="store_true",
+        help="Use data marks after base weight; gn rho and gradients use norm/rho by default",
+    )
+    parser.add_argument(
+        "--set_weight_to_one", "-weightone", action="store_true",
+        help="Force enabled effective data/random weights to one when --with_weight is enabled",
+    )
+    add_measurement_weight_arguments(parser)
+    parser.add_argument(
+        "--xyz_refine_factors", "-refine", nargs=3, type=positive_int,
+        default=[2, 2, 1], help="Corrfunc x/y/z refinement factors",
+    )
+    parser.add_argument(
+        "--tpcf_filename", "-tpcf", default="./tpCF_temp.pkl",
+        help="Output tpCF joblib filename",
+    )
+    parser.add_argument(
+        "--rr_filename", "-rr", default="./RR_temp.pkl",
+        help="Output/cached RR joblib filename",
+    )
+    parser.add_argument(
+        "--only_run_rr", "-only_rr", action="store_true",
+        help="Compute only RR; the mock data filename is unused",
+    )
+    parser.add_argument(
+        "--save_dd_dr", "-savetemp", action="store_true",
+        help="Save DD_temp.pkl and DR_temp.pkl in the working directory",
+    )
+    parser.add_argument(
+        "-force", "-f", action="store_true",
+        help="Recompute tpCF, DD, and DR, retaining RR unless --force_rr is set",
+    )
+    parser.add_argument(
+        "--force_rr", "-forcerr", action="store_true",
+        help="Recompute RR when pair counting runs",
+    )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Show configuration, catalog/block details, per-rank progress, and timings",
+    )
+    return parser
+
+
+def parse_arguments(argv=None):
+    parser = build_parser()
+    arguments = sys.argv[1:] if argv is None else argv
+    if not arguments:
+        parser.print_help()
+        return None
+    args = parser.parse_args(arguments)
+    if len(args.ngrids) not in (1, 3):
+        parser.error("--ngrids requires one or three values")
+    args.ngrids = np.repeat(args.ngrids, 3) if len(args.ngrids) == 1 else np.asarray(args.ngrids)
+    if not np.isfinite(args.smin) or not np.isfinite(args.smax):
+        parser.error("separations must be finite")
+    if args.smin < 0:
+        parser.error("smin must be non-negative")
+    if args.smin == 0.0:
+        args.smin = 1e-6
+    if args.smin >= args.smax:
+        parser.error("separations must satisfy 0 < smin < smax")
+    resolve_measurement_weights(args, parser)
+    return args
+
+
+def print_configuration(args, nranks):
+    """Print the run configuration on root before catalog loading."""
+    print("=" * 60, flush=True)
+    print("MPI mock two-point correlation calculation", flush=True)
+    for name, value in (
+        ("mode", "RR only" if args.only_run_rr else "DD + DR + RR -> tpCF"),
+        ("mock", "unused (RR-only mode)" if args.only_run_rr else args.mock_filename),
+        ("random", args.random_filename),
+        ("MPI ranks", nranks),
+        ("threads per rank", args.nthreads),
+        ("ngrids", args.ngrids.tolist()),
+        ("s range / bins", f"[{args.smin}, {args.smax}] / {args.sbin}"),
+        ("mu bins", args.mubin),
+        ("with_weight", args.with_weight),
+        ("weight_set_one", args.with_weight and args.set_weight_to_one),
+        ("weight_pow", args.weight_pow),
+        ("weight_token", args.weight_token),
+        ("refine factors", args.xyz_refine_factors),
+        ("RR output", args.rr_filename),
+        ("tpCF output", "unused (RR-only mode)" if args.only_run_rr else args.tpcf_filename),
+        ("save DD/DR", args.save_dd_dr),
+        ("force DD/DR/tpCF", args.force),
+        ("force RR", args.force_rr),
+    ):
+        print(f"  {name:20s}: {value}", flush=True)
+    print("=" * 60, flush=True)
+
+
+def _load_plain_array(filename):
+    """Load a plain 2D numeric array from .npy or .pkl (no structured arrays)."""
+    path = Path(filename)
+    if path.suffix == ".npy":
+        source = np.load(path, allow_pickle=False)
+    else:
+        source = joblib.load(path)
+        if isinstance(source, dict):
+            if not source:
+                raise ValueError(f"empty dictionary in {filename}")
+            source = np.column_stack(list(source.values()))
+        else:
+            source = np.asarray(source)
+    if getattr(source.dtype, "names", None) is not None:
+        raise ValueError(f"structured arrays are not supported: {filename}")
+    return source
+
+
+def _prepare_loaded_catalog(source, with_weight=False, weight_set_one=False, *,
+                            weight_pow=1.0, verbose=False, name="catalog",
+                            method="n30", is_data=True, require_mark=False,
+                            divide_by_rho=True):
+    """Apply mock/random weight preparation and log catalog memory details."""
+    started = perf_counter()
+    catalog = prepare_mock_catalog(
+        source, with_weight=with_weight, weight_set_one=weight_set_one,
+        method=method, power=weight_pow, is_data=is_data, require_mark=require_mark,
+        divide_by_rho=divide_by_rho,
+    )
+    if verbose:
+        print(f"       {name} ready: shape={catalog.shape}, dtype={catalog.dtype}, "
+              f"size={catalog.nbytes / 1024**3:.3f} GiB, "
+              f"elapsed={perf_counter() - started:.2f}s", flush=True)
+    return catalog
+
+
+def prepare_run(args):
+    """On root, plan cache reuse and load the inputs needed by the selected mode."""
+    rr_path = Path(args.rr_filename)
+    tpcf_path = Path(args.tpcf_filename)
+    state = {"data": None, "random": None, "counts": {}, "parts": [], "outputs": {}, "skip": None}
+    print("[1/4] Checking cached results ...", flush=True)
+    if args.only_run_rr and rr_path.exists() and not args.force_rr:
+        state["skip"] = f"RR file {rr_path} exists, skipping"
+        return state
+    if not args.only_run_rr and tpcf_path.exists() and not args.force:
+        state["skip"] = f"tpCF result {tpcf_path} exists, skipping"
+        return state
+
+    if args.only_run_rr:
+        state["parts"] = ["RR"]
+        state["outputs"]["RR"] = rr_path
+        if args.verbose:
+            print(f"       RR: {'forced recomputation' if args.force_rr else 'cache missing'} "
+                  f"-> {rr_path}", flush=True)
+    else:
+        for name, filename, force in (
+            ("DD", Path("DD_temp.pkl"), args.force),
+            ("DR", Path("DR_temp.pkl"), args.force),
+            ("RR", rr_path, args.force_rr),
+        ):
+            if filename.exists() and not force:
+                print(f"Loading existing {name} from {filename}", flush=True)
+                started = perf_counter()
+                state["counts"][name] = joblib.load(filename)
+                if args.verbose:
+                    print(f"       {name} cache loaded in {perf_counter() - started:.2f}s", flush=True)
+            else:
+                state["parts"].append(name)
+                if name == "RR" or args.save_dd_dr:
+                    state["outputs"][name] = filename
+                if args.verbose:
+                    print(f"       {name}: {'forced recomputation' if force else 'cache missing'}; "
+                          f"save={state['outputs'].get(name, 'disabled')}", flush=True)
+
+    print("[2/4] Loading catalogs ...", flush=True)
+    if not args.only_run_rr:
+        print(f"       Loading mock from {args.mock_filename} ...", flush=True)
+        mock_source = _load_plain_array(args.mock_filename)
+        state["data"] = _prepare_loaded_catalog(
+            mock_source, args.with_weight, args.set_weight_to_one,
+            weight_pow=args.weight_pow, verbose=args.verbose, name="mock",
+            method=args.weight_method, require_mark=args.weight_method_explicit,
+            divide_by_rho=args.divide_by_rho,
+        )
+    print(f"       Loading random from {args.random_filename} ...", flush=True)
+    random_source = _load_plain_array(args.random_filename)
+    if not args.only_run_rr and random_source.dtype != state["data"].dtype:
+        if args.verbose:
+            print(f"       Converting random dtype {random_source.dtype} -> {state['data'].dtype} ...",
+                  flush=True)
+        random_source = random_source.astype(state["data"].dtype)
+    state["random"] = _prepare_loaded_catalog(
+        random_source, args.with_weight, args.set_weight_to_one,
+        verbose=args.verbose, name="random", is_data=False,
+    )
+    return state
+
+
+def main(argv=None):
+    args = parse_arguments(argv)
+    if args is None:
+        return 0
+    try:
+        from mpi4py import MPI
+    except ImportError:
+        print("Error: cal_MCF_mock_mpi requires mpi4py (install LSS_python[mpi])", file=sys.stderr)
+        return 1
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    run_started = perf_counter()
+    state, control = None, None
+    if rank == 0:
+        try:
+            if args.verbose:
+                print_configuration(args, comm.Get_size())
+            state = prepare_run(args)
+            control = {"error": None, "skip": state["skip"], "parts": state["parts"]}
+        except Exception as exc:
+            control = {"error": f"MPI input preparation failed: {type(exc).__name__}: {exc}"}
+    control = comm.bcast(control, root=0)
+    if control["error"]:
+        if rank == 0:
+            print(control["error"], file=sys.stderr, flush=True)
+        return 1
+    if control["skip"]:
+        if rank == 0:
+            print(control["skip"], flush=True)
+        return 0
+
+    if control["parts"]:
+        # Import collectively before entering the MPI counting function.
+        import_error = None
+        try:
+            from LSS_python.tpcf_mpi import run_tpCF_mock_mpi
+        except Exception as exc:
+            import_error = f"rank {rank}: {type(exc).__name__}: {exc}"
+        errors = [error for error in comm.allgather(import_error) if error]
+        if errors:
+            if rank == 0:
+                print("MPI counting import failed: " + "; ".join(errors), file=sys.stderr, flush=True)
+            return 1
+        if rank == 0:
+            print(f"[3/4] Computing {', '.join(control['parts'])} using {comm.Get_size()} MPI ranks "
+                  f"and {args.nthreads} threads per rank", flush=True)
+        try:
+            result = run_tpCF_mock_mpi(
+                state["data"] if rank == 0 else None,
+                state["random"] if rank == 0 else None,
+                np.linspace(args.smin, args.smax, args.sbin + 1), args.mubin, args.with_weight,
+                run_parts=control["parts"], refine_factors=args.xyz_refine_factors,
+                output_dict=state["outputs"] if rank == 0 else None,
+                nthreads=args.nthreads, verbose=args.verbose,
+                ngrids=args.ngrids, mpicomm=comm,
+            )
+        except Exception as exc:
+            if rank == 0:
+                print(f"MPI counting failed: {exc}", file=sys.stderr, flush=True)
+            return 1
+        if rank == 0:
+            state["counts"].update({name: result[name] for name in control["parts"]})
+    elif rank == 0:
+        print("[3/4] All pair counts already exist, using cached results", flush=True)
+
+    error = None
+    if rank == 0:
+        try:
+            if not args.only_run_rr:
+                from LSS_python.tpcf import cal_tpCF_from_pairs
+
+                started = perf_counter()
+                print("[4/4] Computing tpCF from pair counts...", flush=True)
+                counts = state["counts"]
+                result = cal_tpCF_from_pairs(
+                    counts["DD"], counts["DR"], counts["RR"], state["data"], state["random"],
+                    args.sbin, args.mubin, args.with_weight,
+                )
+                if args.verbose:
+                    print(f"       tpCF calculation finished in {perf_counter() - started:.2f}s", flush=True)
+                filename = Path(args.tpcf_filename)
+                print(f"       Saving tpCF result to {filename} ...", flush=True)
+                started = perf_counter()
+                filename.parent.mkdir(parents=True, exist_ok=True)
+                attach_weight_metadata(result, args)
+                joblib.dump(result, filename)
+                print(f"Saved tpCF result to {filename}", flush=True)
+                if args.verbose:
+                    print(f"       Save finished in {perf_counter() - started:.2f}s", flush=True)
+            else:
+                print(f"[4/4] RR-only result saved to {args.rr_filename}", flush=True)
+            print(f"Done! Total elapsed: {perf_counter() - run_started:.2f}s", flush=True)
+        except Exception as exc:
+            error = f"MPI result processing failed: {type(exc).__name__}: {exc}"
+    error = comm.bcast(error, root=0)
+    if error:
+        if rank == 0:
+            print(error, file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

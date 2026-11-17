@@ -398,7 +398,7 @@ class FFTPower:
         
         return self.power
     
-    def intergrate_fftpower(self, k_min=-1.0, k_max=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", use_fix_mu=False, norm=False, bin_pack=1, remove_last_bin=False, use_modes=False, with_k2=False):
+    def integrate_fftpower(self, k_min=-1.0, k_max=-1.0, mu_min=-1.0, mu_max=-1.0, integrate="k", use_fix_mu=False, norm=False, bin_pack=1, remove_last_bin=False, use_modes=False, with_k2=False):
         from .base import packarray
         if with_k2 and use_modes:
             raise ValueError("with_k2 and use_modes cannot be True at the same time")
@@ -959,7 +959,7 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.0
     For each snapshot in ``snap_ids``, the corresponding ``FFTPower2D`` (or
     ``FFTPower``) objects are optionally converted to P(k, mu) via
     ``cal_pkmu_from_ps_2d``, then integrated over k or mu using either the
-    built-in ``intergrate_fftpower`` method or a user-supplied
+    built-in ``integrate_fftpower`` method or a user-supplied
     ``integrate_func``.  The result is the rolled difference between the two
     snapshot groups.
 
@@ -994,7 +994,7 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.0
     integrate_func : callable, optional
         Custom integration function.  Its first argument must be an
         ``FFTPower2D`` instance.  When ``None`` (default), the built-in
-        ``intergrate_fftpower`` method is used.
+        ``integrate_fftpower`` method is used.
     integrate_kwargs : dict, optional
         Additional keyword arguments passed to ``integrate_func``.  Required
         when ``integrate_func`` is not ``None``.
@@ -1055,7 +1055,7 @@ def get_diff_main(fftpowers_2d_dict, snap_ids, Nmu, k_min=0.3, k_max=0.8, dk=0.0
             else:
                 fftpower_temp = fftpower_2d
             if integrate_func is None:
-                mu_current, Pmu_temp = fftpower_temp.intergrate_fftpower(k_min=k_min, k_max=k_max, mu_min=mu_min, mu_max=mu_max, use_fix_mu=True, norm=True, use_modes=with_modes, with_k2=with_k2, remove_last_bin=remove_last_bin)
+                mu_current, Pmu_temp = fftpower_temp.integrate_fftpower(k_min=k_min, k_max=k_max, mu_min=mu_min, mu_max=mu_max, use_fix_mu=True, norm=True, use_modes=with_modes, with_k2=with_k2, remove_last_bin=remove_last_bin)
             else:
                 if integrate_kwargs is None or not isinstance(integrate_kwargs, dict):
                     raise ValueError(f"integrate_kwargs must be a dict, but got {type(integrate_kwargs)}")

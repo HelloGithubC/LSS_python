@@ -1,4 +1,5 @@
 from Corrfunc.theory import DDsmu
+from Corrfunc.mocks import DDsmu_mocks
 
 
 def call_DDsmu(data1, data2, sedges, mubin, with_weight, boxsize,
@@ -57,3 +58,35 @@ def call_DDsmu(data1, data2, sedges, mubin, with_weight, boxsize,
             )
 
     return result
+
+
+def call_DDsmu_mocks(data1, data2, sedges, mubin,
+                     refine_factors=(2, 2, 1), nthreads=1,
+                     autocorr=True, cosmology=1, verbose=False):
+    """Wrapper for Corrfunc.mocks.DDsmu_mocks using comoving distance in column 2."""
+    x_refine_factor, y_refine_factor, z_refine_factor = refine_factors
+    kwargs = dict(
+        cosmology=cosmology,
+        nthreads=nthreads,
+        binfile=sedges,
+        mu_max=1.0,
+        nmu_bins=mubin,
+        RA1=data1[:, 0],
+        DEC1=data1[:, 1],
+        CZ1=data1[:, 2],
+        weights1=data1[:, 3],
+        weight_type="pair_product",
+        is_comoving_dist=True,
+        verbose=verbose,
+        xbin_refine_factor=x_refine_factor,
+        ybin_refine_factor=y_refine_factor,
+        zbin_refine_factor=z_refine_factor,
+    )
+    if not autocorr:
+        kwargs.update(
+            RA2=data2[:, 0],
+            DEC2=data2[:, 1],
+            CZ2=data2[:, 2],
+            weights2=data2[:, 3],
+        )
+    return DDsmu_mocks(autocorr, **kwargs)

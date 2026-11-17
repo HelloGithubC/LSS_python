@@ -17,6 +17,7 @@ from time import perf_counter
 import joblib
 import numpy as np
 
+from .corrfunc import call_DDsmu_mocks
 from .pair_counting import (
     PAIR_TYPES,
     PairCounts,
@@ -28,7 +29,12 @@ from .pair_counting import (
 )
 
 
-__all__ = ["run_tpCF_mpi", "run_jackknife_tpCF_mpi", "run_subsample_tpCF_mpi"]
+__all__ = [
+    "run_tpCF_mpi",
+    "run_tpCF_mock_mpi",
+    "run_jackknife_tpCF_mpi",
+    "run_subsample_tpCF_mpi",
+]
 
 _TRANSFER_CHUNK_BYTES = 256 * 1024**2
 
@@ -220,7 +226,7 @@ def _assign_tasks(tasks, data_blocks, random_blocks, size):
     return packages
 
 
-def _count_local_tasks(tasks, data_blocks, random_blocks, config, rank):
+def _count_local_tasks(tasks, data_blocks, random_blocks, config, rank, *, task_counter=None):
     """Yield unmodified task results with progress at task boundaries."""
     total = len(tasks)
     started = last_report = perf_counter()
@@ -238,11 +244,14 @@ def _count_local_tasks(tasks, data_blocks, random_blocks, config, rank):
                  f"blocks=({task.first}, {task.second}), "
                  f"points=({len(first_blocks[task.first]):,}, {len(second_blocks[task.second]):,})",
                  verbose, rank)
-        result = count_pair_task(
-            task, data_blocks, random_blocks, config["sedges"], config["mubin"],
-            config["with_weight"], config["boxsize"], nthreads=config["nthreads"],
-            refine_factors=config["refine_factors"],
-        )
+        if task_counter is None:
+            result = count_pair_task(
+                task, data_blocks, random_blocks, config["sedges"], config["mubin"],
+                config["with_weight"], config["boxsize"], nthreads=config["nthreads"],
+                refine_factors=config["refine_factors"],
+            )
+        else:
+            result = task_counter(task, data_blocks, random_blocks, config)
         now = perf_counter()
         if verbose and (report or completed == total or now - last_report >= 30.0):
             _log(f"Task progress {completed:,}/{total:,} ({100.0 * completed / total:.1f}%): "
@@ -254,10 +263,9 @@ def _count_local_tasks(tasks, data_blocks, random_blocks, config, rank):
     _log(f"All {total:,} local tasks counted.", verbose, rank)
 
 
-def _prepare_work(data, random, sedges, mubin, with_weight, run_parts,
-                  refine_factors, output_dict, nthreads, verbose, boxsize,
-                  ngrids, size, broadcast_result, root=0):
-    """Validate root inputs and prepare metadata plus per-rank block packages."""
+def _validate_common_inputs(sedges, mubin, with_weight, run_parts,
+                            refine_factors, nthreads, ngrids, *, positive_smin=False):
+    """Validate binning, thread, refinement, and grid parameters."""
     parts = _run_parts(run_parts)
     _positive_integer(mubin, "mubin")
     _positive_integer(nthreads, "nthreads")
@@ -268,20 +276,56 @@ def _prepare_work(data, random, sedges, mubin, with_weight, run_parts,
     for factor in refine_factors:
         _positive_integer(factor, "refine_factors")
     edges = np.asarray(sedges, dtype=np.float64)
+    invalid_start = edges[0] <= 0 if positive_smin else edges[0] < 0
     if (edges.ndim != 1 or len(edges) < 2 or np.any(~np.isfinite(edges))
-            or edges[0] < 0 or np.any(np.diff(edges) <= 0)):
-        raise ValueError("sedges must be finite, non-negative, and strictly increasing")
-    box = np.asarray(boxsize, dtype=np.float64)
-    if box.ndim == 0:
-        box = np.repeat(box, 3)
-    if box.shape != (3,) or np.any(~np.isfinite(box)) or np.any(box <= 0):
-        raise ValueError("boxsize must contain one or three finite positive lengths")
+            or invalid_start or np.any(np.diff(edges) <= 0)):
+        bound = "strictly positive" if positive_smin else "non-negative"
+        raise ValueError(f"sedges must be finite, {bound}, and strictly increasing")
     grid = np.asarray(ngrids)
     if grid.ndim == 0:
         grid = np.repeat(grid, 3)
     if (grid.shape != (3,) or not np.issubdtype(grid.dtype, np.integer)
             or np.any(grid <= 0)):
         raise ValueError("ngrids must contain one or three positive integers")
+    return parts, edges, grid
+
+
+def _build_block_packages(data_blocks, random_blocks, grid, parts, size, verbose, root):
+    """Build internal/adjacent block tasks and assign balanced per-rank packages."""
+    _log("Building internal and neighboring block-pair tasks ...", verbose, root)
+    tasks = tuple(task for task in build_pair_tasks(data_blocks, random_blocks, grid)
+                  if task.pair_type in parts)
+    if verbose:
+        for name in parts:
+            selected = [task for task in tasks if task.pair_type == name]
+            internal = sum(task.first == task.second for task in selected)
+            _log(f"{name} tasks: internal={internal:,}, cross-block={len(selected) - internal:,}, "
+                 f"total={len(selected):,}", verbose, root)
+    _log(f"Assigning {len(tasks):,} tasks to {size} ranks ...", verbose, root)
+    packages = _assign_tasks(tasks, data_blocks, random_blocks, size)
+    if verbose:
+        for rank, (rank_tasks, rank_data, rank_random) in enumerate(packages):
+            breakdown = ", ".join(f"{name}={sum(task.pair_type == name for task in rank_tasks):,}"
+                                  for name in parts)
+            payload = sum(block.nbytes for blocks in (rank_data, rank_random) for block in blocks.values())
+            _log(f"Assignment for rank {rank}: tasks={len(rank_tasks):,} ({breakdown}), "
+                 f"data/random blocks={len(rank_data):,}/{len(rank_random):,}, "
+                 f"catalog payload={payload / 1024**3:.3f} GiB", verbose, root)
+    return packages
+
+
+def _prepare_work(data, random, sedges, mubin, with_weight, run_parts,
+                  refine_factors, output_dict, nthreads, verbose, boxsize,
+                  ngrids, size, broadcast_result, root=0):
+    """Validate root inputs and prepare metadata plus per-rank block packages."""
+    parts, edges, grid = _validate_common_inputs(
+        sedges, mubin, with_weight, run_parts, refine_factors, nthreads, ngrids,
+    )
+    box = np.asarray(boxsize, dtype=np.float64)
+    if box.ndim == 0:
+        box = np.repeat(box, 3)
+    if box.shape != (3,) or np.any(~np.isfinite(box)) or np.any(box <= 0):
+        raise ValueError("boxsize must contain one or three finite positive lengths")
     if edges[-1] > np.min(box / grid):
         raise ValueError("smax must not exceed the smallest block width")
 
@@ -318,25 +362,7 @@ def _prepare_work(data, random, sedges, mubin, with_weight, run_parts,
                  f"points per block min/mean/max="
                  f"{populations.min():,}/{populations.mean():.1f}/{populations.max():,}", verbose, root)
     data_blocks, random_blocks = catalogs
-    _log("Building internal and neighboring block-pair tasks ...", verbose, root)
-    tasks = tuple(task for task in build_pair_tasks(data_blocks, random_blocks, grid)
-                  if task.pair_type in parts)
-    if verbose:
-        for name in parts:
-            selected = [task for task in tasks if task.pair_type == name]
-            internal = sum(task.first == task.second for task in selected)
-            _log(f"{name} tasks: internal={internal:,}, cross-block={len(selected) - internal:,}, "
-                 f"total={len(selected):,}", verbose, root)
-    _log(f"Assigning {len(tasks):,} tasks to {size} ranks ...", verbose, root)
-    packages = _assign_tasks(tasks, data_blocks, random_blocks, size)
-    if verbose:
-        for rank, (rank_tasks, rank_data, rank_random) in enumerate(packages):
-            breakdown = ", ".join(f"{name}={sum(task.pair_type == name for task in rank_tasks):,}"
-                                  for name in parts)
-            payload = sum(block.nbytes for blocks in (rank_data, rank_random) for block in blocks.values())
-            _log(f"Assignment for rank {rank}: tasks={len(rank_tasks):,} ({breakdown}), "
-                 f"data/random blocks={len(rank_data):,}/{len(rank_random):,}, "
-                 f"catalog payload={payload / 1024**3:.3f} GiB", verbose, root)
+    packages = _build_block_packages(data_blocks, random_blocks, grid, parts, size, verbose, root)
     outputs = {name: None if output_dict is None else output_dict.get(name) for name in parts}
     config = {
         "sedges": edges, "mubin": int(mubin), "with_weight": bool(with_weight),
@@ -347,18 +373,203 @@ def _prepare_work(data, random, sedges, mubin, with_weight, run_parts,
     return config, packages
 
 
-def _corrfunc_result(counts):
-    """Restore the default DDsmu structured output from a global raw histogram."""
+def _prepare_mock_catalogs(mock_catalog, random_catalog, need_data, need_random, with_weight):
+    """Validate (RA, DEC, R, weight, ...) catalogs and align float32/float64 precision."""
+    if need_data and mock_catalog is None:
+        raise ValueError("requested DD/DR requires mock_catalog on root")
+    if need_random and random_catalog is None:
+        raise ValueError("requested DR/RR requires random_catalog on root")
+
+    sources = {}
+    for label, catalog, needed in (("mock", mock_catalog, need_data), ("random", random_catalog, need_random)):
+        if not needed:
+            continue
+        arr = np.asarray(catalog)
+        if arr.dtype.names is not None:
+            raise ValueError(f"{label}_catalog must be a plain numeric array, not a structured array")
+        if arr.ndim != 2 or arr.shape[1] < 4:
+            raise ValueError(f"{label}_catalog must have shape (N, >=4)")
+        if np.iscomplexobj(arr) or arr.dtype.hasobject:
+            raise ValueError(f"{label}_catalog coordinates and weights must be real-valued")
+        sources[label] = arr
+
+    dtype = np.result_type(*(arr.dtype for arr in sources.values()))
+    if dtype not in (np.dtype("float32"), np.dtype("float64")):
+        dtype = np.dtype("float64")
+
+    prepared = {"mock": None, "random": None}
+    for label, arr in sources.items():
+        coords = np.array(arr[:, :3], dtype=dtype, copy=True)
+        if with_weight and arr.shape[1] > 4:
+            weights = np.prod(np.asarray(arr[:, 3:], dtype=dtype), axis=1, dtype=dtype)
+        else:
+            weights = np.asarray(arr[:, 3], dtype=dtype)
+        if not np.isfinite(coords).all() or not np.isfinite(weights).all():
+            raise ValueError(f"{label}_catalog coordinates and weights must be finite")
+        # Wrap RA to [0, 360] on root before partitioning so Corrfunc's per-call
+        # fix_ra_dec cannot shift individual blocks inconsistently.
+        if len(coords) > 0 and (np.any(coords[:, 0] < 0.0) or np.any(coords[:, 0] > 360.0)):
+            coords[:, 0] = np.mod(coords[:, 0], dtype.type(360.0))
+        prepared[label] = np.ascontiguousarray(np.column_stack((coords, weights)))
+    return prepared["mock"], prepared["random"]
+
+
+def _spherical_to_cartesian(catalog):
+    """Convert (RA[deg], DEC[deg], R) to float64 Cartesian positions for partitioning."""
+    if len(catalog) == 0:
+        return np.empty((0, 3), dtype=np.float64)
+    ra = np.deg2rad(catalog[:, 0].astype(np.float64))
+    dec = np.deg2rad(catalog[:, 1].astype(np.float64))
+    r = catalog[:, 2].astype(np.float64)
+    cos_dec = np.cos(dec)
+    return np.column_stack((r * cos_dec * np.cos(ra), r * cos_dec * np.sin(ra), r * np.sin(dec)))
+
+
+def _mock_grid_geometry(xyz_catalogs, grid, smax):
+    """Compute joint Cartesian bounding box and cell widths, checking smax invariant."""
+    nonempty = [xyz for xyz in xyz_catalogs if len(xyz) > 0]
+    if not nonempty:
+        return np.zeros(3, dtype=np.float64), np.ones(3, dtype=np.float64), np.zeros(3, dtype=np.float64)
+    mins = np.min([xyz.min(axis=0) for xyz in nonempty], axis=0)
+    maxs = np.max([xyz.max(axis=0) for xyz in nonempty], axis=0)
+    spans = maxs - mins
+    for axis in range(3):
+        if grid[axis] > 1 and spans[axis] / grid[axis] < smax:
+            raise ValueError("smax must not exceed the smallest block width")
+    widths = np.where(spans > 0, spans / grid, 1.0)
+    return mins, widths, spans
+
+
+def _split_mock_into_blocks(catalog, xyz, mins, widths, grid):
+    """Partition original (RA, DEC, R, weight) rows using temporary Cartesian cells."""
+    shape = tuple(int(n) for n in grid)
+    nblocks = int(np.prod(grid))
+    if len(catalog) == 0:
+        empty = np.empty((0, 4), dtype=catalog.dtype)
+        return (empty,) * nblocks
+    cells = np.floor((xyz - mins) / widths).astype(np.int64)
+    cells = np.clip(cells, 0, grid - 1)
+    labels = np.ravel_multi_index(cells.T, shape)
+    order = np.argsort(labels, kind="stable")
+    ordered = np.ascontiguousarray(catalog[order])
+    offsets = np.concatenate(([0], np.cumsum(np.bincount(labels, minlength=nblocks))))
+    return tuple(ordered[start:stop] for start, stop in zip(offsets[:-1], offsets[1:]))
+
+
+def _is_degenerate_mock_task(data1, data2, autocorr):
+    """Return True when a task has zero positive-separation pairs due to emptiness or coincidence."""
+    if len(data1) == 0 or (autocorr and len(data1) < 2) or (not autocorr and len(data2) == 0):
+        return True
+    first = data1[0, :3]
+    if len(data1) > 1 and np.array_equal(data1[1, :3], first) and np.all(data1[:, :3] == first):
+        if autocorr:
+            return True
+        if np.array_equal(data2[0, :3], first) and np.all(data2[:, :3] == first):
+            return True
+    elif len(data1) == 1 and not autocorr:
+        if np.array_equal(data2[0, :3], first) and np.all(data2[:, :3] == first):
+            return True
+    if data1[0, 2] == 0.0 and np.all(data1[:, 2] == 0.0):
+        return autocorr or np.all(data2[:, 2] == 0.0)
+    return False
+
+
+def _count_mock_pair_task(task, data_blocks, random_blocks, config):
+    """Count one mock block or adjacent block pair using Corrfunc.mocks.DDsmu_mocks."""
+    first_blocks = random_blocks if task.pair_type == "RR" else data_blocks
+    second_blocks = data_blocks if task.pair_type == "DD" else random_blocks
+    data1 = first_blocks[task.first]
+    data2 = None if task.autocorr else second_blocks[task.second]
+    edges = config["sedges"]
+    mubin = config["mubin"]
+    muedges = np.linspace(0.0, 1.0, mubin + 1)
+    shape = (len(edges) - 1, mubin)
+    if _is_degenerate_mock_task(data1, data2, task.autocorr):
+        return task, PairCounts(
+            np.zeros(shape, dtype=np.uint64), np.zeros(shape, dtype=np.float64),
+            edges, muedges, config["with_weight"],
+        )
+    raw = call_DDsmu_mocks(
+        data1, data2, edges, mubin,
+        refine_factors=config["refine_factors"], nthreads=config["nthreads"],
+        autocorr=task.autocorr, cosmology=config["cosmology"],
+    )
+    npairs = raw["npairs"].reshape(shape)
+    wpairs = npairs.astype(np.float64) * raw["weightavg"].reshape(shape)
+    return task, PairCounts(npairs, wpairs, edges, muedges, config["with_weight"])
+
+
+def _prepare_mock_work(mock_catalog, random_catalog, sedges, mubin, with_weight,
+                       run_parts, refine_factors, output_dict, nthreads,
+                       verbose, ngrids, cosmology, size, broadcast_result, root=0):
+    """Validate root mock inputs and prepare temporary 3D Cartesian block packages."""
+    parts, edges, grid = _validate_common_inputs(
+        sedges, mubin, with_weight, run_parts, refine_factors, nthreads, ngrids,
+        positive_smin=True,
+    )
+    _positive_integer(cosmology, "cosmology")
+    need_data = "DD" in parts or "DR" in parts
+    need_random = "RR" in parts or "DR" in parts
+    _log("Validating mock catalog inputs and preparing columns/precision ...", verbose, root)
+    mock_catalog, random_catalog = _prepare_mock_catalogs(
+        mock_catalog, random_catalog, need_data, need_random, with_weight,
+    )
+    mock_xyz = _spherical_to_cartesian(mock_catalog) if need_data else None
+    random_xyz = _spherical_to_cartesian(random_catalog) if need_random else None
+    mins, widths, spans = _mock_grid_geometry(
+        [xyz for xyz in (mock_xyz, random_xyz) if xyz is not None],
+        grid, edges[-1],
+    )
+    nblocks = int(np.prod(grid))
+    _log(f"Mock Cartesian partition: grid={grid.tolist()}, blocks={nblocks:,}, "
+         f"mins={mins.tolist()}, spans={spans.tolist()}, "
+         f"block widths={widths.tolist()}, smax={edges[-1]:g}", verbose, root)
+
+    empty = np.empty((0, 4), dtype=np.float64)
+    blocks_by_role = []
+    for label, catalog, xyz, needed in (
+        ("mock", mock_catalog, mock_xyz, need_data),
+        ("random", random_catalog, random_xyz, need_random),
+    ):
+        if not needed:
+            blocks_by_role.append((empty,) * nblocks)
+            continue
+        _log(f"Splitting {label}: {len(catalog):,} points, dtype={catalog.dtype} ...", verbose, root)
+        started = perf_counter()
+        blocks = _split_mock_into_blocks(catalog, xyz, mins, widths, grid)
+        blocks_by_role.append(blocks)
+        if verbose:
+            populations = np.array([len(block) for block in blocks])
+            _log(f"{label} split complete in {perf_counter() - started:.2f}s: "
+                 f"nonempty blocks={np.count_nonzero(populations):,}/{nblocks:,}, "
+                 f"points per block min/mean/max="
+                 f"{populations.min():,}/{populations.mean():.1f}/{populations.max():,}", verbose, root)
+    data_blocks, random_blocks = blocks_by_role
+    packages = _build_block_packages(data_blocks, random_blocks, grid, parts, size, verbose, root)
+    outputs = {name: None if output_dict is None else output_dict.get(name) for name in parts}
+    config = {
+        "sedges": edges, "mubin": int(mubin), "with_weight": bool(with_weight),
+        "parts": parts, "refine_factors": tuple(refine_factors),
+        "nthreads": int(nthreads), "cosmology": int(cosmology),
+        "verbose": bool(verbose), "outputs": outputs,
+        "broadcast_result": bool(broadcast_result),
+    }
+    return config, packages
+
+
+def _corrfunc_result(counts, *, mu_field="mu_max", populate_weightavg=None):
+    """Restore a Corrfunc DDsmu/DDsmu_mocks structured output from a global raw histogram."""
     result = np.zeros(counts.npairs.size, dtype=[
         ("smin", np.float64), ("smax", np.float64), ("savg", np.float64),
-        ("mu_max", np.float64), ("npairs", np.uint64), ("weightavg", np.float64),
+        (mu_field, np.float64), ("npairs", np.uint64), ("weightavg", np.float64),
     ])
     mubin = counts.npairs.shape[1]
     result["smin"] = np.repeat(counts.sedges[:-1], mubin)
     result["smax"] = np.repeat(counts.sedges[1:], mubin)
-    result["mu_max"] = np.tile(np.arange(1, mubin + 1) * (1.0 / mubin), len(counts.sedges) - 1)
+    result[mu_field] = np.tile(np.arange(1, mubin + 1) * (1.0 / mubin), len(counts.sedges) - 1)
     result["npairs"] = counts.npairs.ravel()
-    if counts.with_weight:
+    use_weights = counts.with_weight if populate_weightavg is None else populate_weightavg
+    if use_weights:
         np.divide(counts.wpairs.ravel(), result["npairs"], out=result["weightavg"],
                   where=result["npairs"] != 0)
     return result
@@ -368,35 +579,13 @@ def _failure(exc):
     return f"{type(exc).__name__}: {exc}"
 
 
-def run_tpCF_mpi(data_catalog, random_catalog, sedges, mubin, with_weight,
-                 run_parts=("all",), refine_factors=(2, 2, 1), output_dict=None,
-                 nthreads=1, verbose=False, *, boxsize, ngrids,
-                 mpicomm=None, root=0, broadcast_result=False):
-    """Collectively compute run_tpCF-compatible DD/DR/RR using MPI block tasks.
-
-    All ranks must call this function with the same communicator and root. Other
-    configuration and catalogs are taken only from root; non-root catalogs may
-    be None. boxsize and ngrids describe the non-periodic [0, boxsize] partition,
-    with smax <= min(boxsize / ngrids). nthreads is the OpenMP count per rank.
-
-    Requested entries are default Corrfunc structured arrays; unused entries are
-    None. Only root returns the dictionary, unless broadcast_result=True. Other
-    ranks otherwise return None. Only root writes output_dict files. Root input,
-    Python worker, and output exceptions are propagated to every rank before the
-    next collective phase. Fatal native/MPI failures remain MPI runtime errors.
-
-    Raw pair weights are reduced before constructing weightavg. There is no
-    normalization, local all-zero fallback, or special statistical correction;
-    existing consumers retain their complete-result weight compatibility rule.
-    Verbose logs describe preparation, distribution, per-rank task progress,
-    reduction, and output. Progress is reported at completed task boundaries.
-    Catalogs and optional result broadcasts use direct buffer messages of at
-    most 256 MiB; task/layout metadata is sent separately using pickle.
-    """
+def _execute_tpCF_mpi(caller_name, prepare_fn, task_counter, *, mu_field="mu_max",
+                      populate_weightavg=None, verbose=False, mpicomm=None, root=0):
+    """Shared collective MPI block-task execution, reduction, saving, and optional broadcast."""
     try:
         from mpi4py import MPI
     except ImportError as exc:
-        raise ImportError("run_tpCF_mpi requires the optional mpi4py dependency") from exc
+        raise ImportError(f"{caller_name} requires the optional mpi4py dependency") from exc
     comm = MPI.COMM_WORLD if mpicomm is None else mpicomm
     rank, size = comm.Get_rank(), comm.Get_size()
     if (not isinstance(root, (int, np.integer)) or isinstance(root, (bool, np.bool_))
@@ -408,11 +597,7 @@ def run_tpCF_mpi(data_catalog, random_catalog, sedges, mubin, with_weight,
         try:
             prepare_started = perf_counter()
             _log("Preparing MPI block counting ...", verbose, root)
-            config, packages = _prepare_work(
-                data_catalog, random_catalog, sedges, mubin, with_weight, run_parts,
-                refine_factors, output_dict, nthreads, verbose, boxsize, ngrids,
-                size, broadcast_result, root=root,
-            )
+            config, packages = prepare_fn(size)
             if config["verbose"]:
                 _log(f"Preparation finished in {perf_counter() - prepare_started:.2f}s; "
                      f"tasks per rank={[len(package[0]) for package in packages]}; "
@@ -437,7 +622,8 @@ def run_tpCF_mpi(data_catalog, random_catalog, sedges, mubin, with_weight,
     try:
         local_started = perf_counter()
         local = sum_pair_counts(
-            _count_local_tasks(tasks, data_blocks, random_blocks, config, rank),
+            _count_local_tasks(tasks, data_blocks, random_blocks, config, rank,
+                               task_counter=task_counter),
             config["sedges"], config["mubin"], config["with_weight"],
         )
         _log(f"Local counting and merge finished in {perf_counter() - local_started:.2f}s; "
@@ -471,7 +657,9 @@ def run_tpCF_mpi(data_catalog, random_catalog, sedges, mubin, with_weight,
                     continue
                 counts = PairCounts(global_npairs[i], global_wpairs[i], config["sedges"],
                                     muedges, config["with_weight"])
-                result[name] = _corrfunc_result(counts)
+                result[name] = _corrfunc_result(
+                    counts, mu_field=mu_field, populate_weightavg=populate_weightavg,
+                )
                 filename = config["outputs"][name]
                 if filename is not None:
                     save_started = perf_counter()
@@ -488,6 +676,82 @@ def run_tpCF_mpi(data_catalog, random_catalog, sedges, mubin, with_weight,
     if config["broadcast_result"]:
         return _broadcast_result(comm, result, root)
     return result
+
+
+def run_tpCF_mpi(data_catalog, random_catalog, sedges, mubin, with_weight,
+                 run_parts=("all",), refine_factors=(2, 2, 1), output_dict=None,
+                 nthreads=1, verbose=False, *, boxsize, ngrids,
+                 mpicomm=None, root=0, broadcast_result=False):
+    """Collectively compute run_tpCF-compatible DD/DR/RR using MPI block tasks.
+
+    All ranks must call this function with the same communicator and root. Other
+    configuration and catalogs are taken only from root; non-root catalogs may
+    be None. boxsize and ngrids describe the non-periodic [0, boxsize] partition,
+    with smax <= min(boxsize / ngrids). nthreads is the OpenMP count per rank.
+
+    Requested entries are default Corrfunc structured arrays; unused entries are
+    None. Only root returns the dictionary, unless broadcast_result=True. Other
+    ranks otherwise return None. Only root writes output_dict files. Root input,
+    Python worker, and output exceptions are propagated to every rank before the
+    next collective phase. Fatal native/MPI failures remain MPI runtime errors.
+
+    Raw pair weights are reduced before constructing weightavg. There is no
+    normalization, local all-zero fallback, or special statistical correction;
+    existing consumers retain their complete-result weight compatibility rule.
+    Verbose logs describe preparation, distribution, per-rank task progress,
+    reduction, and output. Progress is reported at completed task boundaries.
+    Catalogs and optional result broadcasts use direct buffer messages of at
+    most 256 MiB; task/layout metadata is sent separately using pickle.
+    """
+    return _execute_tpCF_mpi(
+        "run_tpCF_mpi",
+        lambda size: _prepare_work(
+            data_catalog, random_catalog, sedges, mubin, with_weight, run_parts,
+            refine_factors, output_dict, nthreads, verbose, boxsize, ngrids,
+            size, broadcast_result, root=root,
+        ),
+        None,
+        mu_field="mu_max",
+        populate_weightavg=None,
+        verbose=verbose,
+        mpicomm=mpicomm,
+        root=root,
+    )
+
+
+def run_tpCF_mock_mpi(mock_catalog, random_catalog, sedges, mubin, with_weight,
+                      run_parts=("all",), refine_factors=(2, 2, 1), output_dict=None,
+                      nthreads=1, verbose=False, *, ngrids, cosmology=1,
+                      mpicomm=None, root=0, broadcast_result=False):
+    """Collectively compute run_tpCF_mock-compatible DD/DR/RR using MPI block tasks.
+
+    All ranks must call this function with the same communicator and root. Other
+    configuration and catalogs (plain (N, >=4) arrays of RA[deg], DEC[deg],
+    R[Mpc/h], base_weight, ...) are taken only from root; non-root catalogs may
+    be None. Root temporarily maps (RA, DEC, R) into 3D Cartesian coordinates to
+    partition the joint bounding box by ngrids (requiring smax <= min(block_width)
+    on axes with ngrids > 1) and prunes pairs outside adjacent blocks, while
+    keeping original (RA, DEC, R, weight) rows in blocks and calling
+    Corrfunc.mocks.DDsmu_mocks (is_comoving_dist=True) per task.
+
+    Matches run_tpCF_mock behavior: base weights in column 3 are always passed
+    to DDsmu_mocks (and weightavg is populated) even when with_weight=False,
+    and returned structured arrays use the 'mumax' field name.
+    """
+    return _execute_tpCF_mpi(
+        "run_tpCF_mock_mpi",
+        lambda size: _prepare_mock_work(
+            mock_catalog, random_catalog, sedges, mubin, with_weight, run_parts,
+            refine_factors, output_dict, nthreads, verbose, ngrids, cosmology,
+            size, broadcast_result, root=root,
+        ),
+        _count_mock_pair_task,
+        mu_field="mumax",
+        populate_weightavg=True,
+        verbose=verbose,
+        mpicomm=mpicomm,
+        root=root,
+    )
 
 
 def _gather_array_maps(comm, local, root):
