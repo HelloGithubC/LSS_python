@@ -34,11 +34,11 @@ def assert_state_equal(expected, actual):
             assert result == value, name
 
 
-@pytest.mark.parametrize("kind", ["jk", "subsample"])
+@pytest.mark.parametrize("kind", ["jk", "subsample", "normal"])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 def test_round_trip_preserves_sample_state_and_results(tmp_path, kind, dtype):
     a, b = make_sample(0, dtype), make_sample(1, dtype)
-    if kind == "jk":
+    if kind in ("jk", "normal"):
         b.RR = b.RR * 2
         b.RRnorm = 8.0
     a.get_xis()  # Exercise a populated cache; b retains an empty cache.

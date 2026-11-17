@@ -77,7 +77,7 @@ def migrate(path, covariance_type):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", metavar="PATH", help="legacy covariance joblib file to replace")
-    parser.add_argument("--covariance-type", required=True, choices=("jk", "subsample"),
+    parser.add_argument("--covariance-type", required=True, choices=("jk", "subsample", "normal"),
                         help="type of covariance samples in the input file")
     if argv is None:
         argv = sys.argv[1:]

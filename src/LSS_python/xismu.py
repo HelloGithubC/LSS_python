@@ -1018,9 +1018,10 @@ class XismuCovarianceIO:
     sources. ``load`` accepts only the compact covariance format.
 
     ``save(filename, samples, covariance_type)`` accepts a one-dimensional
-    sequence of xismu objects or None, and ``covariance_type`` is ``"jk"`` or
-    ``"subsample"``. Existing files are replaced only with ``overwrite=True``.
-    ``load(filename)`` returns a one-dimensional numpy object array.
+    sequence of xismu objects or None, and ``covariance_type`` is ``"jk"``,
+    ``"subsample"``, or ``"normal"``. Existing files are replaced only with
+    ``overwrite=True``. ``load(filename)`` returns a one-dimensional numpy
+    object array.
     """
 
     _FORMAT = "LSS_python.xismu_covariance"
@@ -1037,8 +1038,8 @@ class XismuCovarianceIO:
 
     @classmethod
     def _validate_samples(cls, samples, covariance_type):
-        if covariance_type not in ("jk", "subsample"):
-            raise ValueError('covariance_type must be "jk" or "subsample"')
+        if covariance_type not in ("jk", "subsample", "normal"):
+            raise ValueError('covariance_type must be "jk", "subsample", or "normal"')
         if not isinstance(samples, (list, tuple, np.ndarray)):
             raise TypeError("samples must be a one-dimensional sequence")
         if isinstance(samples, np.ndarray) and samples.ndim != 1:
@@ -1046,6 +1047,8 @@ class XismuCovarianceIO:
 
         reference = None
         states = []
+        unique_rrs = []
+        unique_rr_bytes = []
         for index, sample in enumerate(samples):
             if sample is None:
                 states.append(None)
@@ -1081,15 +1084,29 @@ class XismuCovarianceIO:
             del state["S"], state["Mu"]
             if covariance_type == "subsample":
                 del state["RR"]
+            elif covariance_type == "normal":
+                rr_arr = arrays["RR"]
+                rr_bytes = np.ascontiguousarray(rr_arr).tobytes()
+                match_idx = None
+                for idx, (u_rr, u_bytes) in enumerate(zip(unique_rrs, unique_rr_bytes)):
+                    if rr_arr.shape == u_rr.shape and rr_arr.dtype == u_rr.dtype and rr_bytes == u_bytes:
+                        match_idx = idx
+                        break
+                if match_idx is None:
+                    match_idx = len(unique_rrs)
+                    unique_rrs.append(rr_arr)
+                    unique_rr_bytes.append(rr_bytes)
+                state["rr_index"] = match_idx
+                del state["RR"]
             states.append(state)
         if reference is None:
             raise ValueError("samples must contain at least one xismu object")
-        return reference, states
+        return reference, states, unique_rrs
 
     @classmethod
     def save(cls, filename, samples, covariance_type, *, overwrite=False):
         """Save samples, atomically replacing an existing file when requested."""
-        reference, states = cls._validate_samples(samples, covariance_type)
+        reference, states, unique_rrs = cls._validate_samples(samples, covariance_type)
         payload = {
             "format": cls._FORMAT,
             "version": cls._VERSION,
@@ -1100,6 +1117,8 @@ class XismuCovarianceIO:
         }
         if covariance_type == "subsample":
             payload["RR"] = reference.RR
+        elif covariance_type == "normal":
+            payload["RRs"] = unique_rrs
         if overwrite:
             destination = os.path.realpath(os.fspath(filename))
             directory = os.path.dirname(destination)
@@ -1137,10 +1156,14 @@ class XismuCovarianceIO:
             raise ValueError(f"unsupported covariance file version: {payload.get('version')!r}")
         covariance_type = payload.get("covariance_type")
         states = payload.get("samples")
-        if (covariance_type not in ("jk", "subsample") or not isinstance(states, list)
+        rrs_payload = payload.get("RRs")
+        if (covariance_type not in ("jk", "subsample", "normal") or not isinstance(states, list)
                 or not isinstance(payload.get("S"), np.ndarray)
                 or not isinstance(payload.get("Mu"), np.ndarray)
-                or (covariance_type == "subsample" and not isinstance(payload.get("RR"), np.ndarray))):
+                or (covariance_type == "subsample" and not isinstance(payload.get("RR"), np.ndarray))
+                or (covariance_type == "normal" and (not isinstance(rrs_payload, (list, tuple))
+                                                    or len(rrs_payload) == 0
+                                                    or not all(isinstance(a, np.ndarray) for a in rrs_payload)))):
             raise ValueError("invalid covariance file contents")
         result = np.empty(len(states), dtype=object)
         for index, state in enumerate(states):
@@ -1149,14 +1172,27 @@ class XismuCovarianceIO:
                 continue
             if not isinstance(state, dict) or any(key in state for key in ("S", "Mu")):
                 raise ValueError(f"invalid state for sample {index}")
-            if covariance_type == "subsample" and "RR" in state:
+            if covariance_type in ("subsample", "normal") and "RR" in state:
                 raise ValueError(f"invalid RR for sample {index}")
+            if covariance_type == "normal" and "rr_index" not in state:
+                raise ValueError(f"missing rr_index for sample {index}")
+
+            state = dict(state)
+            rr_idx = None
+            if covariance_type == "normal":
+                rr_idx = state.pop("rr_index")
+                if (not isinstance(rr_idx, (int, np.integer)) or rr_idx < 0
+                        or rr_idx >= len(rrs_payload)):
+                    raise ValueError(f"invalid rr_index for sample {index}")
+
             obj = xismu.__new__(xismu)
             obj.__dict__.update(state)
             obj.S = payload["S"].copy()
             obj.Mu = payload["Mu"].copy()
             if covariance_type == "subsample":
                 obj.RR = payload["RR"].copy()
+            elif covariance_type == "normal":
+                obj.RR = rrs_payload[rr_idx].copy()
             result[index] = obj
         try:
             cls._validate_samples(result, covariance_type)
