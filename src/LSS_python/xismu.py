@@ -30,6 +30,45 @@ def meannorm(X, axis=0):
     mean_value = np.mean(X, axis=axis)
     return 1 + (X - mean_value) / np.abs(mean_value)
 
+
+def _validate_profile_normalization(norm_method, eta):
+    if norm_method is not None and (
+        not isinstance(norm_method, str) or norm_method not in ("regu", "regu_hard")
+    ):
+        raise ValueError("norm_method must be None, 'regu', or 'regu_hard'")
+    if (
+        not np.isscalar(eta) or not np.isrealobj(eta)
+        or not isinstance(eta, (int, float, np.number))
+        or not np.isfinite(eta) or eta < 0
+    ):
+        raise ValueError("eta must be a finite non-negative scalar")
+
+
+def _normalize_angular_profile(mu, values, *, norm_method, eta, remove_last_one):
+    """Normalize the full angular profile before optionally trimming its last bin."""
+    if norm_method is None:
+        normalized = meannorm(values)
+    else:
+        mu = np.asarray(mu)
+        values = np.asarray(values, dtype=float)
+        if values.ndim != 1 or mu.shape != values.shape or not np.all(np.isfinite(values)):
+            raise ValueError("integrated profile must contain finite one-dimensional values")
+        if values.size == 0:
+            raise ValueError("integrated profile has no angular bins")
+        mean = float(np.mean(values))
+        spread = float(np.std(values))
+        scale = (
+            np.hypot(mean, eta * spread)
+            if norm_method == "regu" else max(abs(mean), eta * spread)
+        )
+        if scale == 0.0:
+            raise ValueError("normalization scale is zero; the profile has no defined shape")
+        normalized = 1.0 + (values - mean) / scale
+    if remove_last_one:
+        return mu[:-1], normalized[:-1]
+    return mu, normalized
+
+
 def packarray2d(X, rat, axis=1):
     subCount = int(X.shape[axis] / rat)
     new_shape = (subCount, X.shape[1]) if axis == 0 else (X.shape[0], subCount)
@@ -260,13 +299,19 @@ class xismu(object):
 
     def intximu(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97,
                 with_s2=False, mupack=1, is_norm=False,
-                remove_last_one=True) -> tuple:
+                remove_last_one=True, *, norm_method=None, eta=0.2) -> tuple:
         """Integrate over ``s`` after evaluating the correlation function.
 
-        This method preserves the original integration order: evaluate xi on
-        the original mu bins, integrate over s, normalize, and pack the
-        resulting mu-dependent curve last.
+        Evaluate xi on the original mu bins and integrate over s. Optionally
+        normalize and trim the last bin before packing the angular profile.
+
+        When ``is_norm`` is true, ``norm_method=None`` uses ``meannorm``.
+        ``"regu"`` and ``"regu_hard"`` use smooth and hard regularization,
+        respectively, with ``eta`` times the full profile's standard deviation.
         """
+        if is_norm:
+            _validate_profile_normalization(norm_method, eta)
+
         if hasattr(self, "s_array"):
             s_array = self.s_array
             if s_array is None:
@@ -316,10 +361,10 @@ class xismu(object):
         xis_mu = np.mean(xis_need, axis=0)
 
         if is_norm:
-            xis_mu = meannorm(xis_mu)
-            if remove_last_one:
-                xis_mu = xis_mu[:-1]
-                mu = mu[:-1]
+            mu, xis_mu = _normalize_angular_profile(
+                mu, xis_mu, norm_method=norm_method, eta=eta,
+                remove_last_one=remove_last_one,
+            )
 
         if mupack > 1:
             xis_mu = packarray1d(xis_mu, mupack)
@@ -327,7 +372,10 @@ class xismu(object):
 
         return mu, xis_mu
 
-    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97, s_xis=False, intximu=False, with_s2=False, mupack=1, is_norm=False, quick_return=True, remove_last_one=True) -> dict | tuple:
+    def integrate_tpcf(self, smin=6.0, smax=40.0, mumin=0.0, mumax=0.97,
+                       s_xis=False, intximu=False, with_s2=False, mupack=1,
+                       is_norm=False, quick_return=True, remove_last_one=True,
+                       *, norm_method=None, eta=0.2) -> dict | tuple:
         """ A powerful function to integrate the tpcf
 
         Parameters
@@ -351,10 +399,18 @@ class xismu(object):
             Only be valid when intximu=True and is_norm=True
         mupack: int
             The number of mu bins to pack together for integration
+        norm_method: None or {"regu", "regu_hard"}, default None
+            Normalization for the angular profile when intximu=True and
+            is_norm=True. None uses meannorm. The radial profile uses meannorm.
+        eta: float, default 0.2
+            Coefficient of the full angular profile's standard deviation in
+            regularized normalization.
         """
 
         if not s_xis and not intximu:
             raise ValueError("s_xis or intximu must be True")
+        if intximu and is_norm:
+            _validate_profile_normalization(norm_method, eta)
 
         if hasattr(self, "s_array"):
             s_array = self.s_array
@@ -439,10 +495,10 @@ class xismu(object):
                 Xis_need = Xis_need * s[:, np.newaxis]**2
             xis_mu = np.mean(Xis_need, axis=0)
             if is_norm:
-                xis_mu = meannorm(xis_mu)
-                if remove_last_one:
-                    xis_mu = xis_mu[:-1]
-                    mu = mu[:-1]
+                mu, xis_mu = _normalize_angular_profile(
+                    mu, xis_mu, norm_method=norm_method, eta=eta,
+                    remove_last_one=remove_last_one,
+                )
             result_dict["mu"] = mu
             result_dict["xis_mu"] = xis_mu
             if not s_xis and quick_return:
@@ -715,9 +771,8 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
     ``"regu_hard"`` use smooth and hard regularization, respectively.
 
     intximu_new: bool, default False
-        Use the standalone :meth:`xismu.intximu` implementation, which keeps
-        the original integrate-tpcf ordering. This cannot be used with
-        ``integrate_tpcf_func``.
+        Use :meth:`xismu.intximu`, which normalizes the angular profile before
+        packing its bins. This cannot be used with ``integrate_tpcf_func``.
 
     is_norm: bool, default True
         Disable all built-in normalization when false.
@@ -736,16 +791,7 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
     """
     if "remove_after_diff" in kwargs:
         raise TypeError("remove_after_diff has been removed and is no longer supported")
-    if norm_method is not None and (
-        not isinstance(norm_method, str) or norm_method not in ("regu", "regu_hard")
-    ):
-        raise ValueError("norm_method must be None, 'regu', or 'regu_hard'")
-    if (
-        not np.isscalar(eta) or not np.isrealobj(eta)
-        or not isinstance(eta, (int, float, np.number))
-        or not np.isfinite(eta) or eta < 0
-    ):
-        raise ValueError("eta must be a finite non-negative scalar")
+    _validate_profile_normalization(norm_method, eta)
 
     integrate_tpcf_func = kwargs.get("integrate_tpcf_func", None)
     if intximu_new and integrate_tpcf_func is not None:
@@ -761,29 +807,6 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
     else:
         integrate_tpcf_kwargs = kwargs.get("integrate_tpcf_kwargs", {})
 
-    def normalize_profile(mu, values):
-        mu = np.asarray(mu)
-        values = np.asarray(values, dtype=float)
-        if norm_method is None:
-            normalized = meannorm(values)
-        else:
-            if values.ndim != 1 or mu.shape != values.shape or not np.all(np.isfinite(values)):
-                raise ValueError("integrated profile must contain finite one-dimensional values")
-            if values.size == 0:
-                raise ValueError("integrated profile has no angular bins")
-            mean = float(np.mean(values))
-            spread = float(np.std(values))
-            scale = (
-                np.hypot(mean, eta * spread)
-                if norm_method == "regu" else max(abs(mean), eta * spread)
-            )
-            if scale == 0.0:
-                raise ValueError("normalization scale is zero; the profile has no defined shape")
-            normalized = 1.0 + (values - mean) / scale
-        if remove_last_one:
-            return mu[:-1], normalized[:-1]
-        return mu, normalized
-
     def integrate_profile(obj):
         if intximu_new:
             # intximu historically normalizes before angular packing.
@@ -792,19 +815,22 @@ def get_diff_array(tpcf_dict_list, snap_ids, shift=0, return_mu=False,
                 smin=smin, smax=smax, mupack=raw_mupack, is_norm=False,
                 mumax=mumax, remove_last_one=False,
             )
-            if is_norm:
-                mu, values = normalize_profile(mu, values)
-                if mupack > 1:
-                    mu = packarray1d(mu, mupack)
-                    values = packarray1d(values, mupack)
-            return mu, values
+        else:
+            mu, values = obj.integrate_tpcf(
+                smin=smin, smax=smax, intximu=True, mupack=mupack,
+                is_norm=False, mumax=mumax, remove_last_one=False,
+            )
 
-        mu, values = obj.integrate_tpcf(
-            smin=smin, smax=smax, intximu=True, mupack=mupack,
-            is_norm=False, mumax=mumax, remove_last_one=False,
+        if not is_norm:
+            return mu, values
+        # Preserve float normalization for raw profiles supplied by callers.
+        mu, values = _normalize_angular_profile(
+            np.asarray(mu), np.asarray(values, dtype=float),
+            norm_method=norm_method, eta=eta, remove_last_one=remove_last_one,
         )
-        if is_norm:
-            return normalize_profile(mu, values)
+        if intximu_new and mupack > 1:
+            mu = packarray1d(mu, mupack)
+            values = packarray1d(values, mupack)
         return mu, values
 
     if isinstance(tpcf_dict_list, dict):
